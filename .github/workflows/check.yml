@@ -23,10 +23,14 @@ env:
   # adds a check would otherwise start failing merges that had nothing to do
   # with it. The runner image ships an older one.
   SHELLCHECK_VERSION: 0.11.0
+  TOFU_VERSION: 1.12.5
 
 jobs:
   check:
     runs-on: ubuntu-24.04
+    # An absolute path: tofu does not expand `~` in this variable.
+    env:
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,6 +44,26 @@ jobs:
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
             | tar -xJ -f - -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          # The wrapper rewrites tofu's output and exit handling for later
+          # steps; the check wants the plain binary.
+          tofu_wrapper: false
+
+      # The registry serves providers from GitHub Releases, which throttles
+      # unauthenticated downloads from the shared runner addresses, so a bad
+      # minute would fail `tofu init` on a change that touched no provider.
+      # With the cache, a download happens only when a lock file changes.
+      # OpenTofu refuses to start when the cache directory is missing, and a
+      # cache miss restores nothing, hence the mkdir.
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
 
       # No pattern here, so the denylist check skips; the denylist job runs it.
       - run: make check
