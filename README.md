@@ -25,6 +25,7 @@ Each tier's ceiling is the lower of its measured sustained S3 PUT and NVMe write
 ## Documents
 
 - [docs/DESIGN.md](docs/DESIGN.md): what is measured, the modeled topology, the box, a run from trigger to result, latency, storage, the record and page, operations and open questions.
+- [docs/operations.md](docs/operations.md): procedures run by hand: the bootstrap apply, piri's key, the harness credential, the denylist parameter and the cost allocation tag.
 - [AGENTS.md](AGENTS.md): layout, conventions and the rules for this public repository.
 
 ## Checks
