@@ -31,7 +31,7 @@ expect() {
   local want="$1" what="$2" got=0
   shift 2
   env -u PUBLIC_DENYLIST_REGEX -u DENYLIST_FILE -u DENYLIST_BASE -u DENYLIST_HEAD \
-    -u GITHUB_ACTIONS "$@" bash "$check" >"$out" 2>&1 || got=$?
+    -u DENYLIST_REQUIRED -u GITHUB_ACTIONS "$@" bash "$check" >"$out" 2>&1 || got=$?
   if [ "$got" -ne "$want" ]; then
     echo "FAIL: $what: exit $got, want $want"
     sed 's/^/    /' "$out"
@@ -46,6 +46,9 @@ expect() {
 
 expect 0 "no pattern set skips"
 grep -q "skipped" "$out" || { echo "FAIL: skip prints no notice"; failures=$((failures + 1)); }
+expect 0 "no pattern skips when not required" DENYLIST_REQUIRED=false
+expect 2 "no pattern fails when required" DENYLIST_REQUIRED=true
+expect 2 "an empty secret fails when required" DENYLIST_REQUIRED=true PUBLIC_DENYLIST_REGEX=
 expect 0 "clean tree and history pass, blank pattern lines ignored" DENYLIST_FILE="$pattern_file"
 expect 0 "pattern from the environment" PUBLIC_DENYLIST_REGEX="Z[Q]XJKVW"
 
@@ -53,6 +56,17 @@ echo "a line with ZQXJKVW in it" >untracked.txt
 expect 1 "untracked file matches, case-insensitively" DENYLIST_FILE="$pattern_file"
 grep -q "untracked.txt:1" "$out" || { echo "FAIL: match not reported by file and line"; failures=$((failures + 1)); }
 rm untracked.txt
+
+mkdir notes
+echo "a line with ZQXJKVW in it" >"notes/$term-plan.md"
+expect 1 "a match in a denied file name keeps the name out of the output" DENYLIST_FILE="$pattern_file"
+grep -q "file whose name is denied (line 1)" "$out" || { echo "FAIL: match in a denied file name not reported by line"; failures=$((failures + 1)); }
+echo clean >"notes/$term-plan.md"
+expect 1 "a denied file name alone fails" DENYLIST_FILE="$pattern_file"
+grep -q "denied term in a file name" "$out" || { echo "FAIL: denied file name not reported"; failures=$((failures + 1)); }
+rm -r notes
+
+expect 2 "an invalid pattern is an error" PUBLIC_DENYLIST_REGEX="a("
 
 git commit -q --allow-empty -m "mentions $term"
 expect 1 "commit message matches" DENYLIST_FILE="$pattern_file"

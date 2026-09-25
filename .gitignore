@@ -37,3 +37,9 @@ terraform.rc
 
 # Providers cached between `tofu init` runs (TF_PLUGIN_CACHE_DIR in CI).
 .tofu-plugin-cache/
+
+# Run output and credentials. Nothing from a run's raw/ directory is ever
+# committed; these catch the common shapes before review has to.
+raw/
+*.tar.zst
+.env

@@ -1,6 +1,6 @@
 # forge-perf design
 
-Line references point at each repository's `main` on 2026-09-25, and at fil-one/storage-qualification commit `5cfeaf3`. storage-qualification is private; its references serve readers with access. **[unverified]** marks behavior the first boot or the calibration session must confirm; **[est]** marks an estimate.
+Line references point at these commits: fil-forge/smelt `878700b`, piri `448f702`, ingot `c08e0f1`, infra-nodes `82c23b2` and infra-central `05073ee` (each `main` on 2026-09-25); fil-one/storage-qualification `5cfeaf3`; and minio-go `v7.3.0`. storage-qualification is private; its references serve readers with access. **[unverified]** marks behavior the first boot or the calibration session must confirm; **[est]** marks an estimate.
 
 ## 1. What forge-perf measures
 
@@ -76,7 +76,7 @@ The instance role reads `/forge-perf/*` parameters, writes its own prefixes of t
 | `forge-perf-run.service` | `run.sh`; `Type=oneshot`, `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty`, no `Restart=`, as infra-nodes' reconcile unit |
 | `forge-perf-campaign.service` | campaign boxes only: one set, N times, each through `forge-perf-run.service` |
 
-The units use `Wants=` and `After=docker.service`, since `Requires=` would stop them with Docker. Between runs `poll.sh` calls `update.sh`, modeled on infra-nodes' reconcile (`infra-nodes/scripts/host/reconcile.sh:16-29`, `lib.sh:145-184`): re-exec from a copy, reset to `origin/main`, sync units, rerun `provision.sh` when `host/` changed, enable the units in `systemd/enabled.<mode>`. Campaign boxes never update.
+The units use `Wants=` and `After=docker.service`, since `Requires=` would stop them with Docker. Between runs `poll.sh` calls `update.sh`, modeled on infra-nodes' reconcile (`infra-nodes/scripts/host/reconcile.sh:16-29`, `infra-nodes/scripts/host/lib.sh:145-184`): re-exec from a copy, reset to `origin/main`, sync units, rerun `provision.sh` when `host/` changed, enable the units in `systemd/enabled.<mode>`. Campaign boxes never update.
 
 ## 4. A run from trigger to published result
 
@@ -121,8 +121,8 @@ bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
 
 - `--stop-ingest-at` is 100GB per trigger. The nightly is 350GB on tier 1 and 500GB on tier 2; tier 1 moves to 500GB once ingot's spool frees space (§10). `--duration` is 1h per trigger and 4h nightly, enough for 100 GB above 0.028 GB/s and 350 GB above 0.024 GB/s. At 0.1 to 0.5 GB/s a tier 1 trigger run takes 10 to 30 minutes **[est]**.
 - `--ramp 10s`: with fixed workers the ramp only delays measurement while its bytes count toward the cap (`storage-qualification/internal/drill/drill.go:604-627`).
-- `--rate-target 6GB` is above every tier's ceiling. The drill paces restores from the same rate (`drill.go:178-179`), so one value keeps the workload equal across tiers.
-- `--accounts 64 --restore-scale 0.25` are the import profile's own values (`profile.go:126`). `--keep-objects` skips the drill's sweep; the wipe deletes everything.
+- `--rate-target 6GB` is above every tier's ceiling. The drill paces restores from the same rate (`storage-qualification/internal/drill/drill.go:178-179`), so one value keeps the workload equal across tiers.
+- `--accounts 64 --restore-scale 0.25` are the import profile's own values (`storage-qualification/internal/drill/profile.go:126`). `--keep-objects` skips the drill's sweep; the wipe deletes everything.
 
 ## 5. Latency simulation
 
@@ -239,7 +239,7 @@ Five upstream PRs give smelt every setting forge-perf needs. Each is opt-in and 
 | 4. Record what ran | full SHAs; each image's digest and revision (today short sibling SHAs, `smelt/scripts/perf-lib.sh:37-67`); all settings; `PERF_EXTRA_METADATA` | run ID, series, box |
 | 5. Drill flags, disk check | one recorded variable per drill flag; `DISK_FACTOR` in place of the fixed 2.5; host check only on Docker Desktop | §4 flags, `DISK_FACTOR=1.25` |
 
-PR 5 stacks on PR 4; the others are independent. piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`api.go:299-303`). A sixth PR, for the tracing phase, passes `OTEL_RESOURCE_ATTRIBUTES` to ingot, sprue and hilt, which already read it (`ingot/cmd/telemetry.go:51`).
+PR 5 stacks on PR 4; the others are independent. piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`minio-go/api.go:299-303`). A sixth PR, for the tracing phase, passes `OTEL_RESOURCE_ATTRIBUTES` to ingot, sprue and hilt, which already read it (`ingot/cmd/telemetry.go:51`).
 
 ## 9. Calibration and ceilings
 
