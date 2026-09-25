@@ -1,0 +1,53 @@
+# What CI can check without an AWS account.
+#
+# One job, one command: `make check` runs every scripts/ci/check-*.sh, so a
+# laptop runs exactly what this job runs, and a new check lands as a new script
+# without touching this file. Tools every check may need are installed here.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned rather than latest, as in infra-central: a shellcheck release that
+  # adds a check would otherwise start failing merges that had nothing to do
+  # with it. The runner image ships an older one.
+  SHELLCHECK_VERSION: 0.11.0
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      # Full history, so the denylist check can read every commit in the range
+      # it is given.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Into RUNNER_TEMP rather than /usr/local/bin, which needs sudo. The release
+      # publishes no checksum file.
+      - name: install shellcheck
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -f - -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      # The commit range is the pull request's own commits, or what the push
+      # added to main. A fork's pull request gets no secrets, so the pattern is
+      # empty there and the denylist check skips with a notice.
+      - run: make check
+        env:
+          PUBLIC_DENYLIST_REGEX: ${{ secrets.PUBLIC_DENYLIST_REGEX }}
+          DENYLIST_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DENYLIST_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
