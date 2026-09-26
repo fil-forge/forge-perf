@@ -28,12 +28,14 @@ run "network" {
   assert {
     condition = alltrue([
       aws_subnet.perf.vpc_id == "vpc-0test",
-      aws_subnet.perf.cidr_block == "172.31.200.0/24",
-      aws_subnet.perf.availability_zone == "us-east-2a",
+      aws_subnet.perf.cidr_block == var.subnet_cidr,
+      endswith(aws_subnet.perf.cidr_block, "/24"),
+      aws_subnet.perf.availability_zone == var.availability_zone,
+      startswith(aws_subnet.perf.availability_zone, "us-east-2"),
       aws_subnet.perf.map_public_ip_on_launch == false,
       aws_subnet.perf.tags["Name"] == "forge-perf",
     ])
-    error_message = "the subnet is 172.31.200.0/24 in us-east-2a of the default VPC, named forge-perf, with no automatic public address"
+    error_message = "the subnet is terraform.tfvars' /24 in its us-east-2 zone of the default VPC, named forge-perf, with no automatic public address"
   }
 
   assert {
@@ -56,8 +58,12 @@ run "network" {
   }
 
   assert {
-    condition     = local.default_tags == { Project = "forge-perf" }
-    error_message = "the provider tags every resource Project=forge-perf, which the apply role requires to manage it"
+    condition = alltrue([
+      aws_subnet.perf.tags["Project"] == "forge-perf",
+      aws_route_table.perf.tags["Project"] == "forge-perf",
+      aws_vpc_endpoint.s3.tags["Project"] == "forge-perf",
+    ])
+    error_message = "every resource is tagged Project=forge-perf, which the apply role requires to manage it"
   }
 }
 

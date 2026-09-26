@@ -87,7 +87,7 @@ aws ec2 describe-instance-type-offerings --location-type availability-zone \
   --query 'InstanceTypeOfferings[].InstanceType' --output text
 ```
 
-No listed block may overlap `172.31.200.0/24`, and the offerings query must print all three types. If either fails, change `terraform.tfvars` in the same pull request.
+No listed block may overlap `172.31.200.0/24`, and the offerings query must print all three types. If either fails, change `terraform.tfvars` in the same pull request. The root's test reads the range and zone from `terraform.tfvars`, so it needs no change.
 
 After the apply, the route table carries the endpoint's route to S3's prefix list:
 
@@ -114,6 +114,8 @@ tofu apply -var piri_key_via_s3_endpoint=false
 ```
 
 Once the network root is applied, apply the bootstrap root again without the variable.
+
+The endpoint's id is written into piri's policy, so a new endpoint leaves piri's key denied everywhere until the bootstrap root is applied again. The endpoint carries `prevent_destroy`, and a change that would replace it (its VPC, service or type) fails the pull request's plan. To replace it deliberately, remove `prevent_destroy` in the same pull request, and apply the bootstrap root as soon as `apply-network` finishes.
 
 ### piri's S3 key
 

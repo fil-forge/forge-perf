@@ -9,11 +9,13 @@
 #
 # Applied by deploy.yml on every push to main. Both box roots find the subnet
 # by its Name tag, and the bootstrap root finds the endpoint by its Name tag, so
-# no root reads this one's state.
+# no root reads this one's state. The bootstrap root does copy the endpoint's
+# id into piri's policy when an operator applies it; see aws_vpc_endpoint.s3.
 
 # The apply role may change only what carries this tag, so every resource
-# here must get it at creation. A local, so tests/network.tftest.hcl can check
-# it: a test's own provider block replaces this one.
+# here must get it at creation. Each resource sets it in its own tags as well
+# as through the provider: tests/network.tftest.hcl declares its own provider,
+# which replaces this one, so only the resources' tags are visible to it.
 locals {
   default_tags = {
     Project = "forge-perf"
@@ -63,9 +65,9 @@ resource "aws_subnet" "perf" {
   availability_zone       = var.availability_zone
   map_public_ip_on_launch = false
 
-  tags = {
+  tags = merge(local.default_tags, {
     Name = module.constants.subnet_name
-  }
+  })
 }
 
 # A public subnet: egress goes straight to the internet gateway, for image
@@ -78,9 +80,9 @@ resource "aws_route_table" "perf" {
     gateway_id = data.aws_internet_gateway.default.id
   }
 
-  tags = {
+  tags = merge(local.default_tags, {
     Name = module.constants.subnet_name
-  }
+  })
 }
 
 resource "aws_route_table_association" "perf" {
@@ -92,14 +94,25 @@ resource "aws_route_table_association" "perf" {
 # S3 requests stay inside AWS and carry aws:SourceVpce, which piri's key is
 # bound to. The default endpoint policy allows everything; the IAM policies
 # of the callers decide what they may do. A gateway endpoint costs nothing.
+#
+# The bootstrap root writes this endpoint's id into piri's policy, and only an
+# operator applies that root. A replaced endpoint gets a new id, and piri's key
+# is denied everywhere until the bootstrap root is applied again. So the
+# endpoint cannot be destroyed from here: a change that would replace it fails
+# its plan on the pull request. Replacing it is an operator step, described in
+# docs/operations.md under "The network root".
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = data.aws_vpc.default.id
   service_name      = "com.amazonaws.${module.constants.region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids   = [aws_route_table.perf.id]
 
-  tags = {
+  tags = merge(local.default_tags, {
     Name = module.constants.s3_endpoint_name
+  })
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
