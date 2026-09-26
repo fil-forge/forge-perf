@@ -129,12 +129,16 @@ run "policies" {
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Action]) == ["ec2:CreateVpcEndpoint"],
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Resource])) == toset(["arn:aws:ec2:*:*:security-group/*", "arn:aws:ec2:*:*:subnet/*"]),
       try({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Condition, null) == null,
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheMainRouteTable"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheMainRouteTable"].Action]) == ["ec2:ReplaceRouteTableAssociation"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheMainRouteTable"].Resource]) == ["*"],
+      try({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheMainRouteTable"].Condition, null) == null,
       { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Effect == "Deny",
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Action]) == ["ec2:RunInstances"],
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Resource])) == toset(["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"]),
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Condition.StringNotEquals["ec2:Owner"]]) == ["099720109477"],
     ])
-    error_message = "the apply role may create gateway endpoints only and launch Canonical's images only"
+    error_message = "the apply role may create gateway endpoints only, may not replace the main route table association, and may launch Canonical's images only"
   }
 
   assert {

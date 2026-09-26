@@ -26,7 +26,7 @@ gh api repos/fil-forge/forge-perf/environments/box-change/deployment-branch-poli
 
 The first check should list `required_reviewers`, `branch_policy` and `true`, the second only `main`.
 
-The first apply creates the bucket its own state lives in. `versions.tofu` gives the procedure: comment out the backend block, apply against the local backend, restore the block, then `tofu init -migrate-state`. Every later apply is:
+The first apply creates the bucket its own state lives in. `versions.tofu` gives the procedure: comment out the backend block, run `tofu apply -var piri_key_via_s3_endpoint=false` against the local backend, restore the block, then `tofu init -migrate-state`. The variable is needed until the network root's endpoint exists; "The network root" below says when to drop it. Every later apply is:
 
 ```sh
 cd terraform/envs/bootstrap/account
@@ -70,7 +70,13 @@ The last command should print `["main","active"]`. `integration_id` 15368 is Git
 
 `terraform/envs/network` holds the forge-perf subnet (`172.31.200.0/24` in `us-east-2a` of the default VPC), its route table and the S3 gateway endpoint `forge-perf-s3`. The `deploy` workflow plans it on every pull request and applies it on every push to main.
 
-Before its first apply, check that the subnet's range is free in the default VPC and that the zone offers every tier's instance type:
+Every command in this section runs against us-east-2, whatever region the shell defaults to:
+
+```sh
+export AWS_REGION=us-east-2
+```
+
+Before the root's first apply, check that the subnet's range is free in the default VPC and that the zone offers every tier's instance type:
 
 ```sh
 vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
@@ -81,7 +87,7 @@ aws ec2 describe-instance-type-offerings --location-type availability-zone \
   --query 'InstanceTypeOfferings[].InstanceType' --output text
 ```
 
-No listed block may overlap `172.31.200.0/24`, and the second command must print all three types. If either fails, change `terraform.tfvars` in the same pull request.
+No listed block may overlap `172.31.200.0/24`, and the offerings query must print all three types. If either fails, change `terraform.tfvars` in the same pull request.
 
 After the apply, the route table carries the endpoint's route to S3's prefix list:
 
@@ -99,18 +105,7 @@ aws iam get-user-policy --user-name forge-perf-piri --policy-name piri-buckets \
   --query 'PolicyDocument.Statement[].Condition' --output json
 ```
 
-Every statement should name `aws:SourceVpce` and the endpoint's id. From then on piri's key gets `AccessDenied` from anywhere outside the forge-perf subnet, which a request with the key from an operator's shell shows. The subshell keeps the key out of the process list and out of the operator's session:
-
-```sh
-(
-  export AWS_ACCESS_KEY_ID="$(aws ssm get-parameter --name /forge-perf/piri-s3-access-key-id \
-    --query Parameter.Value --output text)"
-  export AWS_SECRET_ACCESS_KEY="$(aws ssm get-parameter --name /forge-perf/piri-s3-secret-access-key \
-    --with-decryption --query Parameter.Value --output text)"
-  unset AWS_SESSION_TOKEN AWS_PROFILE
-  aws s3api list-objects-v2 --bucket <a piri bucket> --max-items 1
-)
-```
+Every statement should name `aws:SourceVpce` and the endpoint's id. That output is the proof that the key is bound to the endpoint. A request with the key from an operator's shell is denied both before and after this apply, since the shell is outside AWS, so it shows only that the key is unusable from outside AWS. A live check of the narrowing needs an instance in a default subnet of the same VPC, the dev node's case, and a piri bucket to ask for, which exists once the box root is applied.
 
 On a new account the network root cannot come first, because the deploy workflow needs the roles the bootstrap root creates, and the bootstrap root's endpoint lookup fails until the endpoint exists. The first bootstrap apply therefore binds piri's key to the default VPC:
 

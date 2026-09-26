@@ -5,10 +5,9 @@
 # reads only this file and stops at the constraint below, which no release
 # satisfies.
 #
-# The guard is not decorative. Terraform stamps its own version into the state
-# file it writes, and Terraform's releases are numbered ahead of OpenTofu's, so
-# one `terraform apply` here would leave a state that OpenTofu then refuses to
-# read.
+# Terraform stamps its own version into the state file it writes, and
+# Terraform's releases are numbered ahead of OpenTofu's, so one `terraform
+# apply` here would leave a state that OpenTofu then refuses to read.
 terraform {
   required_version = "< 0.0.0"
 }

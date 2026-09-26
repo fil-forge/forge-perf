@@ -11,16 +11,21 @@
 # by its Name tag, and the bootstrap root finds the endpoint by its Name tag, so
 # no root reads this one's state.
 
+# The apply role may change only what carries this tag, so every resource
+# here must get it at creation. A local, so tests/network.tftest.hcl can check
+# it: a test's own provider block replaces this one.
+locals {
+  default_tags = {
+    Project = "forge-perf"
+  }
+}
+
 provider "aws" {
   region              = module.constants.region
   allowed_account_ids = [module.constants.nonprod_account_id]
 
-  # The apply role may change only what carries this tag, so every resource
-  # here must get it at creation.
   default_tags {
-    tags = {
-      Project = "forge-perf"
-    }
+    tags = local.default_tags
   }
 }
 

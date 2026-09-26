@@ -10,10 +10,6 @@ provider "aws" {
   skip_credentials_validation = true
   skip_requesting_account_id  = true
   skip_metadata_api_check     = true
-
-  default_tags {
-    tags = { Project = "forge-perf" }
-  }
 }
 
 override_data {
@@ -60,18 +56,14 @@ run "network" {
   }
 
   assert {
-    condition = alltrue([
-      aws_subnet.perf.tags_all["Project"] == "forge-perf",
-      aws_route_table.perf.tags_all["Project"] == "forge-perf",
-      aws_vpc_endpoint.s3.tags_all["Project"] == "forge-perf",
-    ])
-    error_message = "every resource carries Project=forge-perf, which the apply role requires to manage it"
+    condition     = local.default_tags == { Project = "forge-perf" }
+    error_message = "the provider tags every resource Project=forge-perf, which the apply role requires to manage it"
   }
 }
 
 # Fixed ids for what the plan creates, so the references between the
-# resources can be compared. An overridden resource plans with no tags_all,
-# which is why this is a run of its own.
+# resources can be compared, in a run of their own so the checks above see
+# the plan as written.
 run "wiring" {
   command = plan
 

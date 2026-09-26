@@ -1,9 +1,10 @@
 # Plans the CI-applied OpenTofu roots on every pull request and applies them
 # on every push to main.
 #
-# `make check` lives in check.yml, a required check, and main takes only pull
-# requests that passed it, so this workflow does not run it again before an
-# apply.
+# `make check` lives in check.yml, a required check. That check ran on the pull
+# request's merge ref, and a squash merge onto a main that moved since then can
+# produce a tree it never saw, so the apply job validates and tests its root
+# again before applying.
 #
 # The bootstrap root is never planned or applied here: it creates the roles
 # this workflow assumes (docs/operations.md, "The bootstrap root").
@@ -128,6 +129,10 @@ jobs:
           key: tofu-providers-${{ hashFiles('terraform/envs/network/.terraform.lock.hcl') }}
 
       - run: tofu init -input=false -lockfile=readonly
+
+      # Neither needs credentials; tofu test plans against placeholder ones.
+      - run: tofu validate
+      - run: tofu test
 
       # -auto-approve, and the log is the audit trail: apply prints the whole
       # plan before it changes anything.
