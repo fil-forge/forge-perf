@@ -10,12 +10,16 @@
 # run in SERIES (per-trigger, nightly, campaign or calibration; default
 # calibration). While config/launch.conf has SERIES_LIVE=0 every run is
 # series calibration. --workers, --size and --duration override the settings
-# file. The steps are preflight, checkout, images, boot and setup; --until
-# STEP stops after STEP and leaves the stack as it is.
+# file. The steps are preflight, checkout, images, boot, setup, latency, drill
+# and check; then every run that started, whether a step stopped it or not, is
+# collected, recorded, uploaded and wiped. --until STEP stops after STEP and
+# leaves the stack as it is, with no record.
 #
-# Exit status: 0 the run reached its last step, or another run holds the lock;
-# 1 a step failed, and runner.json names the reason; 2 the run did not start
-# (usage, no settings for this instance type, WORKERS empty, an unusable set).
+# Exit status: 0 the run was recorded and wiped (whatever its class), it
+# reached --until, or another run holds the lock; 1 a step stopped the run, or
+# the record or the wipe failed, and runner.json names the reason; 2 the run
+# did not start (usage, no settings for this instance type, WORKERS empty, an
+# unusable set); 130 or 143 a stop request, after the record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
 # pending.json.rejected, so the next poll does not start it again.
 #
@@ -30,7 +34,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=runlib.sh
 . "$here/runlib.sh"
 
-STEPS="preflight checkout images boot setup"
+STEPS="preflight checkout images boot setup latency drill check"
 from_pending=""
 refuse() {
   echo "run.sh: $*" >&2
@@ -42,7 +46,7 @@ refuse() {
 }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 
-set_file="" series="" workers="" size="" duration="" until=setup
+set_file="" series="" workers="" size="" duration="" until=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
@@ -56,7 +60,7 @@ while [ $# -gt 0 ]; do
   esac
   shift 2
 done
-grep -qw -- "$until" <<<"$STEPS" || refuse "--until takes one of: $STEPS"
+[ -z "$until" ] || grep -qw -- "$until" <<<"$STEPS" || refuse "--until takes one of: $STEPS"
 
 runner_init
 mkdir -p "$FORGE_PERF_RUNTIME" "$FORGE_PERF_STATE_DIR"
@@ -162,11 +166,12 @@ while read -r var ref digest; do
   export "$var=${ref%:*}@$digest"
 done < <(sed 's/#.*//' "$cfg/images.tracked" | awk 'NF == 2' && sed 's/#.*//' "$cfg/images.lock" | awk 'NF == 3')
 
-started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)" started_epoch="$(date +%s)"
 run_id="$FORGE_PERF_BOX_ID-$(tr -d ':-' <<<"$started" | tr TZ tz)"
 WORK="$FORGE_PERF_WORK" SMELT="$FORGE_PERF_WORK/smelt" SQ="$FORGE_PERF_WORK/storage-qualification"
 RUN="$FORGE_PERF_WORK/run" MIRRORS="${FORGE_PERF_MIRRORS:-/var/lib/forge-perf/mirror}"
 SSM="${FORGE_PERF_SSM_PATH:-/forge-perf}" SECRETS="$FORGE_PERF_RUNTIME/secrets"
+DENYLIST="${FORGE_PERF_DENYLIST_FILE:-$SECRETS/denylist.regex}"
 [ -n "${FORGE_PERF_PIRI_BUCKET_PREFIX:-}" ] || refuse "FORGE_PERF_PIRI_BUCKET_PREFIX is not set"
 smelt_prefix="${FORGE_PERF_SMELT_BUCKET_PREFIX:-${FORGE_PERF_PIRI_BUCKET_PREFIX%piri-0-}}"
 
@@ -257,10 +262,12 @@ rj() {
 }
 
 set_phase() {
-  jq -n --arg id "$run_id" --arg phase "$1" --arg dir "$RUN" '{run_id: $id, phase: $phase, run_dir: $dir}' \
-    >"$state/current.json.tmp"
-  mv "$state/current.json.tmp" "$state/current.json"
+  jq -n --arg id "$run_id" --arg phase "$1" --arg dir "$RUN" '{run_id: $id, phase: $phase, run_dir: $dir}' |
+    write_durable "$state/current.json"
 }
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+add_reason() { rj --arg r "$1" '.reasons = (.reasons + [$r] | unique)'; }
 
 # stop REASON MESSAGE: the run cannot go on.
 failed=""
@@ -271,22 +278,28 @@ stop() {
   fi
   echo "run.sh: $reason: $message" >&2
   failed="$reason"
-  rj --arg r "$reason" '.reasons = (.reasons + [$r] | unique)'
+  add_reason "$reason"
   exit 1
 }
 
 finish() {
   local status=$?
   trap - EXIT
-  if [ "$status" -ne 0 ] && [ -z "$failed" ]; then
-    rj --arg r "$([ -s "$overran" ] && echo step_timeout || echo runner_error)" '.reasons = (.reasons + [$r] | unique)'
+  set +e
+  if [ "$status" -ne 0 ] && [ -z "$failed" ] && [ -z "$stop_requested" ]; then
+    add_reason "$([ -s "$overran" ] && echo step_timeout || echo runner_error)"
   fi
-  rm -f "$state/current.json"
-  if [ "$status" -eq 0 ]; then
-    echo "run $run_id: $until done; the stack stays up until scripts/host/wipe.sh"
-  else
-    echo "run $run_id stopped: $(jq -r '.reasons | join(" ")' "$state/runner.json")" >&2
+  if [ -n "$until" ]; then
+    rm -f "$state/current.json"
+    if [ "$status" -eq 0 ]; then
+      echo "run $run_id: $until done; the stack stays up until scripts/host/wipe.sh"
+    else
+      echo "run $run_id stopped: $(jq -r '.reasons | join(" ")' "$state/runner.json")" >&2
+    fi
+    exit "$status"
   fi
+  close_out || [ "$status" -ne 0 ] || status=1
+  echo "run $run_id: ${record_class:-no record}; reasons: $(jq -r '.reasons | join(" ")' "$state/runner.json")"
   exit "$status"
 }
 
@@ -405,6 +418,18 @@ step_preflight() {
   export SMELT_PIRI_S3_SECRET_ACCESS_KEY="${FORGE_PERF_PIRI_S3_SECRET:-}"
   [ -n "$SMELT_PIRI_S3_ACCESS_KEY_ID" ] && [ -n "$SMELT_PIRI_S3_SECRET_ACCESS_KEY" ] ||
     stop secrets_unavailable "piri's S3 key is empty"
+  # The record is checked against the denylist; a run that cannot be
+  # recorded does not start.
+  [ -n "$until" ] || get_denylist || stop secrets_unavailable "no denylist at $DENYLIST, or SSM did not answer"
+}
+
+# get_denylist: FORGE_PERF_DENYLIST_FILE, or the SSM parameter on tmpfs.
+get_denylist() {
+  [ ! -s "$DENYLIST" ] || return 0
+  [ "${FORGE_PERF_SECRETS:-ssm}" = ssm ] && [ -z "${FORGE_PERF_DENYLIST_FILE:-}" ] || return 1
+  mkdir -p "$SECRETS"
+  (umask 077 && ssm_value "${FORGE_PERF_DENYLIST_PARAM:-$SSM/denylist}" >"$DENYLIST.tmp") &&
+    mv "$DENYLIST.tmp" "$DENYLIST"
 }
 
 # harness_git: how git reaches the harness repository, in HARNESS_GIT (a
@@ -570,6 +595,207 @@ step_setup() {
   within 600 setup_failed "${SMELT_ENV[@]}" "$SMELT/scripts/perf-drill.sh" setup
 }
 
+step_latency() {
+  local status=0
+  step "latency"
+  export NETEM_DIR="$RUN/netem"
+  within 300 runner_error "$here/netem.sh" apply
+  # A failed check (1) does not stop the run: the record reads it from
+  # latency.json and the run is invalid. 2 is a harness error.
+  timeout --kill-after=60 300 "$here/netem.sh" verify pre || status=$?
+  case "$status" in
+    0 | 1) ;;
+    124 | 137) stop step_timeout "netem.sh verify pre ran over 300s" ;;
+    *) stop runner_error "netem.sh verify pre exited $status" ;;
+  esac
+}
+
+# sample: in the background during the drill, the primary interface's
+# transmitted bytes every second and the NVMe's free space every 30 seconds.
+sample() {
+  local n=0 tx free
+  while :; do
+    if [ -n "$nic_if" ] && tx="$(cat "$R/sys/class/net/$nic_if/statistics/tx_bytes" 2>/dev/null)"; then
+      echo "$(date +%s) $tx" >>"$RUN/nic.csv"
+    fi
+    if [ $((n % 30)) -eq 0 ] && ! host_ops_skipped; then
+      free="$(df -Pk "$FORGE_PERF_NVME_MOUNT" 2>/dev/null | awk 'NR == 2 { print $4 * 1024 }')"
+      if [[ "$free" =~ ^[0-9]+$ ]]; then
+        echo "$(now) $free" >>"$RUN/disk.csv"
+        [ "$free" -ge 2000000000 ] || : >"$RUN/disk-low"
+      fi
+    fi
+    n=$((n + 1))
+    sleep 1
+  done
+}
+
+# The ENA allowance counters' deltas (all five, or null), and the median
+# egress rate and the seconds above the type's baseline from the samples.
+nic_facts() {
+  jq -n --rawfile pre "$RUN/ethtool-pre.txt" --rawfile post "$RUN/ethtool-post.txt" \
+    --rawfile samples "$RUN/nic.csv" --arg baseline "${BASELINE_BYTES_PER_S:-}" '
+    def counters: [scan("(?<k>[a-z_]+)_allowance_exceeded: *(?<v>[0-9]+)") | {(.[0]): (.[1] | tonumber)}] | add // {};
+    def keys5: ["bw_in", "bw_out", "pps", "conntrack", "linklocal"];
+    ($pre | counters) as $a | ($post | counters) as $b |
+    ($samples | split("\n") | map(select(test("^[0-9]+ [0-9]+$")) | split(" ") | map(tonumber))) as $s |
+    [range(1; $s | length) | select($s[.][0] > $s[. - 1][0] and $s[.][1] >= $s[. - 1][1]) |
+     {dt: ($s[.][0] - $s[. - 1][0]), rate: (($s[.][1] - $s[. - 1][1]) / ($s[.][0] - $s[. - 1][0]))}] as $r |
+    ($r | map(.rate) | sort) as $sorted |
+    {allowance_exceeded: (if all(keys5[]; $a[.] != null and $b[.] != null)
+       then [keys5[] | {(.): ($b[.] - $a[.])}] | add else null end),
+     egress_bytes_per_s_median: (if $sorted == [] then null
+       else ($sorted | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end)
+       | round end),
+     seconds_above_baseline: (if $sorted == [] or $baseline == "" then null
+       else [$r[] | select(.rate > ($baseline | tonumber)) | .dt] | add // 0 end)}'
+}
+
+step_drill() {
+  local status="" s secs
+  step "drill"
+  set_phase drill
+  secs=$(($(jq '.settings.duration_s' "$state/runner.json") + 1800))
+  host_op sync
+  host_op sysctl -q vm.drop_caches=3
+  nic_if="$(q host_read ip route get 1.1.1.1 | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+  : >"$RUN/ethtool-pre.txt"
+  : >"$RUN/ethtool-post.txt"
+  : >"$RUN/nic.csv"
+  [ -z "$nic_if" ] || q host_read ethtool -S "$nic_if" >"$RUN/ethtool-pre.txt"
+  sample &
+  sampler=$!
+  rj --arg t "$(now)" '.time.drill_started_at = $t'
+  "${SMELT_ENV[@]}" PROFILE=import LABEL="$run_id" STOP_INGEST_AT="$size" DURATION="$duration" WORKERS="$WORKERS" \
+    RAMP="${RAMP:-}" WINDOW="${WINDOW:-}" VERIFY_LAG_MIN="${VERIFY_LAG_MIN:-}" VERIFY_LAG_MAX="${VERIFY_LAG_MAX:-}" \
+    RATE_TARGET="${RATE_TARGET:-}" ACCOUNTS="${ACCOUNTS:-}" RESTORE_SCALE="${RESTORE_SCALE:-}" \
+    ENFORCE_FLOOR="${ENFORCE_FLOOR:-}" PROGRESS="${PROGRESS:-}" KEEP_OBJECTS="${KEEP_OBJECTS:-}" \
+    DISK_FACTOR="${DISK_FACTOR:-}" CONFIG_NOTE="forge-perf/$run_id" \
+    PERF_EXTRA_METADATA="$(jq -nc --arg id "$run_id" --arg s "$series" '{forge_perf: {run_id: $id, series: $s}}')" \
+    timeout --signal=INT --kill-after=300 "$secs" "$SMELT/scripts/perf-drill.sh" run &
+  drill_pid=$!
+  # A stop request interrupts `wait`; wait again until the drill has exited.
+  # timeout passes the SIGINT on and kills the drill 5 minutes later.
+  while [ -z "$status" ]; do
+    s=0
+    wait "$drill_pid" || s=$?
+    if [ "$s" -le 128 ] || ! kill -0 "$drill_pid" 2>/dev/null; then status=$s; fi
+  done
+  drill_pid=""
+  kill "$sampler" 2>/dev/null || true
+  sampler=""
+  echo "$status" >"$RUN/perf-drill.exit"
+  rj --arg t "$(now)" '.time.drill_finished_at = $t'
+  [ -z "$nic_if" ] || q host_read ethtool -S "$nic_if" >"$RUN/ethtool-post.txt"
+  rj --argjson nic "$(nic_facts)" '.nic = $nic'
+  [ ! -e "$RUN/disk-low" ] || add_reason disk_low
+  if [ -n "$stop_requested" ]; then
+    add_reason drill_interrupted
+    exit "$stop_requested"
+  fi
+  case "$status" in
+    124 | 137) rj '.watchdog_fired = true' ;;
+  esac
+}
+
+step_check() {
+  local status=0 modified
+  step "check"
+  # Exit 1 and 2 leave their check lines in latency.json for the record.
+  timeout --kill-after=60 300 "$here/netem.sh" verify post || status=$?
+  case "$status" in
+    0 | 1 | 2) ;;
+    124 | 137) add_reason step_timeout ;;
+    *) add_reason runner_error ;;
+  esac
+  modified="$(git -C "$FORGE_PERF_CHECKOUT" status --porcelain)"
+  if [ -n "$modified" ] && ! { host_ops_skipped && [ "${FORGE_PERF_ALLOW_MODIFIED:-}" = 1 ]; }; then
+    add_reason instrument_modified
+  fi
+}
+
+# close_out: collect, record, upload and wipe, whether a step stopped the run
+# or not. It runs from the EXIT trap without set -e, so each step checks its
+# own result. Fails when no record was written or the wipe failed.
+close_out() {
+  local raw="$FORGE_PERF_OUTBOX/$run_id.raw.tar.zst" record="$FORGE_PERF_OUTBOX/$run_id.json" status=0 ok=0
+  local forbid="$SECRETS/forbid" smelt_run id="${SMELT_PIRI_S3_ACCESS_KEY_ID:-}" secret="${SMELT_PIRI_S3_SECRET_ACCESS_KEY:-}"
+  trap 'echo "run.sh: stop requested; finishing the record and the wipe" >&2' TERM INT
+  [ -z "$sampler" ] || kill "$sampler" 2>/dev/null
+  if [ -n "$drill_pid" ]; then
+    kill -INT "$drill_pid" 2>/dev/null
+    wait "$drill_pid"
+  fi
+
+  step "collect"
+  mkdir -p "$FORGE_PERF_OUTBOX" "$SECRETS"
+  [ ! -d "$RUN" ] || q host_read journalctl -u forge-perf-run --since "@$started_epoch" --no-pager >"$RUN/journal.txt"
+  # piri's pair and the harness credential, which no collected file may hold.
+  (
+    umask 077
+    : >"$forbid"
+    if [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ]; then
+      { printf '%s\n' "$id" "$secret"; cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
+        awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' >"$forbid"
+    fi
+  )
+  timeout --kill-after=60 600 "$here/collect.sh" "$raw" "$forbid" "run=$RUN" "perf-runs=$SMELT/generated/perf-runs" ||
+    status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "run.sh: no raw tarball (collect.sh exited $status); the record carries raw_missing" >&2
+    rj '.raw_missing = true'
+  fi
+
+  step "record"
+  get_denylist || echo "run.sh: no denylist at $DENYLIST, or SSM did not answer" >&2
+  rj --arg t "$(now)" '.time.run_finished_at = $t'
+  smelt_run="$(find "$SMELT/generated/perf-runs/drill" -mindepth 1 -maxdepth 1 -type d -name "*-$run_id" 2>/dev/null)"
+  set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --denylist "$DENYLIST" --out "$record"
+  [ -z "$smelt_run" ] || [ "$(wc -l <<<"$smelt_run")" -ne 1 ] || set -- "$@" --run-dir "$smelt_run"
+  [ ! -s "$forbid" ] || set -- "$@" --forbid "$forbid"
+  status=0
+  python3 "$here/record.py" "$@" || status=$?
+  if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
+    record_class="$(jq -r .outcome.class "$record")"
+    set_phase recorded
+  else
+    echo "run.sh: record.py wrote no record (exit $status)" >&2
+    ok=1
+  fi
+
+  # A stop request leaves the upload to the next poll, so the wipe fits in
+  # the unit's TimeoutStopSec.
+  if [ -z "$stop_requested" ]; then
+    step "upload"
+    "$here/outbox.sh" flush || echo "run.sh: the outbox keeps files for the next poll" >&2
+    [ "$ok" -ne 0 ] || set_phase uploaded
+  fi
+
+  step "wipe"
+  [ "$ok" -ne 0 ] || set_phase wiping
+  if timeout --kill-after=60 1800 "$here/wipe.sh"; then
+    rm -f "$state/current.json"
+  else
+    echo "run.sh: the wipe failed; current.json stays for the next boot's recovery" >&2
+    ok=1
+  fi
+  return "$ok"
+}
+
+# A stop request (systemctl stop, TimeoutStartSec) during the drill interrupts
+# it so it can still write its evidence; at any other point the run ends at
+# once. Either way the run is then recorded and wiped.
+on_stop() {
+  stop_requested="$1"
+  if [ -n "$drill_pid" ]; then
+    echo "run.sh: stop requested; interrupting the drill" >&2
+    kill -INT "$drill_pid" 2>/dev/null || true
+  else
+    add_reason drill_interrupted
+    exit "$1"
+  fi
+}
+
 # --- the run ----------------------------------------------------------------------
 
 last="$(jq -c . "$state/last-started.json" 2>/dev/null || echo null)"
@@ -603,9 +829,10 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
    raw_missing: false}' >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
+stop_requested="" drill_pid="" sampler="" nic_if="" record_class=""
 trap finish EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
+trap 'on_stop 143' TERM
+trap 'on_stop 130' INT
 set_phase preflight
 jq . <<<"$set_json" >"$state/last-started.json"
 rm -f "$state/pending.json"

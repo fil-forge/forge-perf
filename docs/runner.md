@@ -47,7 +47,8 @@ Skip mode leaves out everything that depends on the box itself: the instance-sto
 |---|---|---|
 | `wipe.sh` | last step of every run; `ExecStopPost=wipe.sh --if-dirty` of the run unit; from `recover.sh` | returns the box to the state a run starts from |
 | `recover.sh` | `forge-perf-recover.service`, every boot, before the poll timers and the run unit | closes out a run that a reboot interrupted, then flushes the outbox |
-| `outbox.sh flush` | from `recover.sh`, and between runs | uploads raw tarballs, then records |
+| `collect.sh` | from `run.sh` and `recover.sh` | builds a run's raw tarball |
+| `outbox.sh flush` | from `run.sh`, `recover.sh`, and between runs | uploads raw tarballs, then records |
 
 ### The wipe
 
@@ -79,13 +80,15 @@ With no `current.json` it only flushes the outbox. Otherwise, in order, it stops
 
 `run.sh` writes a complete `runner.json` to `/var/lib/forge-perf/state/runner.json` on the root volume before it first writes `current.json`, and copies it into the run directory once preflight has created that. A stop/start or resize mid-run leaves the instance store blank, and recovery then reads that copy, so the interrupted run still gets a record.
 
-The tarball leaves out every `*.env` file and `provider/`, and drops every line that names `access_key_id` or `secret_access_key`, which `piri init` prints. Recovery then checks the collected files for piri's key ID, piri's secret and the harness credential. It reads piri's pair from its credentials file while `/run` still holds it; after a reboot `/run` is empty, so it reads them from the SSM parameters `piri-s3-access-key-id` and `piri-s3-secret-access-key` under `FORGE_PERF_SSM_PATH` (default `/forge-perf`), and the harness credential from `harness-deploy-key` there, and the GitHub App's private key from `harness-app`, when those parameters exist. The App's installation token is checked while `/run` still holds it. When a value appears, or the values cannot be read, recovery writes no tarball and the record carries `raw_missing`. The record builder checks the record against the same strings. The denylist it also checks comes from `FORGE_PERF_DENYLIST_FILE`, or from the SSM parameter `denylist` under the same path into `/run/forge-perf/secrets/denylist.regex`.
+`collect.sh` builds the tarball from the run directory, smelt's `generated/perf-runs/` and each container's logs. It leaves out every `*.env` file and `provider/`, drops every line that names `access_key_id` or `secret_access_key`, which `piri init` prints, and then checks the collected files for piri's key ID, piri's secret and the harness credential. It reads piri's pair from its credentials file while `/run` still holds it; after a reboot `/run` is empty, so it reads them from the SSM parameters `piri-s3-access-key-id` and `piri-s3-secret-access-key` under `FORGE_PERF_SSM_PATH` (default `/forge-perf`), and the harness credential from `harness-deploy-key` there, and the GitHub App's private key from `harness-app`, when those parameters exist. The App's installation token is checked while `/run` still holds it. When a value appears, or the values cannot be read, recovery writes no tarball and the record carries `raw_missing`. The record builder checks the record against the same strings. The denylist it also checks comes from `FORGE_PERF_DENYLIST_FILE`, or from the SSM parameter `denylist` under the same path into `/run/forge-perf/secrets/denylist.regex`.
 
 Recovery always reaches the wipe, with or without a record. When `current.json` has no usable `run_id`, the run has no usable `runner.json`, or `record.py` writes nothing, recovery logs why, keeps any raw tarball in the outbox, wipes, and moves `current.json` to `current.json.failed-<time>` so the next boot formats the NVMe. A failed SSM read stops recovery with `current.json` kept, since a retry can succeed: each step skips what an earlier attempt finished, so `systemctl restart forge-perf-recover` or the next boot picks up where it stopped. The unit restarts a failed attempt after a minute (`Restart=on-failure`). On the third attempt (`FORGE_PERF_RECOVER_ATTEMPTS`) recovery goes on without the missing input and wipes. A failed wipe also keeps `current.json` until the third attempt, which moves it aside and exits 4. The unit does not restart on that status (`RestartPreventExitStatus=4`). It also leaves `/run/forge-perf/recover-failed`, and while that file exists every later start of the unit exits 4 at once, so a poll or run that requires the unit fails too and the heartbeat goes stale. A reboot clears `/run`, and the next boot formats the NVMe. After a manual `wipe.sh`, removing the file lets recovery run again. A collection step that fails, such as `zstd` on a full disk, costs only the tarball: recovery removes the partial files, writes the record with `raw_missing` and wipes. A failing `docker stop` is logged, and the wipe removes the containers. The poll and run units must declare `Requires=` as well as `After=` on `forge-perf-recover.service`, so no run starts on a box recovery has not closed out.
 
 ### The outbox
 
-`outbox.sh flush` uploads `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` to `s3://$FORGE_PERF_RESULTS_BUCKET/raw/<box>/<run_id>/raw.tar.zst` with `--checksum-algorithm SHA256`, then `<run_id>.json` to `published/<box>/<run_id>.json` with `--content-md5` and `--if-none-match '*'`. A record waits while its tarball is still in the outbox. A zero exit, or a 412 on a record, removes the file; the box never reads the bucket back. Anything left makes it exit 1, and the next flush tries again.
+`outbox.sh flush` uploads `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` to `s3://$FORGE_PERF_RESULTS_BUCKET/raw/<box>/<run_id>/raw.tar.zst` with `aws s3 cp --checksum-algorithm SHA256`, which goes multipart past 5 GiB, then `<run_id>.json` to `published/<box>/<run_id>.json` with `aws s3api put-object --content-md5 --if-none-match '*'`. Each upload gets 15 minutes. A record waits while its tarball is still in the outbox. A zero exit, or a 412 on a record, removes the file; the box never reads the bucket back. Anything left makes it exit 1, and the next flush tries again.
+
+The outbox holds at most 20 GB (`FORGE_PERF_OUTBOX_CAP_BYTES`). Past that, each flush drops the oldest raw tarballs until it fits; it never drops a record. A raw tarball whose upload still fails 24 hours after it was written is dropped too. Either way its record gains the flag `raw_missing`, in the schema's order of flags, and is uploaded without the tarball.
 
 ### piri's S3 store
 
@@ -103,13 +106,13 @@ Recovery always reaches the wipe, with or without a record. When `current.json` 
 
 ## A run
 
-`run.sh` runs the stack once against one set and stops after drill setup. Every run takes `/run/forge-perf/run.lock` with `flock -n`; a second instance exits 0 at once.
+`run.sh` runs the stack once against one set, measures it, records the result and wipes. Every run takes `/run/forge-perf/run.lock` with `flock -n`; a second instance exits 0 at once. `forge-perf-run.service` runs it on the box.
 
 ```
 run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, pairing_id}`, plus `workers`, `size` and `duration` for a campaign) and removes that file. With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step and leaves the stack running; `scripts/host/wipe.sh` removes it.
+Without `--set` it takes the run the poller left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, pairing_id}`, plus `workers`, `size` and `duration` for a campaign) and removes that file. With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
 
 A set is the JSON the poller resolves:
 
@@ -138,9 +141,28 @@ Each step runs its slow commands under `timeout` with the budget below, and ever
 | boot | `current.json` phase `boot`; `docker network create --subnet $NET_SUBNET forge-network` (`config/latency.env`); `make up`, which waits up to 600 s for health | 15 min | `stack_boot_failed` |
 | setup | `perf-drill.sh setup` with `INGOT_URL=http://<ingot's forge-network address>:80`, which mints the drill's key and stores and reads back 4 MiB through ingot | 10 min | `setup_failed` |
 
-`netem.sh apply` and each `netem.sh verify` pass that follow get 5 minutes each.
+| latency | `netem.sh apply`, then `netem.sh verify pre` (docs/DESIGN.md §5). A failed check (exit 1) does not stop the run: the drill runs, and the record is `invalid` from the check lines in `netem/latency.json` | 5 min each | `runner_error` (apply failed, or verify exited 2) |
+| drill | `current.json` phase `drill`; `sync` and drop the page cache; `ethtool -S` of the primary interface; `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min, with one variable per drill flag from the settings file, `LABEL=<run_id>`, `CONFIG_NOTE=forge-perf/<run_id>` and `PERF_EXTRA_METADATA={"forge_perf": {"run_id", "series"}}`; meanwhile the interface's transmitted bytes every second and the NVMe's free space every 30 seconds; then `ethtool -S` again. `runner.json` gets `nic` (the five allowance counters' deltas, the median egress rate, and the seconds above `BASELINE_BYTES_PER_S`) and `watchdog_fired` when the `timeout` fired. The drill's own exit status goes to `metadata.json`, which the record reads | `DURATION` + 30 min | `disk_low` (under 2 GB free, the run goes on); `watchdog_timeout` in the record |
+| check | `netem.sh verify post`, whose check lines the record reads (restarts, moved central addresses, missing qdiscs, round trips); `git status --porcelain` of the forge-perf checkout again | 5 min | `instrument_modified`, `step_timeout` (the run goes on) |
 
-At exit `run.sh` removes `current.json` and prints the run's reasons. Exit status 0 means the run reached its last step, and 1 that a step stopped it.
+### Record, upload and wipe
+
+Every run that started ends with these four steps, whether a step stopped it or not. They run without stopping at a failure, so a run always reaches the wipe.
+
+| Step | What it does | Budget |
+|---|---|---|
+| collect | `collect.sh`: the run directory, smelt's `generated/perf-runs/` and each container's `docker logs --timestamps` into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst`, with `*.env`, `provider/` and the lines `piri init` prints its key in left out. The tarball is not written while piri's key ID, piri's secret or the harness credential appears in the collected files, or when piri's key was never read; `runner.json` then gets `raw_missing` | 10 min |
+| record | `time.run_finished_at`; `record.py build` into `/var/lib/forge-perf/outbox/<run_id>.json`, checked against the schema, the denylist (`FORGE_PERF_DENYLIST_FILE`, or SSM `<path>/denylist`, read at preflight) and the credentials; then `current.json` phase `recorded` | |
+| upload | `outbox.sh flush`, raw before record; then phase `uploaded`. A failed upload leaves the files for the next flush | 15 min per file |
+| wipe | phase `wiping`; `wipe.sh` with `FORGE_PERF_LOCK_HELD=1`; then `current.json` is removed | 30 min |
+
+`current.json` is `{run_id, phase, run_dir}`, written through a temporary file that is synced before it replaces the old one. Its phase says what [recovery at boot](#recovery-at-boot) owes the run: before `recorded`, a `no_data` record; from `recorded` on, only the wipe. A failed wipe leaves `current.json` for the next boot's recovery.
+
+Exit status 0 means the run was recorded and wiped, whatever its class, or reached `--until`; 1 that a step stopped it, or that the record or the wipe failed. `runner.json` names the reasons, and `run.sh` prints them with the class.
+
+### Stopping a run
+
+`forge-perf-run.service` is `Type=oneshot` with `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty` and no `Restart=`. `systemctl stop`, or the start timeout, sends SIGTERM to `run.sh` alone. During the drill `run.sh` passes it on as SIGINT, so the drill writes its evidence and exits 2 (`timeout` kills it 5 minutes later if it has not), and the record carries `drill_interrupted`. At any other step the run ends at once with the same reason. Either way `run.sh` collects, records and wipes, and leaves the upload to the next flush, so the close-out fits in `TimeoutStopSec`; it exits 143. Whatever is left after that, or after the SIGKILL at `TimeoutStopSec`, `ExecStopPost` wipes. The unit has `Requires=` and `After=` on `forge-perf-recover.service`.
 
 ### What a run reads
 
@@ -233,6 +255,14 @@ GOBIN="$PWD/local/bin" go install github.com/fil-forge/ucantool@v0.1.0
 PATH="$PWD/local/bin:$PATH" scripts/host/run.sh --set calibration/sets/shakedown.json --until setup
 ```
 
+Without `--until`, the same command runs the whole run: netem, the drill, the post-check, the record, the upload and the wipe. The record and raw tarball land in `local/outbox`, then in the `local-results` bucket of the local MinIO through `AWS_ENDPOINT_URL`, and the wipe removes the stack and empties the `local-piri-0-*` buckets. Docker Desktop's VM adds a few milliseconds of timer slack to every delayed packet, so the netem checks usually need a wider band there; `NETEM_LOCAL=1` with a `RTT_TOLERANCE_PCT` in the environment widens it, and `latency.json` records that it was overridden:
+
+```sh
+NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" \
+  scripts/host/run.sh --set calibration/sets/shakedown.json
+aws s3 ls --recursive s3://local-results/
+```
+
 Instance metadata reports the type as `local` in skip mode, which selects `config/settings/local.env` (4 workers, 2 GB per run). At a laptop's rate that cap fills one to four 10-second windows, so a local run carries the `few_windows` flag, and its p5 and median can differ several-fold between two runs of the same set. A local run checks the pipeline end to end; it does not measure the rate. Its `DISK_FACTOR=1.25` is the box's value, and smelt's disk check counts only ingot's side. The local MinIO keeps piri's blobs on the same disk, so a laptop needs about twice the cap free. The host checks (clock, CPU, `sch_netem`) log `host-check skipped` and pass. A checkout with uncommitted changes stops preflight as on the box; `FORGE_PERF_ALLOW_MODIFIED=1` lets it through in skip mode only. `FORGE_PERF_CLIENT_PATH=published` sends the drill to ingot's published port through Docker's proxy, so a local run measures that path too. smelt's stack uses compose project `smelt`, `forge-network` and host ports 15000 to 15141, so it cannot run beside another smelt stack.
 
 To remove the local setup, wipe first, then remove MinIO with its data and the local state:
@@ -243,4 +273,4 @@ docker rm -f local-minio
 rm -rf local
 ```
 
-The credentials file sits outside `local/run/secrets`, which the wipe deletes. Skip mode leaves out what depends on the box itself: the instance-store format, `fstrim` and the page cache, the unit ordering after Docker, and AWS S3's network path.
+The credentials file sits outside `local/run/secrets`, which the wipe deletes. Skip mode leaves out what depends on the box itself: the instance-store format, `fstrim` and the page cache, the NIC counters and the NVMe free-space samples (the record's `network` fields are null), the unit's journal, the unit ordering after Docker, and AWS S3's network path.

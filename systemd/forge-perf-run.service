@@ -1,0 +1,23 @@
+[Unit]
+# One run: the set the poller left in pending.json, or nothing. The poll
+# service starts it, and `systemctl start --wait forge-perf-run` runs one by
+# hand. Wants= rather than Requires= on Docker, as every forge-perf unit: a
+# Docker restart must not stop a run mid-way without its record. Requires= on
+# recovery, so no run starts on a box whose interrupted run is not closed out.
+Description=forge-perf run
+Wants=docker.service network-online.target
+Requires=forge-perf-recover.service
+After=docker.service forge-perf-nvme.service forge-perf-recover.service network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/run.sh
+# A stop, or the start timeout, sends SIGTERM to run.sh alone: it interrupts
+# the drill, records the run and wipes. Whatever is left when run.sh exits, or
+# after SIGKILL at TimeoutStopSec, this wipe removes.
+ExecStopPost=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/wipe.sh --if-dirty
+TimeoutStartSec=6h
+TimeoutStopSec=45min
+KillMode=mixed
