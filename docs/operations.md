@@ -43,6 +43,29 @@ The CI roles trust the repository's OIDC subject in both shapes GitHub mints. Th
 gh api /repos/fil-forge/forge-perf/actions/oidc/customization/sub -q .sub_claim_prefix
 ```
 
+### The main-branch ruleset
+
+A merge to main runs code on the box as root, so main takes the same ruleset as infra-nodes' main: no deletion, no force push, linear history, changes only through a squash-merged pull request, and the `check` and `denylist` jobs of `check.yml` passing on the latest commit. Create it once, after the first pull request has run both jobs:
+
+```sh
+gh api -X POST repos/fil-forge/forge-perf/rulesets --input - <<'EOF'
+{"name": "main", "target": "branch", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+ "rules": [
+  {"type": "deletion"}, {"type": "non_fast_forward"}, {"type": "required_linear_history"},
+  {"type": "pull_request", "parameters": {"allowed_merge_methods": ["squash"],
+    "required_approving_review_count": 0, "dismiss_stale_reviews_on_push": false,
+    "require_code_owner_review": false, "require_last_push_approval": false,
+    "required_review_thread_resolution": false}},
+  {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": true,
+    "required_status_checks": [{"context": "check", "integration_id": 15368},
+                               {"context": "denylist", "integration_id": 15368}]}}]}
+EOF
+gh api repos/fil-forge/forge-perf/rulesets -q '.[] | [.name, .enforcement]'
+```
+
+The last command should print `["main","active"]`. `integration_id` 15368 is GitHub Actions. To require an approving review, raise `required_approving_review_count` with `gh api -X PUT repos/fil-forge/forge-perf/rulesets/<id>`.
+
 ### piri's S3 key
 
 piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only from inside the default VPC. A later change to the bootstrap root, applied after the network root, narrows it to the forge-perf S3 endpoint.

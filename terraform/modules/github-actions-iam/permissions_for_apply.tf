@@ -58,6 +58,36 @@ data "aws_iam_policy_document" "apply" {
     }
   }
 
+  # The reaper, the budget and this role's own terminate rights all find an
+  # instance by Project=forge-perf, so an instance must carry the tag from
+  # launch. The type is limited to the box family, which caps what one launch
+  # can cost.
+  statement {
+    sid       = "LaunchTaggedOnly"
+    effect    = "Deny"
+    actions   = ["ec2:RunInstances"]
+    resources = ["arn:aws:ec2:*:*:instance/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:RequestTag/${var.tag_key}"
+      values   = [var.tag_value]
+    }
+  }
+
+  statement {
+    sid       = "LaunchBoxTypesOnly"
+    effect    = "Deny"
+    actions   = ["ec2:RunInstances"]
+    resources = ["arn:aws:ec2:*:*:instance/*"]
+
+    condition {
+      test     = "StringNotLike"
+      variable = "ec2:InstanceType"
+      values   = var.box_instance_types
+    }
+  }
+
   # Only gateway endpoints, which name no subnet or security group. An interface
   # endpoint with private DNS would redirect the whole default VPC's calls to
   # that service, the dev node's included.

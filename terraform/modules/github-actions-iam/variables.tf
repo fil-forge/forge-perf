@@ -74,3 +74,9 @@ variable "image_owner" {
   type        = string
   default     = "099720109477"
 }
+
+variable "box_instance_types" {
+  description = "Instance type patterns the apply role may launch. A box type outside them needs this list changed in the same pull request."
+  type        = list(string)
+  default     = ["m9gd.*"]
+}

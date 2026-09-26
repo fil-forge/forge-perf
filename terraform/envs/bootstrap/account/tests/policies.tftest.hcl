@@ -78,6 +78,29 @@ run "policies" {
 
   assert {
     condition = alltrue([
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchTaggedOnly"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchTaggedOnly"].Action]) == ["ec2:RunInstances"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchTaggedOnly"].Resource]) == ["arn:aws:ec2:*:*:instance/*"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchTaggedOnly"].Condition.StringNotEquals["aws:RequestTag/Project"]]) == ["forge-perf"],
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchBoxTypesOnly"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchBoxTypesOnly"].Action]) == ["ec2:RunInstances"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchBoxTypesOnly"].Resource]) == ["arn:aws:ec2:*:*:instance/*"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchBoxTypesOnly"].Condition.StringNotLike["ec2:InstanceType"]]) == ["m9gd.*"],
+    ])
+    error_message = "the apply role launches only m9gd instances tagged Project=forge-perf at launch"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_budgets_budget.internet_egress.limit_amount == "25",
+      contains(flatten([for f in aws_budgets_budget.internet_egress.cost_filter : f.values if f.name == "UsageTypeGroup"]), "EC2: Data Transfer - Internet (Out)"),
+      contains(flatten([for f in aws_budgets_budget.internet_egress.cost_filter : f.values if f.name == "TagKeyValue"]), "user:Project$forge-perf"),
+    ])
+    error_message = "a separate budget watches the box's internet egress"
+  }
+
+  assert {
+    condition = alltrue([
       for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : alltrue([
         for r in flatten([s.Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-") || startswith(r, "arn:aws:s3:::forge-perf-tfstate-654654381893")
       ]) if s.Effect == "Allow" && anytrue([for a in flatten([s.Action]) : startswith(a, "s3:")])

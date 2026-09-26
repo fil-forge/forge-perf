@@ -350,3 +350,35 @@ resource "aws_budgets_budget" "forge_perf_monthly" {
 
   depends_on = [aws_sns_topic_policy.budget]
 }
+
+# Runs send almost nothing to the internet: S3 goes through the gateway
+# endpoint and image pulls are ingress. A tracked image that streams out at the
+# NIC's rate for a whole run would cost hundreds of dollars an hour, so egress
+# gets its own small budget rather than waiting on the monthly total.
+resource "aws_budgets_budget" "internet_egress" {
+  name         = "forge-perf-internet-egress"
+  budget_type  = "COST"
+  limit_amount = "25"
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "TagKeyValue"
+    values = ["user:Project$forge-perf"]
+  }
+
+  cost_filter {
+    name   = "UsageTypeGroup"
+    values = ["EC2: Data Transfer - Internet (Out)"]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.budget.arn]
+  }
+
+  depends_on = [aws_sns_topic_policy.budget]
+}
