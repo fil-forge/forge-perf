@@ -170,6 +170,7 @@ class PublicChecks(unittest.TestCase):
                 result = case.cli()
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+                self.assertRegex(result.stderr, "ERE-only form|does not compile")
                 self.assertFalse(case.out.exists())
 
     def test_forbidden_strings_ignore_surrounding_space(self):
@@ -189,7 +190,9 @@ class PublicChecks(unittest.TestCase):
     def test_an_empty_denylist_is_refused(self):
         case = Case(self, "valid")
         case.denylist.write_text("\n  \n", encoding="utf-8")
-        self.assertEqual(case.cli().returncode, 1)
+        result = case.cli()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("the denylist is empty", result.stderr)
         self.assertFalse(case.out.exists())
 
     def test_a_record_outside_the_schema_falls_back(self):
@@ -268,13 +271,38 @@ class Classification(unittest.TestCase):
                   lambda d: d["drill"].setdefault("failures", []).append({"code": "put_failed", "detail": ""}))
         self.assertEqual(self.outcome(case)["reasons"], ["drill_failure"])
 
-    def test_the_watchdog_replaces_drill_interrupted(self):
+    def test_a_watchdog_kill_without_an_exit_status_is_a_watchdog_timeout(self):
         case = Case(self, "exit2")
         case.edit("runner.json", lambda d: d.update(watchdog_fired=True))
         case.edit("run/metadata.json", lambda d: d["suite"].pop("drill_exit"))
         outcome = self.outcome(case)
         self.assertEqual(outcome["reasons"], ["watchdog_timeout"])
         self.assertIsNone(outcome["drill_exit"])
+
+    def test_a_watchdog_kill_after_the_drill_recorded_the_interrupt_keeps_both(self):
+        case = Case(self, "exit2")
+        case.edit("runner.json", lambda d: d.update(watchdog_fired=True))
+        self.assertEqual(sorted(self.outcome(case)["reasons"]), ["drill_interrupted", "watchdog_timeout"])
+
+    def test_a_drill_without_a_pre_pass_is_a_runner_error(self):
+        case = Case(self, "valid")
+        os.remove(case.case / "netem" / "latency.json")
+        outcome = self.outcome(case)
+        self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["runner_error"]))
+
+    def test_drill_numbers_without_a_post_pass_are_a_runner_error(self):
+        case = Case(self, "valid")
+        case.edit("netem/latency.json", lambda d: d.update(post=None))
+        outcome = self.outcome(case)
+        self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["runner_error"]))
+
+    def test_a_latency_path_that_does_not_exist_is_a_runner_error(self):
+        case = Case(self, "valid")
+        os.remove(case.case / "netem" / "latency.json")
+        result = case.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        outcome = load(case.out)["outcome"]
+        self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["runner_error"]))
 
     def test_an_out_of_range_exit_is_a_runner_error(self):
         case = Case(self, "valid")
@@ -469,6 +497,12 @@ class NetemLines(unittest.TestCase):
         latency = case.build()["latency"]
         self.assertEqual((latency["target_rtt_ms"], latency["tolerance_pct"]), (15, 10))
         self.assertEqual((latency["before"], latency["after"], latency["central_ips_stable"]), (None, None, None))
+
+    def test_without_a_pre_pass_the_targets_come_from_the_post_pass(self):
+        case = Case(self, "valid")
+        case.edit("netem/latency.json", lambda d: d.update(pre=None) or d["post"].update(rtt_ms=20))
+        latency = case.build()["latency"]
+        self.assertEqual((latency["target_rtt_ms"], latency["tolerance_pct"]), (20, 10))
 
 
 if __name__ == "__main__":

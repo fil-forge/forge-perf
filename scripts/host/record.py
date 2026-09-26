@@ -14,13 +14,16 @@ other service logs, or the free-text parts of the evidence and metadata.
 another run, when any input cannot be read as expected, or when the full
 record fails the schema or the public-text check. `minimal` writes that
 record directly, for a runner whose `build` call died. Before writing, every
-record is checked against the schema, the denylist patterns (extended
-regular expressions, one per line, matched without regard to case) and the
-literal strings in --forbid (piri's S3 key ID); a record that fails is never
-written. Messages name the stage that failed, never an input's value.
+record is checked against the schema, the denylist patterns (one per line,
+matched without regard to case, in the syntax `grep -E` and Python read alike)
+and the literal strings in --forbid (piri's S3 key ID); a record that fails is
+never written. Messages name the check or stage that failed, never an input's
+value.
 
-Exit status: 0 the full record was written; 3 the minimal record was written
-in its place; 1 nothing was written; 2 usage.
+Exit status: for `build`, 0 means the full record was written and 3 the
+minimal record. For `minimal`, 0 means the minimal record was written. For
+both, 1 means nothing was written, because an input could not be read or even
+the minimal record was refused, and 2 is a usage error.
 """
 
 import argparse
@@ -428,6 +431,10 @@ def build(runner, run_dir, latency, env):
                 reasons.add("drill_failure")
             if exit_code == 1 and not reasons:
                 reasons.add("drill_failure")
+    # verify pre runs before the drill and verify post after it. A missing pass checked nothing.
+    pre, post = (latency or {}).get("pre"), (latency or {}).get("post")
+    if (started and pre is None) or (record["drill"]["results"] is not None and post is None):
+        reasons.add("runner_error")
     return finish(record, reasons, restarted, flags)
 
 
@@ -497,7 +504,10 @@ def main(argv):
             forbidden = [s.strip() for s in Path(args.forbid).read_text(encoding="utf-8").splitlines() if s.strip()]
         runner = read_json(args.runner)
         env = read_env(args.latency_env)
-    except (OSError, ValueError, Refused) as e:
+    except Refused as e:
+        print(f"record: {e}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
         print(f"record: cannot read an input: {type(e).__name__}", file=sys.stderr)
         return 1
     if args.command == "build":

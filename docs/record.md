@@ -101,7 +101,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `drill.requests.total`, `drill.requests.transport_errors`, `drill.requests.status_408`, `drill.requests.status_429`, `drill.requests.status_5xx` | evidence `drill.availability` `requests`, `transport_errors`, `status_408`, `status_429`, `status_5xx` |
 | `drill.requests.integrity_failures` | evidence `drill.integrity_failures` |
 | `drill.requests.backend_s3_errors` | lines containing `failed to put object` in `logs/piri-0.log`, piri's log when an S3 PUT fails (`piri/pkg/store/objectstore/minio/minio.go:67`); null when the log is missing. It separates an S3 incident from a Forge error |
-| `latency.target_rtt_ms`, `latency.tolerance_pct` | `latency.json` `rtt_ms` and `tolerance_pct` of the pre pass; `config/latency.env` when no pass ran |
+| `latency.target_rtt_ms`, `latency.tolerance_pct` | `latency.json` `rtt_ms` and `tolerance_pct` of the pre pass, else the post pass; `config/latency.env` when no pass ran |
 | `latency.jitter_ms` | constant 0 |
 | `latency.pairs` | cross-boundary pairs in the pre pass; 0 when it did not run |
 | `latency.before`, `latency.after` | a summary of the pre and post passes (`rtt`, below); null when the pass did not run |
@@ -167,7 +167,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 
 | Reason | Class | Detected from |
 |---|---|---|
-| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
+| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started without a `verify pre` pass, or has numbers without a `verify post` pass; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
 | `preflight_failed` | `no_data` | preflight: clock not synchronized, settings file missing, CPU without `sha2` |
 | `stack_boot_failed` | `no_data` | `make up` non-zero |
 | `setup_failed` | `no_data` | `perf-drill.sh setup` non-zero |
