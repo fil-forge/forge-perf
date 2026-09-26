@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The page's inputs and rules: data/*.json against their schemas and the gate
 # rules (scripts/publish/check_data.py), then site/model.js under node's test
-# runner. The site's scripts are plain ES modules, so node needs no install.
+# runner. site/package.json declares the site's scripts ES modules, so node
+# needs no install and no module detection.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"

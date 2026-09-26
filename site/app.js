@@ -10,6 +10,7 @@ const state = { data: null, series: "per-trigger", shown: 50, now: Date.now() };
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("aria-") && typeof v === "boolean") { el.setAttribute(k, String(v)); continue; }
     if (v == null || v === false) continue;
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? "" : v);
@@ -29,17 +30,19 @@ const utc = (iso) => new Date(iso).toLocaleString("en-GB", {
   day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC",
 }) + " UTC";
 const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const rate = (bytes) => (bytes == null ? "–" : `${M.gbps(bytes)} GB/s`);
 const gb = (bytes) => `${Math.round(bytes / 1e9)} GB`;
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const ICON = { valid: "●", availability_warning: "▲", invalid: "○", failed: "✕", no_data: "✕" };
 const outcome = (run) => h("span", { class: `outcome ${run.klass}` },
-  h("span", { class: "icon", "aria-hidden": "true" }, ICON[run.klass]), " ", M.outcomeText(run));
+  h("span", { class: "icon", "aria-hidden": "true" }, ICON[run.klass]), " ", M.outcomeText(run),
+  M.flagText(run) ? h("span", { class: "secondary" }, ` · ${M.flagText(run)}`) : null);
 
 // Theme: light, dark or system, remembered when storage allows.
 function setTheme(choice) {
   if (choice === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", choice);
-  for (const b of document.querySelectorAll("#theme button")) b.setAttribute("aria-pressed", b.value === choice);
+  for (const b of document.querySelectorAll("#theme button")) b.setAttribute("aria-pressed", String(b.value === choice));
   try { localStorage.setItem("theme", choice); } catch { /* storage unavailable */ }
   if (state.data) drawHistory();
 }
@@ -108,9 +111,10 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
     const l = lit[i];
     if (!g.current) return h("li", {}, `Gate ${g.gate}, ${g.instance_type} ceiling: not measured yet`);
     const head = `Gate ${g.gate}, ${g.instance_type} ceiling, ${M.gbps(g.current.ceiling_bytes_per_s)} GB/s: `;
-    if (!l.run) return h("li", {}, head + "not yet reached");
+    const method = [" (", h("a", { href: `${REPO}/blob/main/${g.current.method}` }, "method"), ")"];
+    if (!l.run) return h("li", {}, head + "not yet reached", method);
     return h("li", {}, head + `reached ${day(l.run.run_started_at)} (run `, h("a", { href: `#run=${l.run.run_id}` }, l.run.run_id),
-      `) against ${M.gbps(l.ceiling.ceiling_bytes_per_s)} GB/s measured ${day(l.ceiling.measured_at)}`);
+      `) against ${M.gbps(l.ceiling.ceiling_bytes_per_s)} GB/s measured ${day(l.ceiling.measured_at)}`, method);
   })));
   const hb = heartbeats ? heartbeats[M.PERSISTENT_BOX] : undefined;
   box.append(h("p", { class: "status" },
@@ -130,7 +134,10 @@ function drawHistory() {
   const joined = rows.filter((r) => ["valid", "availability_warning"].includes(r.klass) && r.p5_bytes_per_s != null);
   const plotted = rows.filter((r) => r.p5_bytes_per_s != null && !["failed", "no_data"].includes(r.klass));
   const strip = rows.filter((r) => ["failed", "no_data"].includes(r.klass));
-  const max = Math.max(1e-3, ...plotted.map((r) => r.p5_bytes_per_s / 1e9), ...plotted.map((r) => (r.median_bytes_per_s ?? 0) / 1e9));
+  const measured = state.data.gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s / 1e9);
+  // With nothing plotted, a readable range: up to the lowest measured gate, or 1 GB/s.
+  const max = plotted.length ? Math.max(...plotted.map((r) => r.p5_bytes_per_s / 1e9), ...plotted.map((r) => (r.median_bytes_per_s ?? 0) / 1e9), 1e-3)
+    : (measured.length ? Math.min(...measured) : 1) / 1.15;
   const shown = [], above = [];
   for (const g of state.data.gates.filter((g) => g.current)) {
     (g.current.ceiling_bytes_per_s / 1e9 <= 1.3 * max ? shown : above).push(g);
@@ -144,7 +151,7 @@ function drawHistory() {
   if (rows.length === 1) x.domain = [new Date(+rows[0].x - 43200e3), new Date(+rows[0].x + 43200e3)];
   const last = joined[joined.length - 1];
   const chart = Plot.plot({
-    width, height: width < 480 ? 240 : 320, marginRight: 70, marginTop: 24, x,
+    width, height: width < 480 ? 240 : 320, marginRight: 70, marginTop: 24, marginBottom: strip.length ? 52 : 30, x,
     y: { domain: [0, max * 1.15], grid: true, label: "GB/s", ticks: 5 },
     style: { background: "transparent", color: second, fontSize: "12px" },
     marks: [
@@ -164,7 +171,7 @@ function drawHistory() {
         fill: (r) => (r.klass === "invalid" ? "none" : color), stroke: (r) => (r.klass === "invalid" ? muted : r.incoming ? surface : color),
         strokeWidth: (r) => (r.incoming ? 2 : 1.5),
       }),
-      Plot.dot(strip, { x: "x", frameAnchor: "bottom", dy: 26, symbol: "times", r: 4,
+      Plot.dot(strip, { x: "x", frameAnchor: "bottom", dy: 42, symbol: "times", r: 4,
         stroke: (r) => (r.klass === "failed" ? css("--status-critical") : muted), strokeWidth: 2 }),
       last && Plot.text([last], { x: "x", y: (r) => r.p5_bytes_per_s / 1e9, text: () => "p5", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
       last && Plot.text([last], { x: "x", y: (r) => r.median_bytes_per_s / 1e9, text: () => "Median", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
@@ -175,7 +182,7 @@ function drawHistory() {
   chart.setAttribute("aria-label", `${series.label} history: p5 and median ingest rate per run. The runs table below lists the same runs.`);
   chart.addEventListener("click", () => { if (chart.value) location.hash = `run=${chart.value.run_id}`; });
   host.append(chart);
-  if (strip.length) host.append(h("p", { class: "note" }, "✕ below the axis: failed and no-data runs, whose rates are absent or untrustworthy."));
+  if (strip.length) host.append(h("p", { class: "note" }, "✕ below the time axis: failed and no-data runs, whose rates are absent or untrustworthy."));
   if (above.length) host.append(h("p", { class: "note" }, above.map((g) => `Gate ${g.gate} (${M.gbps(g.current.ceiling_bytes_per_s)} GB/s) above range`).join(" · ")));
 }
 
@@ -207,7 +214,12 @@ function table() {
   const el = h("div", {}, h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", { scope: "col" }, c)))), body));
   if (!runs.length) el.replaceChildren(h("p", { class: "empty" }, "No runs have been published."));
   if (runs.length > state.shown) {
-    el.append(h("button", { type: "button", onclick: () => { state.shown += 50; $("#runs").replaceChildren(table()); } }, "Show 50 more"));
+    el.append(h("button", { type: "button", onclick: () => {
+      const next = state.shown;
+      state.shown += 50;
+      $("#runs").replaceChildren(table());
+      $(`#runs tbody tr:nth-child(${next + 1}) a`)?.focus();
+    } }, "Show 50 more"));
   }
   return el;
 }
@@ -225,6 +237,8 @@ async function details(id) {
   const prevRow = M.previousRun(state.data.runs, run);
   const get = (rid) => fetch(`data/runs/${rid}.json`).then((res) => (res.ok ? res.json() : null)).catch(() => null);
   const [rec, prev] = await Promise.all([get(id), prevRow ? get(prevRow.run_id) : null]);
+  // Closed, or another run opened, while the records loaded.
+  if (location.hash !== `#run=${id}`) return;
   panel.replaceChildren(h("div", { class: "details-head" },
     h("h2", { tabindex: "-1" }, `Run ${id}`), h("a", { href: "#", class: "close" }, "Close")));
   panel.hidden = false;
@@ -233,21 +247,28 @@ async function details(id) {
   const dur = Math.round((Date.parse(t.run_finished_at) - Date.parse(t.run_started_at)) / 60000);
   panel.append(
     kv("Summary", { class: outcome(run), override: run.override ? h("a", { href: run.override.issue }, run.override.issue) : null,
-      reasons: o.reasons.join(", ") || "none", flags: o.flags.join(", ") || "none", series: rec.series, pairing: rec.pairing_id,
-      started: utc(t.run_started_at), stack_up: t.stack_up_at && utc(t.stack_up_at), finished: utc(t.run_finished_at), duration: `${dur} min`,
+      reasons: o.reasons.join(", ") || "none", restarted_services: (o.restarted_services || []).join(", ") || "none",
+      flags: o.flags.join(", ") || "none", series: rec.series, pairing: rec.pairing_id,
+      trigger: `${rec.trigger.reason}${rec.trigger.changed?.length ? `: ${rec.trigger.changed.join(", ")}` : ""}`,
+      started: utc(t.run_started_at), stack_up: t.stack_up_at && utc(t.stack_up_at),
+      drill_started: t.drill_started_at && utc(t.drill_started_at), drill_finished: t.drill_finished_at && utc(t.drill_finished_at),
+      finished: utc(t.run_finished_at), duration: `${dur} min`,
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
-    kv("Rates", { p5: `${M.gbps(res.ingest_p5_bytes_per_s)} GB/s`, median: `${M.gbps(res.ingest_median_bytes_per_s)} GB/s`,
+    kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
       writes_per_s: res.writes_median_per_s, steady_windows: res.sustained_windows, total_windows: res.total_windows,
-      cap_reached: res.cap_reached, bytes_ingested: res.bytes_ingested }),
+      cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested,
+      bytes_read_back: res.bytes_read_back, bytes_restored: res.bytes_restored, blobs_written: res.blobs_written,
+      window_rates: res.window_ingest_bytes_per_s && h("details", {}, h("summary", {}, `${res.window_ingest_bytes_per_s.length} windows, GB/s`),
+        res.window_ingest_bytes_per_s.map(M.gbps).join(" ")) }),
     h("section", {}, h("h3", {}, "Cache-served rates"),
       h("p", {}, "Read-back runs 30 to 60 seconds after each write, so these rates mostly measure the spool and page cache."),
-      kv("", { read_back_median: `${M.gbps(res.cache_served?.read_back_median_bytes_per_s)} GB/s`,
-        restore_median: `${M.gbps(res.cache_served?.restore_median_bytes_per_s)} GB/s` }).querySelector("table")),
+      kv("", { read_back_median: rate(res.cache_served?.read_back_median_bytes_per_s),
+        restore_median: rate(res.cache_served?.restore_median_bytes_per_s) }).querySelector("table")),
     kv("Requests", { ...(rec.drill.requests || {}), drill_exit: o.drill_exit, failure_codes: o.failure_codes.join(", ") || "none" }),
     kv("Drill settings", rec.drill.settings),
     kv("Latency", Object.fromEntries(Object.entries(rec.latency).filter(([k]) => !["before", "after"].includes(k)))),
     kv("Latency before", rec.latency.before || {}), kv("Latency after", rec.latency.after || {}),
-    kv("NIC allowance counters", { ...rec.network.allowance_exceeded, egress_median: `${M.gbps(rec.network.egress_bytes_per_s_median)} GB/s`,
+    kv("NIC allowance counters", { ...rec.network.allowance_exceeded, egress_median: rate(rec.network.egress_bytes_per_s_median),
       seconds_above_baseline: rec.network.seconds_above_baseline }),
     kv("Box", { ...rec.box, cpu: `${rec.box.cpu.implementer} / ${rec.box.cpu.part}, ${rec.box.cpu.cores} cores`,
       cpu_features: h("details", {}, h("summary", {}, `${rec.box.cpu.features.length} features`), rec.box.cpu.features.join(" ")),
@@ -256,6 +277,7 @@ async function details(id) {
     kv("Fingerprints", {
       instrument: fingerprint(rec.instrument.fingerprint, prev?.instrument.fingerprint),
       box: fingerprint(rec.instrument.box_fingerprint, prev?.instrument.box_fingerprint),
+      instrument_tree: mono(rec.provenance.forge_perf.instrument_tree ?? "–"),
       raw_record: h("a", { href: `data/runs/${id}.json` }, `${id}.json`) }));
   panel.querySelector("h2").focus();
 }
@@ -272,12 +294,14 @@ function components(rec, prev) {
   const rows = [
     ["forge-perf", "instrument", p.forge_perf.sha, "", M.compare(REPO, p.forge_perf.sha, pp?.forge_perf.sha)],
     ["smelt", "instrument", p.smelt.sha, "", M.compare(SMELT, p.smelt.sha, pp?.smelt.sha)],
-    ["harness", "instrument", p.harness.sha, "", "private repository"],
+    ["harness", "instrument", p.harness.sha, p.harness.binary_sha256 ? `sha256:${p.harness.binary_sha256}` : "",
+      `private repository · ${p.harness.go_version ?? "go unknown"}${p.harness.modified ? " · modified checkout" : ""}`],
     ...p.images.map((i) => {
       const old = pp?.images.find((j) => j.repo === i.repo);
       const c = i.role === "under_test" ? M.compare(i.source, i.revision, old?.revision)
         : old && old.digest !== i.digest ? { text: `previous ${old.digest}` } : M.compare(null, i.digest, old?.digest);
-      return [i.repo, i.role.replace("_", " "), i.revision || "–", i.digest, c];
+      return [h("span", {}, i.repo, h("br"), h("span", { class: "secondary" }, `${i.ref} · ${(i.services || []).join(", ")}`)),
+        i.role.replace("_", " "), i.revision || "–", i.digest, c];
     }),
   ];
   return h("section", {}, h("h3", {}, "Components"), h("table", { class: "components" },
@@ -298,10 +322,14 @@ async function main() {
   try { stored = localStorage.getItem("theme") || "system"; } catch { /* storage unavailable */ }
   for (const b of document.querySelectorAll("#theme button")) b.addEventListener("click", () => setTheme(b.value));
   setTheme(stored);
+  // "System" follows the OS; the chart reads its colors when drawn.
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (state.data && !document.documentElement.hasAttribute("data-theme")) drawHistory();
+  });
   const tabs = $("#series");
   for (const s of M.SERIES) {
     tabs.append(h("button", { type: "button", value: s.id, "aria-pressed": s.id === state.series,
-      onclick: () => { state.series = s.id; for (const b of tabs.children) b.setAttribute("aria-pressed", b.value === s.id); drawHistory(); } }, s.label));
+      onclick: () => { state.series = s.id; for (const b of tabs.children) b.setAttribute("aria-pressed", String(b.value === s.id)); drawHistory(); } }, s.label));
   }
   try {
     const res = await fetch("data/index.json", { cache: "no-cache" });

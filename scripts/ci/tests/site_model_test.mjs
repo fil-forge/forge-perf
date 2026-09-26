@@ -112,3 +112,16 @@ test("changes text, compare links and the previous run", () => {
   assert.equal(M.gbps(25360000), "0.025");
   assert.equal(M.gbps(2.05e9), "2.05");
 });
+
+test("with every gate unmeasured, the scale covers the mercury's median", () => {
+  const d = index([run({ p5_bytes_per_s: 0.04e9, median_bytes_per_s: 0.10e9 })]);
+  const merc = M.mercury(d.runs, NOW);
+  assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.10e9) < 1);
+});
+
+test("flags that leave the class alone are named beside the outcome", () => {
+  const r = run({ flags: ["cap_not_reached", "raw_missing"] });
+  assert.equal(M.flagText(r), "stopped at its time limit before its size");
+  const d = index([r]);
+  assert.equal(M.mercury(d.runs, NOW).run.run_id, r.run_id);
+});

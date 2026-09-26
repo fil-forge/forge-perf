@@ -77,7 +77,7 @@ export function mercury(runs, now) {
 
 export function scaleTop(gates, merc) {
   const values = gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s);
-  if (merc) values.push(merc.run.p5_bytes_per_s);
+  if (merc) values.push(merc.run.p5_bytes_per_s, merc.run.median_bytes_per_s ?? 0);
   return values.length ? 1.1 * Math.max(...values) : FALLBACK_TOP;
 }
 
@@ -152,6 +152,13 @@ export function changesText(run) {
     parts.push(`instrument: ${run.instrument_changes.join(", ")}`);
   }
   return parts.join(", ");
+}
+
+// Flags the runs table and details view name beside the outcome; they leave
+// the class alone.
+const FLAG_TEXT = { cap_not_reached: "stopped at its time limit before its size", few_windows: "under 20 steady windows" };
+export function flagText(run) {
+  return (run.flags || []).filter((f) => FLAG_TEXT[f]).map((f) => FLAG_TEXT[f]).join(", ");
 }
 
 export function outcomeText(run) {

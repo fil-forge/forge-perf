@@ -30,6 +30,30 @@ def schema_errors(schema, path):
     return value, checker.errors(value)
 
 
+def branch_errors(doc, errors):
+    """Replaces the schema's "matches 0 of oneOf's schemas" line for a gate with
+    the errors of the branch that gate means: unmeasured when its ceiling is
+    null, measured otherwise. A reader then sees which rule failed."""
+    with open(ROOT / "schema" / "gates.v1.json", encoding="utf-8") as f:
+        full = schemacheck.load(f)
+    unmeasured, measured = full["$defs"]["gate"]["oneOf"]
+    checkers = {kind: schemacheck.Checker({"$defs": full["$defs"], **branch})
+                for kind, branch in (("unmeasured", unmeasured), ("measured", measured))}
+    gates = doc.get("gates") if isinstance(doc, dict) else None
+    out = []
+    for e in errors:
+        m = re.fullmatch(r"\$\.gates\[(\d+)\]: matches 0 of oneOf's schemas, not exactly one", e)
+        gate = gates[int(m.group(1))] if m and isinstance(gates, list) else None
+        if not isinstance(gate, dict):
+            out.append(e)
+            continue
+        kind = "unmeasured" if gate.get("ceiling_bytes_per_s") is None else "measured"
+        where = f"$.gates[{m.group(1)}]"
+        found = checkers[kind].errors(gate)
+        out += [f"{where} ({kind}): {x[2:] if x.startswith('$.') else x[1:].lstrip(': ')}" for x in found] or [e]
+    return out
+
+
 def gate_errors(doc):
     out = []
     for i, gate in enumerate(doc["gates"]):
@@ -54,6 +78,8 @@ def check(data):
     data = Path(data)
     errors = []
     gates, errs = schema_errors("gates.v1.json", data / "gates.json")
+    if errs and gates is not None:
+        errs = branch_errors(gates, errs)
     errors += [f"gates.json: {e}" for e in errs]
     if gates is not None and not errs:
         errors += [f"gates.json: {e}" for e in gate_errors(gates)]

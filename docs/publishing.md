@@ -106,9 +106,10 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 - A run counts when its class, after overrides, is `valid`, its series is `per-trigger`, `nightly` or `campaign`, and it has a p5. `calibration` runs appear only in the runs table.
 - The mercury is the latest counting per-trigger run on the box `main`, with its age and the number of runs on that box since. With none, the headline reads "No valid run yet" with the latest run's class and reasons.
 - A gate lights at the first counting run whose p5 reaches the ceiling in force when it started, from any series or box.
-- The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5, or to 1 GB/s when there is neither.
+- The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
 - The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
-- The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint; a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring.
+- The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring.
+- The runs table and details view name the flags `cap_not_reached` and `few_windows` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 
 `make site-preview` builds the page against six fixture scenarios (no runs, calibration runs only, a lit gate across a recalibration, every outcome class with an override, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 

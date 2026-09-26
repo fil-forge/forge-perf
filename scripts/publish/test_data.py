@@ -58,6 +58,15 @@ class Data(unittest.TestCase):
         gate = dict(MEASURED, ceiling_bytes_per_s=0, nvme_seq_write_bytes_per_s=0)
         self.assertTrue(self.errors(self.with_gate1(gate)))
 
+    def test_a_refused_gate_names_the_rule_it_broke(self):
+        gate = dict(MEASURED, ceiling_bytes_per_s=0, nvme_seq_write_bytes_per_s=0)
+        self.assertIn("gates.json: $.gates[0] (measured): ceiling_bytes_per_s: below the minimum 1",
+                      self.errors(self.with_gate1(gate)))
+        gate = dict(MEASURED, method="javascript:alert(1)")
+        self.assertEqual([e.split(": ")[2] for e in self.errors(self.with_gate1(gate))], ["method"])
+        gate = dict(MEASURED, ceiling_bytes_per_s=None)
+        self.assertTrue(all("(unmeasured)" in e for e in self.errors(self.with_gate1(gate))))
+
     def test_a_ceiling_above_the_lower_measurement_is_refused(self):
         gate = dict(MEASURED, ceiling_bytes_per_s=530000000)
         self.assertEqual(self.errors(self.with_gate1(gate)), [
