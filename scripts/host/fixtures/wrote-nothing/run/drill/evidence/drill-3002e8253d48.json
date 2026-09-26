@@ -1,0 +1,106 @@
+{
+ "schema": "fil-one.storage-qualification-evidence/v3",
+ "run_type": "drill",
+ "run_id": "drill-3002e8253d48",
+ "started_at": "2026-10-01T12:04:55Z",
+ "finished_at": "2026-10-01T12:07:10Z",
+ "qualified": false,
+ "diagnostic": true,
+ "downgrades": [
+  "FIXTURE-FREE-TEXT downgrade one",
+  "FIXTURE-FREE-TEXT downgrade two"
+ ],
+ "provider": {
+  "endpoint_host": "172.30.0.1:80",
+  "insecure": true,
+  "region": "us-east-1",
+  "bucket_prefix": "",
+  "config_note": "FIXTURE-FREE-TEXT config note"
+ },
+ "provenance": {
+  "go_version": "go1.26.1",
+  "harness_version": "(devel)",
+  "harness_revision": "5cfeaf390803809acd089614ee2aaa5cf3a4153d",
+  "harness_modified": false,
+  "piri_module_version": "v0.0.0",
+  "minio_go_version": "v7.0.95",
+  "binary_sha256": "35584d9fe836dca9a5a73f2957e0c41119d97a2b8b4583d3c8cb0d6b2e260b05"
+ },
+ "drill": {
+  "profile": "import",
+  "duration_seconds": 135.0,
+  "workers": 4,
+  "bytes_ingested": 0,
+  "bytes_read_back": 0,
+  "bytes_restored": 0,
+  "floor_bytes_per_second": 0,
+  "target_bytes_per_second": 0,
+  "meets_floor": false,
+  "meets_target": false,
+  "enforce_floor": false,
+  "integrity_failures": 0,
+  "availability": {
+   "requests": 4,
+   "transport_errors": 0,
+   "status_408": 0,
+   "status_429": 0,
+   "status_5xx": 0
+  },
+  "windows": [],
+  "facts": {
+   "blobs_written": 0,
+   "blobs_adopted": 0,
+   "blob_close_bytes": 134217728,
+   "blob_cap_bytes": 134217728,
+   "blob_tail_share": 0,
+   "blob_tail_min_bytes": 0,
+   "blob_tail_max_bytes": 0,
+   "block_size_mean_bytes": 262144,
+   "aggregates_written": 0,
+   "aggregate_bytes": 0,
+   "aggregate_size_bytes": 0,
+   "aggregate_every_blocks": 0,
+   "windows": 0,
+   "window_seconds": 5,
+   "ramp_seconds": 10,
+   "max_in_flight": 4,
+   "rate_target_bytes_per_second": 6000000000,
+   "read_back_due_bytes": 0,
+   "read_back_excused_bytes": 0,
+   "read_back_keeps_pace": true,
+   "restore_accounts": 64,
+   "restore_cohort_accounts": [
+    16,
+    16,
+    32
+   ],
+   "restore_cohort_target_bytes": [
+    0,
+    0,
+    0
+   ],
+   "lagged_tasks_dropped": 0,
+   "journal": "FIXTURE-FREE-TEXT journal path",
+   "notes": [
+    "FIXTURE-FREE-TEXT note one",
+    "FIXTURE-FREE-TEXT note two"
+   ],
+   "stop_ingest_at_bytes": 1000000000,
+   "ingest_sent_bytes": 0,
+   "ingest_cutoff_reached": false
+  },
+  "failures": [
+   {
+    "code": "wrote_nothing",
+    "detail": "FIXTURE-FREE-TEXT detail for wrote_nothing"
+   },
+   {
+    "code": "wrote_nothing",
+    "detail": "FIXTURE-FREE-TEXT detail for wrote_nothing"
+   }
+  ]
+ },
+ "failures": [],
+ "evidence_sha256": "",
+ "diagnostic_sha256": "22209ed0f76a8d94c67ef42c04eb83ce0495f86914bbddedc48161f1d1acdfdf"
+}

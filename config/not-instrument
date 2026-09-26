@@ -1,0 +1,30 @@
+# Paths that cannot change a measurement, left out of the instrument tree hash
+# (provenance.forge_perf.instrument_tree, docs/record.md). One path prefix per
+# line, surrounding whitespace stripped, compared as a plain string against
+# each path from `git ls-tree -r --full-tree HEAD`; a line ending in / names a
+# directory. Blank lines and lines starting with # are skipped.
+#
+# Everything not listed here is instrument, including any new top-level
+# directory: an unlisted path marks a run as an instrument change, which is
+# the safe mistake. Add a path here only when the box does not read it while
+# it measures.
+
+.github/
+.gitignore
+AGENTS.md
+CLAUDE.md
+LICENSE
+Makefile
+README.md
+calibration/
+data/
+docs/
+schema/
+scripts/ci/
+scripts/host/fixtures/
+scripts/host/test_
+scripts/host/tests/
+scripts/operator/
+scripts/publish/
+site/
+terraform/

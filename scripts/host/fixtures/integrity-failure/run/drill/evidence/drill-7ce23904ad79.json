@@ -1,0 +1,391 @@
+{
+ "schema": "fil-one.storage-qualification-evidence/v3",
+ "run_type": "drill",
+ "run_id": "drill-7ce23904ad79",
+ "started_at": "2026-10-01T12:04:55Z",
+ "finished_at": "2026-10-01T12:07:10Z",
+ "qualified": false,
+ "diagnostic": true,
+ "downgrades": [
+  "FIXTURE-FREE-TEXT downgrade one",
+  "FIXTURE-FREE-TEXT downgrade two"
+ ],
+ "provider": {
+  "endpoint_host": "172.30.0.1:80",
+  "insecure": true,
+  "region": "us-east-1",
+  "bucket_prefix": "",
+  "config_note": "FIXTURE-FREE-TEXT config note"
+ },
+ "provenance": {
+  "go_version": "go1.26.1",
+  "harness_version": "(devel)",
+  "harness_revision": "5cfeaf390803809acd089614ee2aaa5cf3a4153d",
+  "harness_modified": false,
+  "piri_module_version": "v0.0.0",
+  "minio_go_version": "v7.0.95",
+  "binary_sha256": "35584d9fe836dca9a5a73f2957e0c41119d97a2b8b4583d3c8cb0d6b2e260b05"
+ },
+ "drill": {
+  "profile": "import",
+  "duration_seconds": 135.0,
+  "workers": 4,
+  "bytes_ingested": 1073741824,
+  "bytes_read_back": 1073741824,
+  "bytes_restored": 280000000,
+  "floor_bytes_per_second": 0,
+  "target_bytes_per_second": 0,
+  "meets_floor": false,
+  "meets_target": false,
+  "enforce_floor": false,
+  "integrity_failures": 1,
+  "availability": {
+   "requests": 32,
+   "transport_errors": 0,
+   "status_408": 0,
+   "status_429": 0,
+   "status_5xx": 0
+  },
+  "windows": [
+   {
+    "index": 0,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 131000000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 26200000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 1,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 128500000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 25700000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 2,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 134200000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 26840000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 3,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 126800000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 25360000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 4,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 133100000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 26620000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 5,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 129900000,
+    "read_bytes": 0,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 25980000.0,
+    "read_bytes_per_second": 0.0,
+    "requests": {
+     "blob_put": 1,
+     "blob_head": 1
+    }
+   },
+   {
+    "index": 6,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 7,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 0,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 8,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 9,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 10,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 11,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 12,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 13,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 14,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 15,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 16,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 17,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 18,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   },
+   {
+    "index": 19,
+    "started_at": "2026-10-01T12:05:10Z",
+    "seconds": 5.0,
+    "ingest_bytes": 0,
+    "read_bytes": 110000000,
+    "restore_bytes": 30000000,
+    "ingest_bytes_per_second": 0.0,
+    "read_bytes_per_second": 22000000.0,
+    "requests": {
+     "blob_put": 0,
+     "blob_head": 0
+    }
+   }
+  ],
+  "facts": {
+   "blobs_written": 8,
+   "blobs_adopted": 0,
+   "blob_close_bytes": 134217728,
+   "blob_cap_bytes": 134217728,
+   "blob_tail_share": 0,
+   "blob_tail_min_bytes": 0,
+   "blob_tail_max_bytes": 0,
+   "block_size_mean_bytes": 262144,
+   "aggregates_written": 0,
+   "aggregate_bytes": 0,
+   "aggregate_size_bytes": 0,
+   "aggregate_every_blocks": 0,
+   "windows": 20,
+   "window_seconds": 5,
+   "ramp_seconds": 10,
+   "max_in_flight": 4,
+   "rate_target_bytes_per_second": 6000000000,
+   "read_back_due_bytes": 1073741824,
+   "read_back_excused_bytes": 0,
+   "read_back_keeps_pace": true,
+   "restore_accounts": 64,
+   "restore_cohort_accounts": [
+    16,
+    16,
+    32
+   ],
+   "restore_cohort_target_bytes": [
+    0,
+    0,
+    0
+   ],
+   "lagged_tasks_dropped": 0,
+   "journal": "FIXTURE-FREE-TEXT journal path",
+   "notes": [
+    "FIXTURE-FREE-TEXT note one",
+    "FIXTURE-FREE-TEXT note two"
+   ],
+   "stop_ingest_at_bytes": 1000000000,
+   "ingest_sent_bytes": 1073741824,
+   "ingest_cutoff_reached": true,
+   "ingest_cutoff_seconds": 41.2,
+   "windows_before_cutoff": 6,
+   "sustained_windows": 6,
+   "sustained_ingest_median_bytes_per_second": 26090000.0,
+   "sustained_ingest_p5_bytes_per_second": 25360000.0,
+   "sustained_writes_median_per_second": 0.2,
+   "sustained_read_median_bytes_per_second": 0.0,
+   "sustained_restore_median_bytes_per_second": 0.0
+  },
+  "failures": [
+   {
+    "code": "integrity_failure",
+    "detail": "FIXTURE-FREE-TEXT detail for integrity_failure"
+   }
+  ]
+ },
+ "failures": [],
+ "evidence_sha256": "",
+ "diagnostic_sha256": "43d50a9ff99bee7cf9e674212b22ea368635217d4e8f0e7dd22aadb78e5b0d97"
+}
