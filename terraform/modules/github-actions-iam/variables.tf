@@ -68,3 +68,9 @@ variable "ssm_path" {
   description = "SSM Parameter Store path a box may read, with a leading slash and no trailing one."
   type        = string
 }
+
+variable "image_owner" {
+  description = "Account that owns the images boxes boot from: Canonical, which the box module's AMI lookup filters on."
+  type        = string
+  default     = "099720109477"
+}

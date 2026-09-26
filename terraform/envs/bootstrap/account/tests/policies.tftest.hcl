@@ -59,6 +59,7 @@ run "policies" {
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].NotAction])) == toset([
         "ec2:Describe*", "ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateSubnet", "ec2:CreateVpcEndpoint",
         "ec2:RunInstances", "ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress", "ec2:CreateTags",
+        "kms:CreateGrant", "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKeyWithoutPlaintext", "kms:ReEncryptFrom", "kms:ReEncryptTo",
         "iam:*", "s3:*", "sts:*",
       ]),
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Resource]) == ["*"],
@@ -86,8 +87,32 @@ run "policies" {
 
   assert {
     condition = alltrue([
-      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["WriteBoxRolesWithinBoundary"].Action])) == toset(["iam:CreateRole", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole"]),
-      length(setintersection(toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["ManageBoxRoles"].Action])), toset(["iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole"]))) == 0,
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KmsThroughEc2Only"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KmsThroughEc2Only"].Action]) == ["kms:*"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KmsThroughEc2Only"].Resource]) == ["*"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KmsThroughEc2Only"].Condition.StringNotEquals["kms:ViaService"]]) == ["ec2.us-east-2.amazonaws.com"],
+    ])
+    error_message = "the apply role may reach KMS only through EC2, for the box's encrypted volume"
+  }
+
+  assert {
+    condition = alltrue([
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Action]) == ["ec2:CreateVpcEndpoint"],
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Resource])) == toset(["arn:aws:ec2:*:*:security-group/*", "arn:aws:ec2:*:*:subnet/*"]),
+      try({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["GatewayEndpointsOnly"].Condition, null) == null,
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Effect == "Deny",
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Action]) == ["ec2:RunInstances"],
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Resource])) == toset(["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"]),
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Condition.StringNotEquals["ec2:Owner"]]) == ["099720109477"],
+    ])
+    error_message = "the apply role may create gateway endpoints only and launch Canonical's images only"
+  }
+
+  assert {
+    condition = alltrue([
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["WriteBoxRolesWithinBoundary"].Action])) == toset(["iam:CreateRole", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole", "iam:UpdateRoleDescription"]),
+      length(setintersection(toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["ManageBoxRoles"].Action])), toset(["iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole", "iam:UpdateRoleDescription"]))) == 0,
     ])
     error_message = "deleting, updating or re-trusting a box role requires the box permissions boundary"
   }

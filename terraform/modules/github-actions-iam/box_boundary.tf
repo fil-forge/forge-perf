@@ -29,6 +29,14 @@ locals {
     "ec2:AuthorizeSecurityGroupEgress",
     "ec2:AuthorizeSecurityGroupIngress",
     "ec2:CreateTags",
+    # EBS encrypting a box volume under the untagged AWS-managed aws/ebs key,
+    # with the caller's identity. KmsThroughEc2Only keeps them on that path.
+    "kms:CreateGrant",
+    "kms:Decrypt",
+    "kms:DescribeKey",
+    "kms:GenerateDataKeyWithoutPlaintext",
+    "kms:ReEncryptFrom",
+    "kms:ReEncryptTo",
     # Scoped by resource in their own statements.
     "iam:*",
     "s3:*",

@@ -146,6 +146,23 @@ aws iam simulate-principal-policy \
   --resource-arns arn:aws:ec2:us-east-2:654654381893:instance/i-00000000000000000 \
   --context-entries ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=forge-perf,ContextKeyType=string \
   --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::654654381893:role/forge-perf-ci-apply \
+  --action-names ec2:CreateTags \
+  --resource-arns arn:aws:ec2:us-east-2:654654381893:volume/vol-00000000000000000 \
+  --context-entries ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=forge-perf,ContextKeyType=string \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+```
+
+EBS encrypts the box's root volume under the AWS-managed `aws/ebs` key and calls KMS as the apply role. The role may reach KMS only through EC2. Called directly, `kms:CreateGrant` on a key should come back `explicitDeny`; with `kms:ViaService` set to EC2 it should come back `implicitDeny`, which leaves the decision to the `aws/ebs` key policy, and that policy allows EC2 on behalf of any principal in the account:
+
+```sh
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::654654381893:role/forge-perf-ci-apply \
+  --action-names kms:CreateGrant \
+  --resource-arns arn:aws:kms:us-east-2:654654381893:key/00000000-0000-0000-0000-000000000000 \
+  --context-entries ContextKeyName=kms:ViaService,ContextKeyValues=ec2.us-east-2.amazonaws.com,ContextKeyType=string \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
 ```
 
 Every box role must carry the `forge-perf-box-boundary` permissions boundary. Creating one without it should come back `implicitDeny`:

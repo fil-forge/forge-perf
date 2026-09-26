@@ -1,8 +1,8 @@
 # What `tofu apply` and `tofu destroy` need for the network and box roots.
 #
-# No IAM user actions, no ssm:*, no kms:* and no access to the results bucket:
-# the piri user, its key, the SSM parameters and the results bucket belong to
-# the bootstrap root, which an operator applies.
+# No IAM user actions, no ssm:*, no KMS grant and no access to the results
+# bucket: the piri user, its key, the SSM parameters and the results bucket
+# belong to the bootstrap root, which an operator applies.
 data "aws_iam_policy_document" "apply" {
   statement {
     sid       = "ManageBoxInfrastructure"
@@ -19,9 +19,12 @@ data "aws_iam_policy_document" "apply" {
   # OpenTofu creates carries the tag through default_tags; a box root tags its
   # root volume at creation, and a security group change on the box accepts
   # replacement, since the primary network interface is created by RunInstances
-  # untagged. Whether the network and box roots need any other action on an
-  # AWS-owned resource (for example a managed prefix list read) is [unverified]
-  # until their first apply; such an action joins untagged_allowed_actions.
+  # untagged. The box's root volume is encrypted under the AWS-managed aws/ebs
+  # key, which carries no tags, and EBS calls KMS for it as this role, so the
+  # KMS calls EBS makes are allowlisted and KmsThroughEc2Only confines them.
+  # Whether the network and box roots need any other action on an AWS-owned
+  # resource (for example a managed prefix list read) is [unverified] until
+  # their first apply; such an action joins untagged_allowed_actions.
   statement {
     sid         = "KeepOffOtherProjects"
     effect      = "Deny"
@@ -52,6 +55,54 @@ data "aws_iam_policy_document" "apply" {
       test     = "StringNotEquals"
       variable = "aws:ResourceTag/${var.tag_key}"
       values   = [var.tag_value]
+    }
+  }
+
+  # Only gateway endpoints, which name no subnet or security group. An interface
+  # endpoint with private DNS would redirect the whole default VPC's calls to
+  # that service, the dev node's included.
+  statement {
+    sid     = "GatewayEndpointsOnly"
+    effect  = "Deny"
+    actions = ["ec2:CreateVpcEndpoint"]
+    resources = [
+      "arn:aws:ec2:*:*:security-group/*",
+      "arn:aws:ec2:*:*:subnet/*",
+    ]
+  }
+
+  # Boxes boot from Canonical's images, so the role cannot launch another
+  # project's private AMI or a volume from its snapshot. Whether RunInstances
+  # also evaluates the AMI's own backing snapshot, which Canonical owns, is
+  # [unverified] until the first box apply.
+  statement {
+    sid     = "LaunchCanonicalImagesOnly"
+    effect  = "Deny"
+    actions = ["ec2:RunInstances"]
+    resources = [
+      "arn:aws:ec2:*::image/*",
+      "arn:aws:ec2:*::snapshot/*",
+    ]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "ec2:Owner"
+      values   = [var.image_owner]
+    }
+  }
+
+  # EBS uses aws/ebs with this role's identity. The role holds no KMS grant of
+  # its own; this keeps whatever key-policy access it inherits on the EC2 path.
+  statement {
+    sid       = "KmsThroughEc2Only"
+    effect    = "Deny"
+    actions   = ["kms:*"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "kms:ViaService"
+      values   = ["ec2.${var.region}.amazonaws.com"]
     }
   }
 
@@ -123,6 +174,7 @@ data "aws_iam_policy_document" "apply" {
       "iam:PutRolePolicy",
       "iam:UpdateAssumeRolePolicy",
       "iam:UpdateRole",
+      "iam:UpdateRoleDescription",
     ]
     resources = [local.box_role_arn]
 
