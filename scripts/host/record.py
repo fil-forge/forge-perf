@@ -96,6 +96,18 @@ def services():
     return set(" ".join(conf[g] for g in ("NODE", "CENTRAL", "OTHER")).split())
 
 
+def count(value):
+    """A fact the harness keeps as a float64 (Go writes 12, or 1e+21), as an integer."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def label(value, pattern):
+    """An image label as the record keeps it: the value when it matches, else null."""
+    return value if isinstance(value, str) and pattern.match(value) else None
+
+
 def canonical_sha256(obj):
     text = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -219,6 +231,7 @@ def base_record(runner, env):
     prov = runner["provenance"]
     nic = runner["nic"]
     allowance = nic["allowance_exceeded"]
+    started = runner["time"]["drill_started_at"] is not None
     images = sorted(runner["images"], key=lambda i: i["repo"])
     return {
         "schema": "forge-perf.run/v1",
@@ -235,16 +248,21 @@ def base_record(runner, env):
                                                  "drill_finished_at", "run_finished_at")},
         "outcome": {"class": "no_data", "reasons": [], "restarted_services": [], "flags": [], "drill_exit": None,
                     "failure_codes": []},
-        "drill": {"settings": {k: runner["settings"][k] for k in SETTINGS}, "results": None, "requests": None},
+        "drill": {"settings": None if runner["settings"] is None else {k: runner["settings"][k] for k in SETTINGS},
+                  "results": None, "requests": None},
         "latency": latency_block(None, env),
-        "network": {"allowance_exceeded": None if allowance is None else {k: allowance[k] for k in ALLOWANCE},
-                    "egress_bytes_per_s_median": nic["egress_bytes_per_s_median"],
-                    "seconds_above_baseline": nic["seconds_above_baseline"]},
+        # The NIC numbers describe the drill, so a run whose drill never started has none.
+        "network": {"allowance_exceeded": None if allowance is None or not started
+                    else {k: allowance[k] for k in ALLOWANCE},
+                    "egress_bytes_per_s_median": nic["egress_bytes_per_s_median"] if started else None,
+                    "seconds_above_baseline": nic["seconds_above_baseline"] if started else None},
         "provenance": {
             "forge_perf": {"sha": prov["forge_perf"]["sha"], "instrument_tree": prov["forge_perf"]["instrument_tree"]},
             "smelt": {"sha": prov["smelt"]["sha"]},
             "harness": {"sha": prov["harness"]["sha"], "modified": None, "go_version": None, "binary_sha256": None},
-            "images": [{"repo": i["repo"], "ref": i["ref"], "digest": i["digest"], "revision": None, "source": None,
+            "images": [{"repo": i["repo"], "ref": i["ref"], "digest": i["digest"],
+                        "revision": label(i["revision"], SHA1),
+                        "source": label(i["source"], SOURCE) if i["role"] == "under_test" else None,
                         "role": i["role"], "services": sorted(i["services"])} for i in images]},
         "instrument": {"fingerprint": "", "box_fingerprint": ""},
         "trace": None,
@@ -314,8 +332,16 @@ def build(runner, run_dir, latency, env):
         meta = read_json(Path(run_dir) / "metadata.json")
         if meta["extra"]["forge_perf"]["run_id"] != runner["run_id"]:
             raise Stop("the run directory belongs to another run")
-        if argv_settings(meta["suite"]["argv"]) != {k: v for k, v in runner["settings"].items() if k != "manifest"}:
+        settings = runner["settings"]
+        if settings is None or argv_settings(meta["suite"]["argv"]) != \
+                {k: v for k, v in settings.items() if k != "manifest"}:
             raise Stop("suite.argv disagrees with the runner's settings")
+        # smelt read the same labels; a different commit means a different image or run.
+        runner_labels = {i["digest"]: (i["revision"] or None, i["source"] or None) for i in runner["images"]}
+        for image in meta["images"]:
+            if image["digest"] in runner_labels and \
+                    (image.get("revision") or None, image.get("source") or None) != runner_labels[image["digest"]]:
+                raise Stop("metadata.json image labels disagree with the runner's")
         found = glob.glob(os.path.join(glob.escape(str(run_dir)), "drill", "evidence", "drill-*.json"))
         if len(found) > 1:
             raise Stop("more than one evidence file")
@@ -326,26 +352,19 @@ def build(runner, run_dir, latency, env):
         exit_code = None
     record["outcome"]["drill_exit"] = exit_code
     started = runner["time"]["drill_started_at"] is not None
-    if started and not runner["watchdog_fired"] and exit_code not in (0, 1):
-        reasons.add("drill_interrupted")
+    if exit_code == 2 and evidence is not None:
+        reasons.add("drill_interrupted")  # the drill recorded the interrupt
+    elif started and exit_code not in (0, 1) and not runner["watchdog_fired"] \
+            and "drill_interrupted" not in runner["reasons"]:
+        reasons.add("runner_error")  # exit 2 without evidence (usage), no status, or a kill
     if exit_code in (0, 1) and evidence is None:
         reasons.add("no_evidence")
 
     if meta:
         pinned = {s: i["digest"] for i in runner["images"] for s in i["services"]}
-        labels = {}
         for image in meta["images"]:
-            labels.setdefault(image["digest"], image)
             if image["service"] in pinned and image["digest"] != pinned[image["service"]]:
                 reasons.add("image_changed")
-        for entry in record["provenance"]["images"]:
-            image = labels.get(entry["digest"])
-            if image is None:
-                continue
-            if isinstance(image.get("revision"), str) and SHA1.match(image["revision"]):
-                entry["revision"] = image["revision"]
-            if entry["role"] == "under_test" and isinstance(image.get("source"), str) and SOURCE.match(image["source"]):
-                entry["source"] = image["source"]
 
     if evidence is not None:
         # The harness omits an empty drill.failures, windows or facts (omitempty).
@@ -370,7 +389,7 @@ def build(runner, run_dir, latency, env):
             reasons.add("availability_errors")
 
         if exit_code in (0, 1):
-            sustained = facts.get("sustained_windows", 0)
+            sustained = count(facts.get("sustained_windows", 0))
             cap = facts.get("ingest_cutoff_reached") is True
             median = facts.get("sustained_ingest_median_bytes_per_second")
             record["drill"]["results"] = {
@@ -383,9 +402,9 @@ def build(runner, run_dir, latency, env):
                 "cache_served": {
                     "read_back_median_bytes_per_s": facts.get("sustained_read_median_bytes_per_second"),
                     "restore_median_bytes_per_s": facts.get("sustained_restore_median_bytes_per_second")},
-                "ingest_sent_bytes": facts["ingest_sent_bytes"],
+                "ingest_sent_bytes": count(facts["ingest_sent_bytes"]),
                 "bytes_ingested": drill["bytes_ingested"], "bytes_read_back": drill["bytes_read_back"],
-                "bytes_restored": drill["bytes_restored"], "blobs_written": facts["blobs_written"],
+                "bytes_restored": drill["bytes_restored"], "blobs_written": count(facts["blobs_written"]),
                 "cap_reached": cap, "ingest_cutoff_s": facts.get("ingest_cutoff_seconds") if cap else None}
             piri_log = Path(run_dir) / "logs" / "piri-0.log"
             s3_errors = None

@@ -276,12 +276,102 @@ class Classification(unittest.TestCase):
         self.assertEqual(outcome["reasons"], ["watchdog_timeout"])
         self.assertIsNone(outcome["drill_exit"])
 
-    def test_an_out_of_range_exit_is_an_interruption(self):
+    def test_an_out_of_range_exit_is_a_runner_error(self):
         case = Case(self, "valid")
         case.edit("run/metadata.json", lambda d: d["suite"].update(drill_exit=137))
         record_ = case.build()
-        self.assertEqual(record_["outcome"]["reasons"], ["drill_interrupted"])
+        self.assertEqual(record_["outcome"]["reasons"], ["runner_error"])
         self.assertIsNone(record_["drill"]["results"])
+
+    def test_exit_2_with_evidence_is_an_interruption(self):
+        outcome = Case(self, "exit2").build()["outcome"]
+        self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["drill_interrupted"]))
+
+    def test_exit_2_without_evidence_is_a_runner_error(self):
+        case = Case(self, "exit2")
+        (case.case / case.evidence()).unlink()
+        self.assertEqual(case.build()["outcome"]["reasons"], ["runner_error"])
+
+    def test_an_interrupt_the_runner_caused_is_not_a_runner_error(self):
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d["reasons"].append("drill_interrupted"))
+        case.edit("run/metadata.json", lambda d: d["suite"].pop("drill_exit"))
+        self.assertEqual(case.build()["outcome"]["reasons"], ["drill_interrupted"])
+
+    def test_image_labels_come_from_the_runner(self):
+        case = Case(self, "stack-boot-failed")
+        images = {i["repo"]: i for i in case.build()["provenance"]["images"]}
+        self.assertEqual(images["ghcr.io/fil-forge/piri"]["revision"], "fdead2488d81815b443903d9a4a7a21236c73728")
+        self.assertEqual(images["ghcr.io/fil-forge/piri"]["source"], "https://github.com/fil-forge/piri")
+        # An instrument image keeps its commit but never its source.
+        self.assertIsNone(images["ghcr.io/fil-forge/minio"]["source"])
+
+    def test_a_malformed_runner_label_is_null(self):
+        case = Case(self, "stack-boot-failed")
+
+        def change(d):
+            d["images"][0].update(revision="main", source="https://example.com/fork")
+        case.edit("runner.json", change)
+        repo = load(case.case / "runner.json")["images"][0]["repo"]
+        entry = next(i for i in case.build()["provenance"]["images"] if i["repo"] == repo)
+        self.assertEqual((entry["revision"], entry["source"]), (None, None))
+
+    def test_metadata_labels_that_disagree_stop_the_build(self):
+        for field, value in (("revision", "0" * 40), ("source", "https://github.com/fil-forge/other")):
+            with self.subTest(field=field):
+                case = Case(self, "valid")
+                case.edit("run/metadata.json", lambda d: d["images"][1].update({field: value}))
+                with self.assertRaises(record.Stop):
+                    case.build()
+
+    def test_missing_settings_are_null(self):
+        case = Case(self, "stack-boot-failed")
+        case.edit("runner.json", lambda d: d.update(settings=None, reasons=["preflight_failed"]))
+        record_ = case.build()
+        self.assertIsNone(record_["drill"]["settings"])
+        self.assertEqual(record_["outcome"]["reasons"], ["preflight_failed"])
+        self.assertEqual(record.schemacheck.Checker(record.SCHEMA).errors(record_), [])
+
+    def test_missing_settings_with_a_run_directory_stop_the_build(self):
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d.update(settings=None))
+        with self.assertRaises(record.Stop):
+            case.build()
+
+    def test_a_run_whose_drill_never_started_has_no_nic_numbers(self):
+        case = Case(self, "stack-boot-failed")
+
+        def change(d):
+            d["nic"] = {"allowance_exceeded": {k: 1 for k in record.ALLOWANCE},
+                        "egress_bytes_per_s_median": 5.0, "seconds_above_baseline": 3}
+        case.edit("runner.json", change)
+        record_ = case.build()
+        self.assertEqual(record_["network"], {"allowance_exceeded": None, "egress_bytes_per_s_median": None,
+                                              "seconds_above_baseline": None})
+        self.assertNotIn("nic_allowance_exceeded", record_["outcome"]["flags"])
+
+    def test_broken_host_facts_are_null(self):
+        case = Case(self, "stack-boot-failed")
+
+        def change(d):
+            d["box"].update(docker_server=None, docker_compose=None)
+            d["box"]["nvme"] = {"model": None, "size_bytes": None, "filesystem": None}
+        case.edit("runner.json", change)
+        record_ = case.build()
+        self.assertEqual(record.schemacheck.Checker(record.SCHEMA).errors(record_), [])
+        self.assertIsNone(record_["box"]["nvme"]["filesystem"])
+
+    def test_integral_float_facts_are_written_as_integers(self):
+        case = Case(self, "valid")
+
+        def change(d):
+            facts = d["drill"]["facts"]
+            for k in ("sustained_windows", "ingest_sent_bytes", "blobs_written"):
+                facts[k] = float(facts[k])
+        case.edit(case.evidence(), change)
+        result = case.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(load(case.out), case.expected)
 
     def test_runner_reasons_stay_on_a_no_data_run(self):
         case = Case(self, "stack-boot-failed")
