@@ -1,0 +1,42 @@
+#!/bin/bash
+# First-boot bootstrap of a forge-perf box. cloud-init runs it once, as root,
+# on the first boot of each instance. It clones this repository, writes
+# box.conf and hands off to update.sh --local, which runs provision.sh, records
+# the commit it provisioned and enables the mode's units. The marker at the end
+# is written only when every step passed.
+set -euo pipefail
+exec > >(tee -a /var/log/forge-perf-bootstrap.log) 2>&1
+
+CHECKOUT=/opt/forge-perf
+REF='${ref}'
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -q
+apt-get install -y -q ca-certificates curl git
+
+if [ ! -d "$CHECKOUT/.git" ]; then
+  git clone --no-checkout '${repository_url}' "$CHECKOUT"
+fi
+# A branch is on origin/; a full commit is not.
+git -C "$CHECKOUT" checkout --quiet --detach "origin/$REF" 2>/dev/null ||
+  git -C "$CHECKOUT" checkout --quiet --detach "$REF"
+
+# Everything per box that is not in the checkout. The instance type is not
+# here: the host reads it from instance metadata, so a resize changes nothing
+# in this file.
+install -d -m 0755 /etc/forge-perf
+cat >/etc/forge-perf/box.conf <<'CONF'
+FORGE_PERF_BOX_ID=${box_id}
+FORGE_PERF_MODE=${mode}
+FORGE_PERF_CHECKOUT=/opt/forge-perf
+FORGE_PERF_REF=${ref}
+FORGE_PERF_REGION=${region}
+FORGE_PERF_RESULTS_BUCKET=${results_bucket}
+FORGE_PERF_PIRI_BUCKET_PREFIX=${piri_bucket_prefix}
+FORGE_PERF_SMELT_BUCKET_PREFIX=${smelt_bucket_prefix}
+FORGE_PERF_SSM_PATH=${ssm_path}
+CONF
+
+"$CHECKOUT/scripts/host/update.sh" --local
+
+date -Is >/etc/forge-perf/bootstrap-complete

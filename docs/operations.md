@@ -117,6 +117,33 @@ Once the network root is applied, apply the bootstrap root again without the var
 
 The endpoint's id is written into piri's policy, so a new endpoint leaves piri's key denied everywhere until the bootstrap root is applied again. The endpoint carries `prevent_destroy`, and a change that would replace it (its VPC, service or type) fails the pull request's plan. To replace it deliberately, remove `prevent_destroy` in the same pull request, and apply the bootstrap root as soon as `apply-network` finishes.
 
+### The persistent box
+
+`terraform/envs/box/main` holds the persistent box: the instance, its security group and role, and piri's six buckets. The `deploy` workflow plans it on every pull request. On every push to main the `box-main-changed` job plans it again, and when that plan is not empty `apply-box-main` waits for a reviewer to approve it in the `box-change` environment. The plan is in `box-main-changed`'s log. A resize stops the box and a new AMI or bootstrap replaces it, and either loses a run in progress, so approve once no run is active: `systemctl show -p ActiveState --value forge-perf-run.service` on the box prints `inactive` and `/run/forge-perf/run.lock` is free (`flock -n /run/forge-perf/run.lock true` exits 0). A plan that changes only outputs touches no infrastructure and can be approved while a run is active.
+
+A rejected, cancelled or failed `apply-box-main` leaves the change unapplied. The next push to main plans it again and asks again; to apply it sooner, re-run the latest `deploy` run on main from the Actions tab.
+
+All `deploy` runs on main share one concurrency group, and a run whose `apply-box-main` waits for approval is still in progress. While an approval is pending, later merges deploy nothing, `apply-network` included, until it is approved or rejected. If the box stays busy, reject the approval; the next push plans the box again and asks again.
+
+cloud-init runs the bootstrap once per instance. It clones forge-perf at main, writes `/etc/forge-perf/box.conf`, runs `update.sh --local`, which runs `provision.sh`, installs the units and enables those in `systemd/enabled.persistent`, and writes `/etc/forge-perf/bootstrap-complete` last. Its log is `/var/log/forge-perf-bootstrap.log`. After the first apply, check the box from a shell:
+
+```sh
+scripts/operator/ssm-session.sh main
+sudo -i
+export AWS_REGION=us-east-2
+cat /etc/forge-perf/bootstrap-complete
+findmnt /var/lib/docker/volumes          # the instance-store NVMe
+modprobe sch_netem && grep -m1 -o sha2 /proc/cpuinfo
+echo probe | aws s3 cp - s3://forge-perf-results-654654381893/published/main/probe.json
+aws s3 cp s3://forge-perf-results-654654381893/published/main/probe.json -   # AccessDenied
+```
+
+A stop and start from the console leaves the same instance with a blank instance store, which `forge-perf-nvme.service` formats before Docker starts. `findmnt` shows it again after the boot.
+
+`scripts/operator/ssm-session.sh <box>` and `scripts/operator/box-update.sh <box>` find the running instance tagged `Box=<box>`. `box-update.sh` runs `scripts/host/update.sh` over SSM Run Command and prints its output: the checkout moves to `origin/main`, `provision.sh` reruns when `host/` or the provisioning scripts differ from the commit provisioning last succeeded at (recorded in `/var/lib/forge-perf/state/provisioned-rev`, so a failed provision is retried on the next pass), and the units follow the checkout. `update.sh` refuses while `forge-perf-run.service` is starting, running or stopping, while another process holds the run lock, on a campaign box, and when the checkout has hand edits to tracked files.
+
+The AMI is pinned as `ami_id` in `terraform/modules/shared/constants/outputs.tf`. A new image means a new kernel, so it is an instrument change and replaces the box. `scripts/operator/latest-ami.sh` prints Canonical's newest Ubuntu 24.04 arm64 image and whether it is the pinned one; a bump is a pull request changing `ami_id` and the release date in its description.
+
 ### piri's S3 key
 
 piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only through the forge-perf S3 gateway endpoint, so the key works from a box and from nowhere else, including infra-nodes' dev node in the same VPC.
