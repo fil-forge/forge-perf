@@ -64,6 +64,8 @@ class Data(unittest.TestCase):
                       self.errors(self.with_gate1(gate)))
         gate = dict(MEASURED, method="javascript:alert(1)")
         self.assertEqual([e.split(": ")[2] for e in self.errors(self.with_gate1(gate))], ["method"])
+        gate = dict(MEASURED, method="calibration/../../../../evil/repo")
+        self.assertEqual([e.split(": ")[2] for e in self.errors(self.with_gate1(gate))], ["method"])
         gate = dict(MEASURED, ceiling_bytes_per_s=None)
         self.assertTrue(all("(unmeasured)" in e for e in self.errors(self.with_gate1(gate))))
 
@@ -107,7 +109,7 @@ class Preview(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             names = preview.build(tmp, now)
             self.assertEqual(names, ["box-change", "calibration-only", "gate-lit", "instrument-change",
-                                     "no-runs", "outcomes"])
+                                     "no-runs", "one-run", "outcomes"])
             index = {n: json.loads((Path(tmp) / n / "data/index.json").read_text(encoding="utf-8")) for n in names}
             for name in names:
                 errors = check_data.gate_errors(index[name]["gates"])
@@ -122,6 +124,13 @@ class Preview(unittest.TestCase):
             self.assertEqual({r["box"]["instance_type"] for r in box}, {"m9gd.2xlarge", "m9gd.8xlarge"})
             self.assertTrue(any(r["pairing_id"] for r in box))
             self.assertEqual(box[0]["size_bytes"], 100 * 10**9)
+            self.assertEqual([r["class"] for r in index["one-run"]["runs"]], ["valid"])
+            outcomes = index["outcomes"]["runs"]
+            broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
+            self.assertEqual(len(broken), 1)
+            self.assertEqual(outcomes[broken[0] + 1]["instrument_changes"], [])
+            with self.assertRaises(SystemExit):
+                preview.build(HERE, now)
 
 
 if __name__ == "__main__":

@@ -125,3 +125,27 @@ test("flags that leave the class alone are named beside the outcome", () => {
   const d = index([r]);
   assert.equal(M.mercury(d.runs, NOW).run.run_id, r.run_id);
 });
+
+test("the paired offset is the ratio of each type's median run median", () => {
+  const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
+  const pair = "pair-20261010-tier2";
+  const d = index([
+    run({ pairing_id: pair, median_bytes_per_s: 0.33e9 }), run({ pairing_id: pair, median_bytes_per_s: 0.35e9 }),
+    run({ pairing_id: pair, median_bytes_per_s: 0.34e9 }), run({ pairing_id: pair, box: big, median_bytes_per_s: 1.02e9 }),
+    run({ pairing_id: pair, box: big, median_bytes_per_s: 1.2e9, class: "invalid" }),
+    run({ pairing_id: pair, box: big, median_bytes_per_s: 1.04e9 }),
+    run({ pairing_id: "pair-one-side", median_bytes_per_s: 0.3e9 }),
+  ]);
+  const [o, ...rest] = M.pairedOffsets(d.runs);
+  assert.equal(rest.length, 0);
+  assert.deepEqual([o.pairing_id, o.from, o.to, o.from_runs, o.to_runs], [pair, "m9gd.2xlarge", "m9gd.8xlarge", 3, 2]);
+  assert.equal(o.from_median, 0.34e9);
+  assert.equal(o.to_median, 1.03e9);
+  assert.ok(Math.abs(o.ratio - 1.03 / 0.34) < 1e-9);
+});
+
+test("the latest counting run can come from a series other than per-trigger", () => {
+  const d = index([run(), run({ series: "nightly" }), run({ series: "calibration" }), run({ class: "failed" })]);
+  assert.equal(M.latestCounting(d.runs).series, "nightly");
+  assert.equal(M.latestCounting(index([run({ series: "calibration" })]).runs), null);
+});

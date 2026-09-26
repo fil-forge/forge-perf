@@ -29,6 +29,7 @@ spec.loader.exec_module(build_site)
 
 CASE = {"valid": "valid", "availability_warning": "availability-errors", "invalid": "read-back-incomplete",
         "failed": "integrity-failure", "no_data": "stack-boot-failed"}
+TITLE = "<title>Site preview</title>"
 TYPES = {1: "m9gd.2xlarge", 2: "m9gd.8xlarge", 3: "m9gd.16xlarge"}
 
 
@@ -42,7 +43,7 @@ def fixture(cls):
 
 
 def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=None, smelt=None,
-           postgres=None, kernel=None, windows=None, changed=("ingot",)):
+           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False):
     r = copy.deepcopy(fixture(cls))
     r["run_id"] = "main-" + start.strftime("%Y%m%dt%H%M%Sz")
     r["series"], r["pairing_id"] = series, pairing
@@ -52,7 +53,14 @@ def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=No
                  "drill_finished_at": iso(start + dt.timedelta(minutes=50)),
                  "run_finished_at": iso(start + dt.timedelta(minutes=55))}
     r["box"].update(tier=tier, instance_type=TYPES[tier])
-    r["drill"]["settings"]["stop_ingest_at_bytes"] = 500 * 10**9 if series == "nightly" else 100 * 10**9
+    if broken:
+        # No settings file, NVMe unmounted, Docker down: a schema-valid preflight_failed record.
+        r["outcome"]["reasons"] = ["preflight_failed"]
+        r["drill"]["settings"] = None
+        r["box"].update(docker_server=None, docker_compose=None)
+        r["box"]["nvme"] = {"model": None, "size_bytes": None, "filesystem": None}
+    else:
+        r["drill"]["settings"]["stop_ingest_at_bytes"] = 500 * 10**9 if series == "nightly" else 100 * 10**9
     res = r["drill"]["results"]
     if res and p5 is not None:
         res.update(ingest_p5_bytes_per_s=p5, ingest_median_bytes_per_s=round(p5 * 1.18),
@@ -93,6 +101,7 @@ def scenarios(now):
     idle = {"at": iso(now - dt.timedelta(minutes=3)), "state": "idle", "poll_failures": 0, "run_started_at": None}
     out = {}
     out["no-runs"] = ("No runs yet", [], unmeasured, [], idle)
+    out["one-run"] = ("One valid run", [record(hours(3), p5=0.31e9, windows=22)], unmeasured, [], idle)
     out["calibration-only"] = ("Calibration runs only", [
         record(hours(40 - 6 * i), series="calibration", p5=p) for i, p in enumerate([0.24e9, 0.25e9, 0.23e9, 0.26e9])
     ] + [record(hours(4), "no_data", series="calibration")], unmeasured, [], idle)
@@ -107,10 +116,10 @@ def scenarios(now):
 
     classes = ["valid", "valid", "availability_warning", "invalid", "valid", "failed", "no_data", "valid",
                "availability_warning", "valid"]
-    mixed = [record(hours(60 - 6 * i), c, p5=0.3e9 + 0.004e9 * i) for i, c in enumerate(classes)]
+    mixed = [record(hours(60 - 6 * i), c, p5=0.3e9 + 0.004e9 * i, broken=i == 6) for i, c in enumerate(classes)]
     override = [{"run_id": mixed[4]["run_id"], "class": "invalid",
                  "issue": "https://github.com/fil-forge/forge-perf/issues/1"}]
-    out["outcomes"] = ("Invalid, failed, no-data and availability-warning runs, one override", mixed, unmeasured,
+    out["outcomes"] = ("Invalid, failed, no-data (one on a broken host) and availability-warning runs, one override", mixed, unmeasured,
                        override, {"at": iso(now - dt.timedelta(minutes=6)), "state": "running", "poll_failures": 2,
                                   "run_started_at": iso(now - dt.timedelta(minutes=40))})
 
@@ -137,9 +146,12 @@ def scenarios(now):
 
 def build(out, now):
     out = Path(out)
-    if out.exists():
+    if out.exists() and any(out.iterdir()):
+        own = out / "index.html"
+        if not own.is_file() or TITLE not in own.read_text(encoding="utf-8", errors="replace"):
+            raise SystemExit(f"preview: {out} is not empty and is not an earlier preview; choose another --out")
         shutil.rmtree(out)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)
     links = []
     for name, (title, records, gates, overrides, heartbeat) in scenarios(now).items():
         with tempfile.TemporaryDirectory() as tmp:
@@ -157,7 +169,7 @@ def build(out, now):
                              {"main": heartbeat}, iso(now - dt.timedelta(minutes=5)))
         links.append(f'<li><a href="{name}/">{title}</a> ({len(records)} runs)</li>')
     (out / "index.html").write_text(
-        "<!doctype html><meta charset=utf-8><title>Site preview</title>"
+        f"<!doctype html><meta charset=utf-8>{TITLE}"
         "<h1>Fixture scenarios</h1><ul>" + "".join(links) + "</ul>\n", encoding="utf-8")
     return sorted(scenarios(now))
 

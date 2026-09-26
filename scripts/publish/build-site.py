@@ -19,7 +19,11 @@ from pathlib import Path
 
 
 def changes(record, previous):
-    """Instrument components that differ from the previous run in the series on the box."""
+    """Instrument components that differ from the previous run in the series on the box.
+
+    `previous` is the latest earlier run there with drill settings. A run
+    without settings (a broken host) has no settings or box to compare.
+    """
     if previous is None:
         return None
     cur, old = record["provenance"], previous["provenance"]
@@ -31,11 +35,12 @@ def changes(record, previous):
             out.append(name)
     images = [{i["repo"]: i["digest"] for i in p["images"] if i["role"] == "instrument"} for p in (cur, old)]
     out += sorted(r for r in images[0].keys() | images[1].keys() if images[0].get(r) != images[1].get(r))
-    if record["drill"]["settings"] != previous["drill"]["settings"]:
+    broken = record["drill"]["settings"] is None
+    if not broken and record["drill"]["settings"] != previous["drill"]["settings"]:
         out.append("settings")
     if record["latency"]["target_rtt_ms"] != previous["latency"]["target_rtt_ms"]:
         out.append("latency")
-    if record["instrument"]["box_fingerprint"] != previous["instrument"]["box_fingerprint"]:
+    if not broken and record["instrument"]["box_fingerprint"] != previous["instrument"]["box_fingerprint"]:
         out.append("box")
     return out
 
@@ -48,7 +53,7 @@ def row(record, previous):
         "series": record["series"],
         "pairing_id": record["pairing_id"],
         "changed": record["trigger"]["changed"],
-        "size_bytes": record["drill"]["settings"]["stop_ingest_at_bytes"],
+        "size_bytes": (record["drill"]["settings"] or {}).get("stop_ingest_at_bytes"),
         "box": {k: record["box"][k] for k in ("id", "tier", "instance_type")},
         "run_started_at": record["time"]["run_started_at"],
         "class": record["outcome"]["class"],
@@ -84,7 +89,8 @@ def build(site, data, results, out, heartbeats, now):
         shutil.copyfile(path, runs / f"{record['run_id']}.json")
         series = (record["box"]["id"], record["series"])
         rows.append(row(record, last.get(series)))
-        last[series] = record
+        if record["drill"]["settings"] is not None:
+            last[series] = record
     index = {
         "published_at": now,
         "runs": rows,

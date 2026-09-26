@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Forge ingest throughput</title>
-<meta name="description" content="Sustained ingest rate of the Forge storage stack, measured on a dedicated AWS box each time a service image changes on main.">
+<meta name="description" content="Sustained ingest rate of the Forge storage stack, measured on a dedicated AWS box each time a service image, smelt or the harness changes on main, and nightly.">
 <link rel="stylesheet" href="style.css">
 <script>
   // Before first paint, so a stored theme does not flash.
@@ -18,7 +18,7 @@
 <header>
   <div>
     <h1>Forge ingest throughput</h1>
-    <p class="lede">Sustained ingest rate of the Forge storage stack, measured on a dedicated AWS box each time a service image changes on main.</p>
+    <p class="lede">Sustained ingest rate of the Forge storage stack, measured on a dedicated AWS box each time a service image, smelt or the harness changes on main, and nightly.</p>
   </div>
   <div id="theme" class="segmented" role="group" aria-label="Theme">
     <button type="button" value="light">Light</button>
@@ -28,12 +28,12 @@
 </header>
 <main>
   <noscript><p class="notice">This page draws its charts with JavaScript. The run data is in <a href="data/index.json">data/index.json</a> and each record under data/runs/.</p></noscript>
-  <section id="details" class="details" hidden aria-live="polite"></section>
+  <section id="details" class="details" hidden></section>
   <section id="summary" class="summary" aria-label="Latest result"><p class="secondary">Loading run data…</p></section>
   <section aria-labelledby="history-title">
     <h2 id="history-title">History</h2>
     <div id="series" class="segmented" role="group" aria-label="Series"></div>
-    <p class="legend"><span class="key solid"></span>p5 (held by 95 % of windows) <span class="key dashed"></span>Median
+    <p class="legend"><span class="key solid"></span>p5 (held by 95% of windows) <span class="key dashed"></span>Median
       <span class="sym">●</span> valid <span class="sym">▲</span> availability errors <span class="sym">○</span> invalid</p>
     <div id="chart" class="chart"></div>
   </section>
@@ -45,10 +45,10 @@
     <h2 id="method-title">How this is measured</h2>
     <p><strong>What runs.</strong> A single AWS m9gd instance runs every Forge service in Docker using the published <code>main</code> images, pinned by digest for the run. After each run the box deletes all containers, volumes, stored objects and its NVMe data, so every run starts cold.</p>
     <p><strong>The workload.</strong> The storage-qualification drill's import profile writes objects of about 128 MiB through the S3 gateway, reads each back within a minute and restores ranges of them. Each per-trigger run writes 100 GB; each nightly run writes up to 500 GB.</p>
-    <p><strong>What the number means.</strong> The drill measures ingest in 30-second windows. p5 is the highest rate that at least 95 % of those windows held. The median is shown beside it. A run with fewer than 20 steady windows is marked, since its p5 is then its slowest window.</p>
+    <p><strong>What the number means.</strong> The drill measures ingest in 30-second windows. p5 is the highest rate that at least 95% of those windows held. The median is shown beside it. A run with fewer than 20 steady windows is marked, since its p5 is then its slowest window.</p>
     <p><strong>The gates.</strong> Each gate is the lower of the named instance type's measured S3 upload throughput and NVMe sequential write speed. Each measures one limit in isolation, so the stack's reachable rate sits below it. A gate lights when a valid run's p5 reaches the ceiling measured at the time of that run. A gate without a measurement is drawn dashed.</p>
-    <p><strong>What is modeled.</strong> Storage node services and central services run on one host with a fixed 15 ms round trip added between the two groups, standing in for a storage provider's site about 15 ms from central services in us-east-2. Piri stores blobs in Amazon S3 in the same region, standing in for the provider's HDD-backed S3 service; AWS S3 is probably the faster of the two. The added delay has no jitter or loss. The drill client runs on the same host with no added delay, shares the host's CPU with the central services, and hashes every body with SHA-256. Connections are plain HTTP/1.1 where production uses TLS and HTTP/2, so the box opens more TCP connections than production and skips TLS and the proxy hop.</p>
-    <p><strong>Outcomes.</strong> Runs with availability errors keep their numbers and are marked; they do not move the thermometer. Invalid measurements (the added latency drifted, a container restarted, an image changed mid-run, or ingest stopped before a steady window) and failed runs are shown and excluded. A run that reaches its time limit before its size keeps its numbers and is marked. Calibration runs, made while the setup is tuned, appear in the table only.</p>
+    <p><strong>What is modeled.</strong> Storage node services and central services run on one host with a fixed 15 ms round trip added between the two groups, standing in for a storage provider's site about 15 ms from central services in us-east-2. Piri stores blobs in Amazon S3 in the same region, in place of the provider's HDD-backed S3 service; AWS S3 is probably the faster of the two. The added delay has no jitter or loss. The drill client runs on the same host with no added delay, shares the host's CPU with the central services, and hashes every body with SHA-256. Connections are plain HTTP/1.1 where production uses TLS and HTTP/2, so the box opens more TCP connections than production and skips TLS and the proxy hop.</p>
+    <p><strong>Outcomes.</strong> Runs with availability errors keep their numbers and are marked; they do not move the thermometer or light a gate. Invalid measurements (the added latency drifted, a container restarted, an image changed mid-run, or ingest stopped before a steady window) and failed runs are shown and excluded. A run that reaches its time limit before its size keeps its numbers and is marked. Calibration runs, made while the setup is tuned, appear in the table only.</p>
   </section>
 </main>
 <footer>

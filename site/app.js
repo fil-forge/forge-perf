@@ -31,7 +31,7 @@ const utc = (iso) => new Date(iso).toLocaleString("en-GB", {
 }) + " UTC";
 const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 const rate = (bytes) => (bytes == null ? "–" : `${M.gbps(bytes)} GB/s`);
-const gb = (bytes) => `${Math.round(bytes / 1e9)} GB`;
+const gb = (bytes) => (bytes == null ? "–" : `${Math.round(bytes / 1e9)} GB`);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const ICON = { valid: "●", availability_warning: "▲", invalid: "○", failed: "✕", no_data: "✕" };
 const outcome = (run) => h("span", { class: `outcome ${run.klass}` },
@@ -92,14 +92,20 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
   if (merc) {
     const r = merc.run;
     box.append(
-      h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95 % of windows`),
+      h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`),
       h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${r.writes_median_per_s ?? "–"} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
       h("p", { class: "secondary" }, "Run ", h("a", { href: `#run=${r.run_id}` }, r.run_id),
         ` on ${r.box.instance_type}, ${utc(r.run_started_at)}, ${gb(r.size_bytes)}`),
       h("p", { class: "secondary" }, `${M.ago(merc.age_ms)} ago · ${merc.runs_since} run${merc.runs_since === 1 ? "" : "s"} on the box since`));
   } else {
-    box.append(h("p", { class: "big" }, "No valid run yet"));
+    box.append(h("p", { class: "big" }, "No valid per-trigger run yet"));
+    const other = M.latestCounting(runs);
+    if (other) {
+      box.append(h("p", {}, "Latest valid run ", h("a", { href: `#run=${other.run_id}` }, other.run_id),
+        ` (${other.series}, ${other.box.instance_type}): p5 ${M.gbps(other.p5_bytes_per_s)} GB/s. `
+        + `The thermometer moves on per-trigger runs on box ${M.PERSISTENT_BOX}.`));
+    }
     const last = runs[runs.length - 1];
     box.append(last
       ? h("p", {}, "Latest run ", h("a", { href: `#run=${last.run_id}` }, last.run_id), ` (${last.series}): `,
@@ -183,6 +189,11 @@ function drawHistory() {
   chart.addEventListener("click", () => { if (chart.value) location.hash = `run=${chart.value.run_id}`; });
   host.append(chart);
   if (strip.length) host.append(h("p", { class: "note" }, "✕ below the time axis: failed and no-data runs, whose rates are absent or untrustworthy."));
+  for (const o of M.pairedOffsets(rows)) {
+    host.append(h("p", { class: "note" }, `Paired runs ${o.pairing_id}: median ${M.gbps(o.to_median)} GB/s on ${o.to} `
+      + `(${o.to_runs} run${o.to_runs === 1 ? "" : "s"}) against ${M.gbps(o.from_median)} GB/s on ${o.from} `
+      + `(${o.from_runs} run${o.from_runs === 1 ? "" : "s"}), ${o.ratio.toFixed(2)}×.`));
+  }
   if (above.length) host.append(h("p", { class: "note" }, above.map((g) => `Gate ${g.gate} (${M.gbps(g.current.ceiling_bytes_per_s)} GB/s) above range`).join(" · ")));
 }
 
@@ -224,7 +235,8 @@ function table() {
   return el;
 }
 
-function kv(title, obj) {
+function kv(title, obj, missing) {
+  if (obj == null) return h("section", {}, h("h3", {}, title), h("p", {}, missing || "Not recorded."));
   const rows = Object.entries(obj).map(([k, v]) => h("tr", {}, h("th", { scope: "row" }, k.replaceAll("_", " ")),
     h("td", {}, v == null ? "–" : typeof v === "boolean" ? String(v) : typeof v === "object" && !(v instanceof Node) ? JSON.stringify(v) : v)));
   return h("section", {}, h("h3", {}, title), h("table", { class: "kv" }, h("tbody", {}, rows)));
@@ -256,7 +268,7 @@ async function details(id) {
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
     kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
       writes_per_s: res.writes_median_per_s, steady_windows: res.sustained_windows, total_windows: res.total_windows,
-      cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested,
+      cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested, ingest_sent_bytes: res.ingest_sent_bytes,
       bytes_read_back: res.bytes_read_back, bytes_restored: res.bytes_restored, blobs_written: res.blobs_written,
       window_rates: res.window_ingest_bytes_per_s && h("details", {}, h("summary", {}, `${res.window_ingest_bytes_per_s.length} windows, GB/s`),
         res.window_ingest_bytes_per_s.map(M.gbps).join(" ")) }),
@@ -265,14 +277,14 @@ async function details(id) {
       kv("", { read_back_median: rate(res.cache_served?.read_back_median_bytes_per_s),
         restore_median: rate(res.cache_served?.restore_median_bytes_per_s) }).querySelector("table")),
     kv("Requests", { ...(rec.drill.requests || {}), drill_exit: o.drill_exit, failure_codes: o.failure_codes.join(", ") || "none" }),
-    kv("Drill settings", rec.drill.settings),
+    kv("Drill settings", rec.drill.settings, "Not recorded: the settings file was missing or unreadable."),
     kv("Latency", Object.fromEntries(Object.entries(rec.latency).filter(([k]) => !["before", "after"].includes(k)))),
     kv("Latency before", rec.latency.before || {}), kv("Latency after", rec.latency.after || {}),
     kv("NIC allowance counters", { ...rec.network.allowance_exceeded, egress_median: rate(rec.network.egress_bytes_per_s_median),
       seconds_above_baseline: rec.network.seconds_above_baseline }),
-    kv("Box", { ...rec.box, cpu: `${rec.box.cpu.implementer} / ${rec.box.cpu.part}, ${rec.box.cpu.cores} cores`,
+    kv("Box", { ...rec.box, cpu: `${rec.box.cpu.implementer ?? "–"} / ${rec.box.cpu.part ?? "–"}, ${rec.box.cpu.cores} cores`,
       cpu_features: h("details", {}, h("summary", {}, `${rec.box.cpu.features.length} features`), rec.box.cpu.features.join(" ")),
-      nvme: `${rec.box.nvme.model}, ${gb(rec.box.nvme.size_bytes)}, ${rec.box.nvme.filesystem}` }),
+      nvme: `${rec.box.nvme.model ?? "–"}, ${gb(rec.box.nvme.size_bytes)}, ${rec.box.nvme.filesystem ?? "–"}` }),
     components(rec, prev),
     kv("Fingerprints", {
       instrument: fingerprint(rec.instrument.fingerprint, prev?.instrument.fingerprint),

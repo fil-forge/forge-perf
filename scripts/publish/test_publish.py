@@ -363,6 +363,30 @@ class BuildSite(unittest.TestCase):
             self.assertTrue((tmp / "_site/index.html").exists())
             self.assertEqual(json.loads((tmp / f"_site/data/runs/{second['run_id']}.json").read_text()), second)
 
+    def test_a_broken_host_record_builds(self):
+        # A schema-valid record with no settings file, no NVMe and no Docker
+        # (as in scripts/host/test_schema.py). The next run compares against
+        # the last run that had settings, so it gets no false instrument change.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runs = tmp / "results/runs/2026/10"
+            runs.mkdir(parents=True)
+            broken = fixture_record("stack-boot-failed", 13, series="per-trigger", reasons=["preflight_failed"])
+            broken["drill"]["settings"] = None
+            broken["box"].update(docker_server=None, docker_compose=None)
+            broken["box"]["nvme"] = {"model": None, "size_bytes": None, "filesystem": None}
+            broken["instrument"]["box_fingerprint"] = "e" * 64
+            records = (fixture_record("valid", 12), broken, fixture_record("valid", 14))
+            for r in records:
+                (runs / f"{r['run_id']}.json").write_text(json.dumps(r), encoding="utf-8")
+            proc = subprocess.run([sys.executable, str(HERE / "build-site.py"), "--site", str(ROOT / "site"),
+                                   "--data", str(ROOT / "data"), "--results", str(tmp / "results"),
+                                   "--out", str(tmp / "_site"), "--now", NOW], capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
+            self.assertEqual([(r["size_bytes"] is None, r["instrument_changes"]) for r in index["runs"]],
+                             [(False, None), (True, []), (False, [])])
+
 
 class Data(unittest.TestCase):
     def test_data_files_match_their_schemas(self):

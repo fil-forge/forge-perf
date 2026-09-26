@@ -75,6 +75,12 @@ export function mercury(runs, now) {
   };
 }
 
+// The latest counting run in any live series, for the headline when no
+// per-trigger run on the persistent box counts yet.
+export function latestCounting(runs) {
+  return runs.filter(counts).pop() || null;
+}
+
 export function scaleTop(gates, merc) {
   const values = gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s);
   if (merc) values.push(merc.run.p5_bytes_per_s, merc.run.median_bytes_per_s ?? 0);
@@ -125,6 +131,33 @@ export function history(runs, series) {
       incoming: Boolean(r.pairing_id) && firstType.get(r.pairing_id) !== r.box.instance_type,
     };
   });
+}
+
+// For each pairing with counting runs on two instance types, the median of
+// each type's run medians and their ratio, the incoming type over the first.
+export function pairedOffsets(runs) {
+  const pairs = new Map();
+  for (const r of runs) {
+    if (!r.pairing_id || !counts(r) || r.median_bytes_per_s == null) continue;
+    if (!pairs.has(r.pairing_id)) pairs.set(r.pairing_id, new Map());
+    const types = pairs.get(r.pairing_id);
+    if (!types.has(r.box.instance_type)) types.set(r.box.instance_type, []);
+    types.get(r.box.instance_type).push(r.median_bytes_per_s);
+  }
+  const out = [];
+  for (const [pairing_id, types] of pairs) {
+    if (types.size !== 2) continue;
+    const [[from, a], [to, b]] = [...types];
+    const fromMedian = median(a), toMedian = median(b);
+    out.push({ pairing_id, from, to, from_median: fromMedian, to_median: toMedian,
+               from_runs: a.length, to_runs: b.length, ratio: toMedian / fromMedian });
+  }
+  return out;
+}
+
+function median(values) {
+  const v = [...values].sort((x, y) => x - y), m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 
 // An instrument marker goes on a run whose instrument changed, except where

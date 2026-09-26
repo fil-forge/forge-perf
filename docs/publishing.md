@@ -87,11 +87,11 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | Field | Holds |
 |---|---|
 | `published_at` | the build's UTC time, so the page can show when it was last published. A build follows only an ingest that reached its commit, so the time ages while ingest fails or the schedule is disabled. GitHub disables a public repository's scheduled workflows after 60 days without activity |
-| `runs` | one row per run in start order: run ID, series, pairing ID, the components that triggered it (`changed`), the run's size (`size_bytes`), box id, tier and type, start time, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
+| `runs` | one row per run in start order: run ID, series, pairing ID, the components that triggered it (`changed`), the run's size (`size_bytes`, null when the record has no drill settings), box id, tier and type, start time, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
-`instrument_changes` lists what differs from the previous run of the same series on the same box: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip) and `box` (the box fingerprint). It is null for a series' first run.
+`instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
 
 ## Gates
 
@@ -104,16 +104,16 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 `site/model.js` holds the rules the page applies to `index.json`, and `scripts/ci/tests/site_model_test.mjs` tests them under node:
 
 - A run counts when its class, after overrides, is `valid`, its series is `per-trigger`, `nightly` or `campaign`, and it has a p5. `calibration` runs appear only in the runs table.
-- The mercury is the latest counting per-trigger run on the box `main`, with its age and the number of runs on that box since. With none, the headline reads "No valid run yet" with the latest run's class and reasons.
+- The mercury is the latest counting per-trigger run on the box `main`, with its age and the number of runs on that box since. With none, the headline reads "No valid per-trigger run yet", names the latest counting run in another series if there is one, and gives the latest run's class and reasons.
 - A gate lights at the first counting run whose p5 reaches the ceiling in force when it started, from any series or box.
 - The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
 - The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
-- The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring.
+- The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring. Under the chart, each pairing with counting runs on two instance types gets a note with the median of each type's run medians and their ratio.
 - The runs table and details view name the flags `cap_not_reached` and `few_windows` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 
-`make site-preview` builds the page against six fixture scenarios (no runs, calibration runs only, a lit gate across a recalibration, every outcome class with an override, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
+`make site-preview` builds the page against seven fixture scenarios (no runs, one valid run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 
-### Publishing a local run
+## Publishing a local run
 
 A local run ([runner.md](runner.md#local-run)) uploads its record to the `local-results` bucket of the local MinIO. With the same `AWS_ENDPOINT_URL` and key exported, the workflow's two steps run against it from a forge-perf checkout, with a scratch directory standing in for the `results` branch:
 
