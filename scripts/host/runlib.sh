@@ -13,8 +13,8 @@
 FORGE_PERF_PIRI_STORES="allocations acceptances claims receipts pdp consolidation"
 FORGE_PERF_PROJECT="${COMPOSE_PROJECT_NAME:-smelt}"
 
-# Load box.conf and the S3 settings, and set the run paths. Values already in
-# the environment win over box.conf's, and box.conf's over the defaults.
+# Load box.conf and the S3 settings, and set the run paths. A variable box.conf
+# sets overrides the environment's value; either overrides the defaults below.
 runner_init() {
   local conf="${FORGE_PERF_BOX_CONF:-/etc/forge-perf/box.conf}"
   host_ops_skipped || [ "$(id -u)" -eq 0 ] || die "must run as root"

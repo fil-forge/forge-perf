@@ -57,6 +57,16 @@ case "$args" in
   *" list-multipart-uploads "*allocations*) printf 'big.bin\tUPLOAD1\n' ;;
   *" list-multipart-uploads "*) echo None ;;
   *" s3 cp "*) [ ! -e "$D/s3-down" ] ;;
+  *" ssm get-parameter "*)
+    [ ! -e "$D/ssm-down" ] || { echo "ssm unreachable" >&2; exit 255; }
+    case "$args" in
+      *piri-s3-access-key-id*) echo AKIAFAKE ;;
+      *piri-s3-secret-access-key*) echo fake-secret ;;
+      *harness-deploy-key*)
+        [ -e "$D/harness" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+        cat "$D/harness" ;;
+      *denylist*) echo FORBIDDEN-WORD ;;
+    esac ;;
   *" put-object "*)
     [ ! -e "$D/s3-down" ] || exit 1
     [ ! -e "$D/uploaded" ] ||
@@ -226,3 +236,96 @@ setup
 has "$work/out" "no interrupted run"
 [ "$(grep -c . "$D/containers")" = 4 ] || fail "recovery without current.json touched the stack"
 echo "ok: without current.json recovery only flushes the outbox"
+
+# --- recovery failure paths ---------------------------------------------------------
+current="$work/box/state/current.json"
+recover_ok() { "$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover exited non-zero: $1"; }; }
+wiped() {
+  count "$D/containers" 0
+  [ ! -e "$current" ] || fail "current.json kept after: $1"
+  ls "$current".failed-* >/dev/null 2>&1 || fail "current.json not moved aside after: $1"
+}
+
+setup
+echo '{"run_id": "main-20261001t200000z", "phase": "preflight"}' >"$current"
+touch "$D/s3-down"
+recover_ok "no runner.json"
+has "$work/out" "no usable runner.json"
+wiped "no runner.json"
+[ -s "$work/box/outbox/main-20261001t200000z.raw.tar.zst" ] || fail "raw tarball not kept"
+[ ! -e "$work/box/outbox/main-20261001t200000z.json" ] || fail "a record appeared"
+echo "ok: without runner.json recovery keeps the raw tarball, wipes and moves current.json aside"
+
+setup
+python3 - "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+del r["settings"]
+json.dump(r, open(sys.argv[2], "w"))
+PY
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+recover_ok "record.py fails"
+has "$work/out" "record.py wrote no record"
+wiped "record.py fails"
+echo "ok: a record that cannot be built does not stop the wipe"
+
+for bad in '{"run_id": "../x", "phase": "drill"}' 'not json'; do
+  setup
+  echo "$bad" >"$current"
+  recover_ok "current.json $bad"
+  wiped "current.json $bad"
+  [ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox written for an unnamed run"
+done
+echo "ok: an unreadable current.json is wiped and moved aside"
+
+setup
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+touch "$D/ssm-down"
+if FORGE_PERF_DENYLIST_FILE='' "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed with SSM down"; fi
+has "$work/out" "attempt 1 of 3, current.json kept"
+[ -e "$current" ] && [ "$(grep -c . "$D/containers")" = 4 ] || fail "attempt 1 wiped without its record"
+[ ! -e "$work/box/run/secrets/denylist.regex" ] || fail "a failed fetch left a denylist file"
+rm "$D/ssm-down" "$work/box/run/secrets/piri-s3.env"
+touch "$D/s3-down"
+FORGE_PERF_DENYLIST_FILE='' "$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "attempt 2 failed"; }
+[ -s "$work/box/outbox/main-20261001t200000z.json" ] || fail "attempt 2 wrote no record"
+has "$D/aws.log" "ssm get-parameter --with-decryption --name /forge-perf/piri-s3-secret-access-key"
+[ ! -e "$current" ] || fail "current.json kept after attempt 2"
+if ls "$current".failed-* >/dev/null 2>&1; then fail "current.json moved aside after a full recovery"; fi
+[ ! -e "$work/box/state/recover-attempts" ] || fail "attempt count kept"
+echo "ok: a failed SSM read keeps current.json, and the restart reads the denylist and piri's pair and finishes"
+
+setup
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+rm "$work/box/run/secrets/piri-s3.env"
+touch "$D/ssm-down"
+FORGE_PERF_RECOVER_ATTEMPTS=1 FORGE_PERF_DENYLIST_FILE='' "$host/recover.sh" >"$work/out" 2>&1 ||
+  { cat "$work/out"; fail "last attempt failed"; }
+wiped "the last attempt"
+[ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox written without credentials or denylist"
+echo "ok: the last attempt wipes without the inputs SSM could not supply"
+
+# A credential in a form the line filter misses, with /run empty as after a reboot.
+for leak in piri harness; do
+  setup
+  cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+  echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+  rm "$work/box/run/secrets/piri-s3.env"
+  printf '%s\n' '-----BEGIN KEY-----' 'aGFybmVzcy1rZXktYm9keQ' '-----END KEY-----' >"$D/harness"
+  case "$leak" in
+    piri) echo "S3 {id: AKIAFAKE, key: fake-secret}" >>"$work/box/nvme/work/run/drill.out" ;;
+    harness) echo "loaded aGFybmVzcy1rZXktYm9keQ" >>"$work/box/nvme/work/run/drill.out" ;;
+  esac
+  touch "$D/s3-down"
+  recover_ok "$leak credential in the tree"
+  has "$work/out" "a credential is still in the collected files"
+  [ ! -e "$work/box/outbox/main-20261001t200000z.raw.tar.zst" ] || fail "tarball written with the $leak credential"
+  python3 - "$work/box/outbox/main-20261001t200000z.json" <<'PY' || fail "record lacks raw_missing"
+import json, sys
+assert "raw_missing" in json.dumps(json.load(open(sys.argv[1])))
+PY
+  count "$D/containers" 0
+done
+echo "ok: a piri or harness credential in the collected files refuses the tarball and flags raw_missing"
