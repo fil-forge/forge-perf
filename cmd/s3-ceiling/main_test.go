@@ -104,12 +104,35 @@ func TestSteady(t *testing.T) {
 	}
 }
 
+func TestDropped(t *testing.T) {
+	s := make([]float64, 1800)
+	for i := range s {
+		s[i] = 100
+		if i >= 600 {
+			s[i] = 85
+		}
+	}
+	if !dropped(s, 0, 1800, 600, 0.10) {
+		t.Error("a 15% drop not seen")
+	}
+	for i := 600; i < 1800; i++ {
+		s[i] = 95
+	}
+	if dropped(s, 0, 1800, 600, 0.10) {
+		t.Error("a 5% drop counted as the end of the burst")
+	}
+	if dropped(s, 0, 1000, 600, 0.10) {
+		t.Error("overlapping spans compared")
+	}
+}
+
 func TestFioSumsJobsPerSecond(t *testing.T) {
 	dir := t.TempDir()
 	var logs []string
 	for job := 1; job <= 4; job++ {
 		var b strings.Builder
-		for s := 1; s <= 90; s++ {
+		// Job 4 finishes 10 s early; each job's last sample is partial.
+		for s := 1; s <= 101-10*(job/4); s++ {
 			// fio's timestamps drift a few ms from the whole second.
 			b.WriteString(strings.Join([]string{itoa(s*1000 + job), " 1024", " 1", " 1048576", " 0"}, ",") + "\n")
 		}
@@ -127,7 +150,8 @@ func TestFioSumsJobsPerSecond(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	// 4 jobs x 1024 KiB/s = 4 MiB/s; 60 s after the skip = 2 windows.
+	// 4 jobs x 1024 KiB/s = 4 MiB/s until job 4's last full second, the
+	// 90th; 60 s after the skip = 2 windows, none with fewer writers.
 	if got["p5"] != float64(4<<20) || got["median"] != float64(4<<20) || got["windows"] != 2.0 || got["seconds"] != 90.0 {
 		t.Errorf("fio summary = %v", got)
 	}
@@ -165,16 +189,31 @@ func TestPhaseFlag(t *testing.T) {
 
 // fakeS3 answers the calls PutObject and the cleanup make, on loopback only.
 type fakeS3 struct {
-	mu      sync.Mutex
-	puts    map[string]int
-	deletes map[string]int
-	aborts  int
+	mu        sync.Mutex
+	puts      map[string]int
+	parts     map[string]int
+	completes map[string]int
+	deletes   map[string]int
+	aborts    int
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	q := r.URL.Query()
 	switch {
+	case r.Method == http.MethodPost && q.Has("uploads"):
+		w.Header().Set("Content-Type", "application/xml")
+		io.WriteString(w, `<InitiateMultipartUploadResult><Bucket>pdp</Bucket><Key>k</Key><UploadId>up1</UploadId></InitiateMultipartUploadResult>`)
+	case r.Method == http.MethodPut && q.Has("partNumber") && q.Get("uploadId") == "up1":
+		io.Copy(io.Discard, r.Body)
+		f.parts[r.URL.Path]++
+		w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
+	case r.Method == http.MethodPost && q.Get("uploadId") == "up1":
+		io.Copy(io.Discard, r.Body)
+		f.completes[r.URL.Path]++
+		w.Header().Set("Content-Type", "application/xml")
+		io.WriteString(w, `<CompleteMultipartUploadResult><Bucket>pdp</Bucket><Key>k</Key><ETag>"d41d8cd98f00b204e9800998ecf8427e-2"</ETag></CompleteMultipartUploadResult>`)
 	case r.Method == http.MethodPut:
 		n, _ := io.Copy(io.Discard, r.Body)
 		if n == 0 {
@@ -195,15 +234,51 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func TestRunAgainstFakeS3(t *testing.T) {
-	fake := &fakeS3{puts: map[string]int{}, deletes: map[string]int{}}
+func newFake(t *testing.T) (*fakeS3, *minio.Client, string) {
+	fake := &fakeS3{puts: map[string]int{}, parts: map[string]int{}, completes: map[string]int{}, deletes: map[string]int{}}
 	srv := httptest.NewServer(fake)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 	endpoint := strings.TrimPrefix(srv.URL, "http://")
 	client, err := minio.New(endpoint, &minio.Options{Creds: credentials.NewStaticV4("k", "s", ""), Region: "us-east-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return fake, client, endpoint
+}
+
+// A 17 MiB object takes minio-go's streaming multipart path, as piri's
+// 128 MiB PUTs do. The ENA counter never rises, so at the burst check the
+// first phase extends to -burst-max, flags burst_unconfirmed, and scores its
+// last -score-last.
+func TestRunMultipartAndBurstExtension(t *testing.T) {
+	fake, client, endpoint := newFake(t)
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "ethtool")
+	os.WriteFile(stub, []byte("#!/bin/sh\necho '     bw_out_allowance_exceeded: 7'\n"), 0o755)
+	c := putConfig{endpoint: endpoint, bucket: "pdp", prefix: "ceiling/mp/", out: dir, iface: "ens5", ethtool: stub,
+		objectBytes: 17 << 20, enaEvery: time.Second, burstCheck: time.Second, burstMax: 3 * time.Second, scoreLast: time.Second}
+	c.phases.Set("1:2s")
+	sum, err := run(context.Background(), client, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Phases[0].EndS != 3 || sum.SustainedFromS != 2 || sum.BurstEndedS != nil ||
+		strings.Join(sum.Flags, ",") != "burst_unconfirmed" {
+		t.Errorf("summary = %+v", sum)
+	}
+	if len(fake.puts) != 0 || len(fake.completes) == 0 {
+		t.Errorf("single PUTs %v, completed uploads %v; want multipart only", fake.puts, fake.completes)
+	}
+	// Two parts per completed object, plus the upload cut off at the end.
+	for key, n := range fake.completes {
+		if p := fake.parts[key]; p < 2*n || p > 2*n+2 {
+			t.Errorf("%s: %d parts for %d objects, want 2 each", key, p, n)
+		}
+	}
+}
+
+func TestRunAgainstFakeS3(t *testing.T) {
+	fake, client, endpoint := newFake(t)
 	dir := t.TempDir()
 	stub := filepath.Join(dir, "ethtool")
 	os.WriteFile(stub, []byte("#!/bin/sh\necho 'NIC statistics:'\necho '     bw_out_allowance_exceeded: 7'\necho '     pps_allowance_exceeded: 0'\n"), 0o755)

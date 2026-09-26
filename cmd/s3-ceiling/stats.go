@@ -120,12 +120,28 @@ func steady(perSecond []float64, at, span int, tolerance float64) bool {
 	return before > 0 && math.Abs(last-before) <= tolerance*before
 }
 
+// dropped reports whether the median 30 s window of the span seconds before at
+// lies at least by below the median of the span seconds from start: the rate
+// fell once the burst ended.
+func dropped(perSecond []float64, start, at, span int, by float64) bool {
+	if at-span < start+span || at > len(perSecond) {
+		return false
+	}
+	early := median(windowRates(perSecond, start, start+span, window))
+	late := median(windowRates(perSecond, at-span, at, window))
+	return early > 0 && late <= (1-by)*early
+}
+
 // fioSeconds reads fio bandwidth logs (--write_bw_log with --log_avg_msec=1000:
 // "msec, KiB/s, direction, block size, offset[, priority]" per line) and sums
-// every log's rate per second, since fio writes one log per job.
+// every log's rate per second, since fio writes one log per job. The series
+// ends before the last sample of the job that finished first: that sample
+// covers part of a second, and every later second has fewer writers.
 func fioSeconds(logs []io.Reader) ([]float64, error) {
 	var perSecond []float64
+	end := -1
 	for _, r := range logs {
+		last := -1
 		s := bufio.NewScanner(r)
 		for s.Scan() {
 			f := strings.Split(s.Text(), ",")
@@ -145,10 +161,14 @@ func fioSeconds(logs []io.Reader) ([]float64, error) {
 				perSecond = append(perSecond, 0)
 			}
 			perSecond[sec] += kib * 1024
+			last = max(last, sec)
 		}
 		if err := s.Err(); err != nil {
 			return nil, err
 		}
+		if end < 0 || last < end {
+			end = last
+		}
 	}
-	return perSecond, nil
+	return perSecond[:max(end, 0)], nil
 }

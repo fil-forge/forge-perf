@@ -270,7 +270,7 @@ func run(ctx context.Context, client *minio.Client, c putConfig) (*Summary, erro
 		}()
 	}
 
-	var perSecond []float64
+	var perSecond, errsPerSecond []float64
 	var ena []enaSample
 	ena = c.sampleENA(ena, 0)
 	start := time.Now()
@@ -299,6 +299,7 @@ phases:
 			}
 			b, o, e := bytes.Load(), objects.Load(), failures.Load()
 			perSecond = append(perSecond, float64(b-lastBytes))
+			errsPerSecond = append(errsPerSecond, float64(e-lastFailures))
 			t := len(perSecond)
 			fmt.Fprintf(csvW, "%d,%d,%d,%d,%d\n", t, b-lastBytes, o-lastObjects, e-lastFailures, p.Workers)
 			lastBytes, lastObjects, lastFailures = b, o, e
@@ -306,10 +307,11 @@ phases:
 				ena = c.sampleENA(ena, t)
 			}
 			// The first phase runs until the burst has visibly ended: the
-			// allowance counter rising for 5 minutes and the rate steady.
+			// allowance counter rising for 5 minutes, the rate steady, and
+			// the last 10 minutes at least 10% below the first 10.
 			if i == 0 && c.burstCheck > 0 && t-p.StartS == int(c.burstCheck.Seconds()) {
 				_, ended := burstEnd(ena, t, 300)
-				if !ended || !steady(perSecond, t, 600, 0.05) {
+				if !ended || !steady(perSecond, t, 600, 0.05) || !dropped(perSecond, p.StartS, t, 600, 0.10) {
 					end = p.StartS + int(c.burstMax.Seconds())
 					sum.Flags = append(sum.Flags, "burst_unconfirmed")
 					log.Printf("the burst has not visibly ended at %s; the phase runs to %s", c.burstCheck, c.burstMax)
@@ -333,8 +335,13 @@ phases:
 	}
 	sum.SustainedFromS = from
 	sum.Stat = score(windowRates(perSecond, from, first.EndS, window))
-	if s, ok := burstEnd(ena, first.EndS, 300); ok {
+	// A burst counts as ended only when the rate fell after it.
+	if s, ok := burstEnd(ena, first.EndS, 300); ok && dropped(perSecond, first.StartS, first.EndS, 600, 0.10) {
 		sum.BurstEndedS = &s
+	}
+	if n := sumOf(errsPerSecond[min(from, first.EndS):first.EndS]); n > 0 {
+		// Failed PUTs still count the bytes minio-go read before failing.
+		sum.Flags = append(sum.Flags, "errors")
 	}
 	for i := range c.phases {
 		p := &c.phases[i]
@@ -405,6 +412,14 @@ func writeENA(path string, ena []enaSample) error {
 		fmt.Fprintf(&b, "%d,%d,%d,%d\n", s.T, s.BwOut, s.Pps, s.Conntrack)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func sumOf(values []float64) float64 {
+	n := 0.0
+	for _, v := range values {
+		n += v
+	}
+	return n
 }
 
 func minioVersion() string {

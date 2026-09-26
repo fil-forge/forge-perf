@@ -54,6 +54,9 @@ mkdir -p "$out"
 bin="$(dirname "$out")/s3-ceiling"
 
 step "build s3-ceiling"
+# The SSM agent's environment may carry no HOME, so Go gets run.sh's caches.
+go_cache="${FORGE_PERF_GO_CACHE-/var/cache/forge-perf/go}"
+[ -z "$go_cache" ] || export GOCACHE="$go_cache/build" GOMODCACHE="$go_cache/mod"
 (cd "$FORGE_PERF_CHECKOUT" && GOTOOLCHAIN=local GOFLAGS=-mod=readonly go build -o "$bin" ./cmd/s3-ceiling)
 
 iface="$(host_read ip -o route show default | awk '{ print $5; exit }')"
@@ -92,6 +95,8 @@ fi
 step "S3 PUT, $w workers"
 "${put[@]}" -prefix "ceiling/$date/" -out "$out" "${schedule[@]}"
 
+[ "$(jq -r '.windows' "$out/s3-put.json")" -gt 0 ] || die "the S3 phase scored no 30 s window"
+
 step "NVMe write"
 nvme_args=(--out "$out" --scorer "$bin")
 [ -z "$quick" ] || nvme_args+=(--quick)
@@ -103,9 +108,10 @@ if [ -z "$quick" ]; then
   mkdir -p "$out/combined"
   "${put[@]}" -prefix "ceiling/$date/combined/" -out "$out/combined" -phase "$w:10m" -score-drop 30s &
   pid=$!
+  # Each job's region is 25 GB rounded down to whole MiB, for O_DIRECT.
   (cd "$out/combined" && host_op fio --name=seqwrite --filename="$FORGE_PERF_NVME_MOUNT/scratch/combined.fio" \
     --direct=1 --ioengine=io_uring --rw=write --bs=1M --iodepth=32 --numjobs=4 --group_reporting \
-    --size=25000000000 --offset_increment=25000000000 --time_based --runtime=600 \
+    --size=24999100416 --offset_increment=24999100416 --time_based --runtime=600 \
     --write_bw_log=combined --log_avg_msec=1000 --output-format=json --output=combined-fio.json)
   wait "$pid"
   host_op rm -f "$FORGE_PERF_NVME_MOUNT/scratch/combined.fio"

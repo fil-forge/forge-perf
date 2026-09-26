@@ -17,10 +17,11 @@ LICENSE
 Makefile
 README.md
 calibration/
-# The ceiling tools run only on a calibration box, never during a run.
-cmd/
+# The ceiling tool runs only on a calibration box, never during a run.
+cmd/s3-ceiling/
 data/
 docs/
+# go.mod and go.sum belong here only while no Go code runs during a run.
 go.mod
 go.sum
 schema/

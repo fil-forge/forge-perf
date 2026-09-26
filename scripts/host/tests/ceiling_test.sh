@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Behavior of ceiling.sh and ceiling-nvme.sh against stubs. go build leaves a
 # stub s3-ceiling that writes its files and scores fio logs from $P1, $P2,
-# $FS; fio writes four bandwidth logs; aws answers SSM and copies the upload
+# $FS, with $W_FS windows for the filesystem pass; fio refuses a byte
+# --offset_increment that is not whole MiB, as O_DIRECT does, and writes four
+# bandwidth logs; aws answers SSM and copies the upload
 # into $D/s3. Every host command is appended to $D/calls, so each case checks
 # what ran, with which arguments and in what order.
 # SC2016: stub bodies expand in the stub, not here.
@@ -37,7 +39,10 @@ for c in umount mount blkdiscard mkfs.ext4 sync sysctl; do stub "$c"; done
 stub mountpoint 'exit 0'
 stub ip 'echo "default via 10.0.0.1 dev ens5 proto dhcp"'
 stub ethtool 'printf "driver: ena\nversion: 2.13\n"'
-stub fio 'for a; do case "$a" in --write_bw_log=*) n="${a#*=}" ;; --output=*) o="${a#*=}" ;; esac; done
+stub fio 'for a; do case "$a" in --write_bw_log=*) n="${a#*=}" ;; --output=*) o="${a#*=}" ;;
+  --offset_increment=*%) ;;
+  --offset_increment=*) [ $((${a#*=} % 1048576)) = 0 ] || { echo "fio: io_u error: Invalid argument" >&2; exit 2; } ;;
+esac; done
 [ "$*" != --version ] || { echo fio-3.36; exit 0; }
 for j in 1 2 3 4; do echo "1000, 1024, 1, 1048576, 0" >"${n}_bw.$j.log"; done
 echo "{}" >"$o"'
@@ -54,10 +59,11 @@ esac'
 cat >"$work/s3-ceiling" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = fio ]; then
+  w=10
   case "$4" in
-    nvme-pass1*) v="$P1" ;; nvme-pass2*) v="$P2" ;; nvme-fs*) v="$FS" ;; *) v=5 ;;
+    nvme-pass1*) v="$P1" ;; nvme-pass2*) v="$P2" ;; nvme-fs*) v="$FS" w="${W_FS:-10}" ;; *) v=5 ;;
   esac
-  echo "{\"p5\": $v, \"median\": $((v + 1)), \"windows\": 10}"
+  echo "{\"p5\": $v, \"median\": $((v + 1)), \"windows\": $w}"
   exit 0
 fi
 echo "s3-ceiling $* key=$FORGE_PERF_PIRI_S3_KEY_ID" >>"$D/calls"
@@ -113,7 +119,10 @@ m="$(line mkfs.ext4)" fs="$(line 'fio.*nvme-fs')" c="$(line 'fio.*combined')"
 grep -q "blkdiscard -f /dev/nvme1n1" "$D/calls" || fail "the discard targets the instance store"
 grep "fio.*nvme-pass1" "$D/calls" | grep -q -- "--filename=/dev/nvme1n1 --direct=1 --ioengine=io_uring --rw=write --bs=1M --iodepth=32 --numjobs=4 .*--size=25% --offset_increment=25%$" ||
   fail "pass 1 is the whole device, four regions"
-grep "fio.*nvme-fs" "$D/calls" | grep -q -- "--size=25000000000 --offset_increment=25000000000" || fail "a 100 GB file"
+grep "fio.*nvme-fs" "$D/calls" | grep -q -- "--size=94799659008 --offset_increment=94799659008 --time_based --runtime=300$" ||
+  fail "the file holds 300 s at pass 1's median, within 80% of the drive, in whole MiB per job"
+[ "$(jq -r '[.fs_file_bytes, .fs_seconds] | join(" ")' "$D/s3/nvme.json")" = "379198636032 300" ] || fail "nvme.json file size"
+grep "fio.*combined" "$D/calls" | grep -q -- "--size=24999100416 --offset_increment=24999100416 " || fail "combined regions in whole MiB"
 [ "$(summary '[.ceiling, .limited_by, .s3_put.p5, .nvme_write.p5, .nvme_write.limited_by_fs, .quick] | join(" ")')" = \
   "500000000 s3_put 500000000 2000000000 false false" ] || fail "the ceiling is the lower, S3"
 [ "$(summary '[.combined.s3_put_median, .combined.nvme_median, .s3_put.burst_ended_s] | join(" ")')" = "500000001 6 1200" ] ||
@@ -131,12 +140,24 @@ ceiling 0 --date 2026-10-06
 [ "$(summary '.limited_by')" = nvme_write ] || fail "a drive slower than S3 limits the ceiling"
 echo "ok: the filesystem figure replaces the raw one below 90%, and the lower measurement limits"
 
+export S3=500000000 W_FS=0
+ceiling 1 --date 2026-10-06
+grep -q "nvme-fs ran too briefly to score" "$work/out" || fail "a filesystem pass with no window was scored"
+[ ! -e "$D/s3/summary.json" ] || fail "a summary was uploaded with an unscored filesystem pass"
+unset W_FS
+echo "ok: a pass with no scored window stops the measurement"
+
 export TYPE=m9gd.8xlarge NPROC=32 S3=500000000
 ceiling 0 --date 2026-10-07 --quick
 grep -q -- "-phase 256:3m -phase 512:1m -score-drop 30s" "$D/calls" || fail "quick S3 schedule"
-grep "fio.*nvme-pass1" "$D/calls" | grep -q -- "--runtime=60" || fail "quick pass 1 is capped"
+grep "fio.*nvme-pass1" "$D/calls" | grep -q -- "--runtime=90" || fail "quick pass 1 is capped"
 ! grep -q "nvme-pass2\|combined" "$D/calls" || fail "quick runs no pass 2 and no combined phase"
-grep "fio.*nvme-fs" "$D/calls" | grep -q -- "--size=2500000000 " || fail "a 10 GB file"
+grep "fio.*nvme-fs" "$D/calls" | grep -q -- "--size=44999639040 --offset_increment=44999639040 --time_based --runtime=90$" ||
+  fail "quick writes 90 s through the filesystem"
+export P1=10000000
+ceiling 0 --date 2026-10-07 --quick
+grep "fio.*nvme-fs" "$D/calls" | grep -q -- "--size=2499805184 " || fail "a slow drive still writes a 10 GB file"
+export P1=2000000000
 [ "$(summary '[.quick, .combined, .nvme_write.pass2_median] | join(" ")')" = "true  " ] || fail "quick summary"
 [ "$(cat "$D/dest")" = s3://test-results/raw/calibration/2026-10-07/m9gd.8xlarge/ ] || fail "quick upload"
 unset NPROC

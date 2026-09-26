@@ -400,7 +400,7 @@ Use one date for the whole session. m9gd.2xlarge needs `hours=5`: its S3 phase r
 
 The measurement wipes the instance store, so `ceiling.sh` refuses on any box but a campaign box in mode `calibration`. It uses piri's key against the box's own `pdp` bucket and deletes what it wrote.
 
-When all three types are in, commit `calibration/ceilings/<date>/` with `data/gates.json` updated from the three `summary.json` files (each gate's `ceiling_bytes_per_s` is the summary's `ceiling`), in one pull request that a person reviews. Flags in a summary need a look before the gate changes: `under_driven` means twice the workers ran more than 3% faster, so that type is measured again with `--workers <that count>`; `burst_unconfirmed` means the burst allowance had not visibly ended by minute 60.
+When all three types are in, commit `calibration/ceilings/<date>/` with `data/gates.json` updated from the three `summary.json` files (each gate's `ceiling_bytes_per_s` is the summary's `ceiling`), in one pull request that a person reviews. Flags in a summary need a look before the gate changes: `under_driven` means twice the workers ran more than 3% faster, so that type is measured again with `--workers <that count>`; `burst_unconfirmed` means the burst allowance had not visibly ended by minute 60; `errors` means PUTs failed in the scored segment, and the S3 figure counts the bytes they read before failing.
 
 ## Tier 1 to tier 2
 

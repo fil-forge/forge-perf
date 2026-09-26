@@ -14,6 +14,9 @@ module "constants" {
 locals {
   name = "forge-perf-box-${var.box_name}"
 
+  # A campaign box started to measure the ceilings (campaign.json's mode).
+  calibration = var.mode == "campaign" && try(jsondecode(var.campaign).mode, "") == "calibration"
+
   # The apply role may change only what carries Project=forge-perf, so every
   # resource must get it at creation. Each sets it in its own tags as well as
   # through the root's provider: a test's provider block replaces the root's,
@@ -166,15 +169,16 @@ data "aws_iam_policy_document" "box" {
   }
 
   # Write-only: a compromised box can overwrite its own records, which bucket
-  # versioning keeps, and read nothing back. A campaign box also measures the
-  # ceilings, whose evidence goes to raw/calibration/ (scripts/host/ceiling.sh).
+  # versioning keeps, and read nothing back. A campaign box in mode calibration
+  # also measures the ceilings, whose evidence goes to raw/calibration/
+  # (scripts/host/ceiling.sh); a box running a set cannot overwrite it.
   statement {
     sid     = "WriteOwnResults"
     actions = ["s3:PutObject", "s3:AbortMultipartUpload"]
     resources = concat([
       "${local.results}/raw/${var.box_name}/*",
       "${local.results}/published/${var.box_name}/*",
-    ], var.mode == "campaign" ? ["${local.results}/raw/calibration/*"] : [])
+    ], local.calibration ? ["${local.results}/raw/calibration/*"] : [])
   }
 
   # The wipe empties the buckets after every run. Reading and writing objects
