@@ -31,7 +31,7 @@ case "$1 ${2:-}" in
       esac
     done <"$D/containers" ;;
   "rm -f"*) shift 2; for id; do drop "$id" "$D/containers"; done ;;
-  "stop -t") ;;
+  "stop -t") [ ! -e "$D/stop-fails" ] || { echo "docker stop: daemon busy" >&2; exit 1; } ;;
   "logs --timestamps") echo "2026-10-01T20:01:00Z up $3"; echo "2026-10-01T20:01:01Z access_key_id: AKIAFAKE" ;;
   "inspect --format") awk -v id="$4" '$1 == id { print "/" $2 }' "$D/containers" ;;
   "volume ls")
@@ -372,12 +372,17 @@ echo smelt_minio-data >"$D/stuck"
 if "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed with a failed wipe"; fi
 has "$work/out" "the wipe failed; attempt 1 of 3"
 [ -e "$current" ] || fail "current.json moved aside on attempt 1"
-if FORGE_PERF_RECOVER_ATTEMPTS=2 "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed on the last failed wipe"; fi
+status=0
+FORGE_PERF_RECOVER_ATTEMPTS=2 "$host/recover.sh" >"$work/out" 2>&1 || status=$?
+[ "$status" = 4 ] || fail "the last failed wipe exited $status, want 4"
+grep -qx "RestartPreventExitStatus=4" "$repo/systemd/forge-perf-recover.service" || fail "the unit restarts on exit 4"
 has "$work/out" "the wipe failed on the last attempt"
 [ ! -e "$current" ] || fail "current.json kept after the last failed wipe"
 ls "$current".failed-* >/dev/null 2>&1 || fail "current.json not set aside"
 [ ! -e "$work/box/state/recover-attempts" ] || fail "attempt count kept"
-echo "ok: a wipe that fails on the last attempt moves current.json aside and fails the unit"
+"$host/recover.sh" >"$work/out" 2>&1
+has "$work/out" "no interrupted run"
+echo "ok: a wipe that fails on the last attempt moves current.json aside and exits 4, which the unit does not restart"
 
 # Without current.json a stale attempt count goes away.
 setup
@@ -385,3 +390,70 @@ echo 2 >"$work/box/state/recover-attempts"
 "$host/recover.sh" >/dev/null 2>&1
 [ ! -e "$work/box/state/recover-attempts" ] || fail "stale attempt count kept"
 echo "ok: recovery without current.json clears a stale attempt count"
+
+# A reboot after the drill started: the record blames the interrupt, not the runner.
+setup
+python3 - "$host/fixtures/valid/runner.json" "$work/box/nvme/work/run/runner.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["time"]["drill_started_at"]
+r["time"].update(drill_finished_at=None, run_finished_at=None)
+json.dump(r, open(sys.argv[2], "w"))
+PY
+echo '{"run_id": "main-20261001t120000z", "phase": "drill"}' >"$current"
+touch "$D/s3-down"
+recover_ok "a drill that started"
+python3 - "$work/box/outbox/main-20261001t120000z.json" <<'PY' || fail "a started drill's record is not no_data/[drill_interrupted]"
+import json, sys
+o = json.load(open(sys.argv[1]))["outcome"]
+assert (o["class"], o["reasons"]) == ("no_data", ["drill_interrupted"]), o
+PY
+echo "ok: recovery of a drill that started records only drill_interrupted"
+
+# A collection step that fails (zstd on a full disk) and a failing docker stop still wipe.
+setup
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+mkdir -p "$work/fullbin"
+printf '#!/usr/bin/env bash\necho "zstd: No space left on device" >&2\nexit 1\n' >"$work/fullbin/zstd"
+chmod +x "$work/fullbin/zstd"
+touch "$D/s3-down" "$D/stop-fails"
+PATH="$work/fullbin:$PATH" "$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover failed on a failed collection"; }
+rm -f "$D/stop-fails"
+has "$work/out" "collecting the raw tarball failed"
+has "$work/out" "docker stop failed"
+[ -z "$(find "$work/box/outbox" -name '*.raw.tar.zst*')" ] || fail "a partial tarball was left"
+[ ! -e "$work/box/nvme/work/recover-raw" ] || fail "the stage was left"
+python3 - "$work/box/outbox/main-20261001t200000z.json" <<'PY' || fail "record lacks raw_missing"
+import json, sys
+assert "raw_missing" in json.dumps(json.load(open(sys.argv[1])))
+PY
+count "$D/containers" 0
+[ ! -e "$current" ] || fail "current.json kept after a failed collection"
+echo "ok: a failed collection or docker stop costs the tarball, and recovery still records and wipes"
+
+# A runner copy another run's recovery left behind is not reused, and the
+# SSM parameter names follow FORGE_PERF_SSM_PATH.
+setup
+echo '{"run_id": "main-20261001t200000z", "reasons": []}' >"$work/box/state/recover-runner.json"
+python3 - "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+r["run_id"] = "main-20261002t100000z"
+json.dump(r, open(sys.argv[2], "w"))
+PY
+echo '{"run_id": "main-20261002t100000z", "phase": "drill"}' >"$current"
+rm "$work/box/run/secrets/piri-s3.env"
+touch "$D/s3-down"
+: >"$D/aws.log"
+FORGE_PERF_SSM_PATH=/other recover_ok "a stale recover-runner.json"
+has "$D/aws.log" "--name /other/piri-s3-secret-access-key"
+python3 - "$work/box/outbox/main-20261002t100000z.json" <<'PY' || fail "the record carries another run's run_id"
+import json, sys
+assert json.load(open(sys.argv[1]))["run_id"] == "main-20261002t100000z"
+PY
+setup
+echo '{"run_id": "main-20261001t200000z", "reasons": []}' >"$work/box/state/recover-runner.json"
+"$host/recover.sh" >/dev/null 2>&1
+[ ! -e "$work/box/state/recover-runner.json" ] || fail "recovery without current.json kept recover-runner.json"
+echo "ok: a stale recover-runner.json is dropped, and SSM names follow FORGE_PERF_SSM_PATH"

@@ -20,8 +20,10 @@
 # current.json kept, so a restart or the next boot retries it; after
 # $FORGE_PERF_RECOVER_ATTEMPTS attempts (default 3) recovery goes on without
 # that input. A failed wipe also keeps current.json until the last attempt,
-# which moves it aside and fails. runner.json comes from the run directory, or
-# from $FORGE_PERF_STATE_DIR/runner.json when a stop/start left the NVMe blank.
+# which moves it aside and exits 4, a status the unit does not restart on.
+# A collection step that fails (a full disk, a Docker error) costs the raw
+# tarball, never the wipe. runner.json comes from the run directory, or from
+# $FORGE_PERF_STATE_DIR/runner.json when a stop/start left the NVMe blank.
 #
 # The tarball leaves out *.env files and provider/, and drops every line that
 # names access_key_id or secret_access_key, which `piri init` prints. It is not
@@ -41,6 +43,7 @@ take_run_lock
 current="$FORGE_PERF_STATE_DIR/current.json"
 attempts="$FORGE_PERF_STATE_DIR/recover-attempts"
 amended="$FORGE_PERF_STATE_DIR/recover-runner.json"
+ssm_path="${FORGE_PERF_SSM_PATH:-/forge-perf}"
 
 flush() {
   "$here/outbox.sh" flush || echo "recover: the outbox keeps files for the next poll" >&2
@@ -52,7 +55,7 @@ ssm_value() {
 
 if [ ! -e "$current" ]; then
   step "no interrupted run"
-  rm -f "$attempts"
+  rm -f "$attempts" "$amended"
   flush
   exit 0
 fi
@@ -85,15 +88,15 @@ read_credentials() (
     echo "recover: $creds is missing" >&2
     exit 1
   else
-    id="$(ssm_value "${FORGE_PERF_PIRI_KEY_ID_PARAM:-/forge-perf/piri-s3-access-key-id}")" || exit 1
-    secret="$(ssm_value "${FORGE_PERF_PIRI_SECRET_PARAM:-/forge-perf/piri-s3-secret-access-key}")" || exit 1
+    id="$(ssm_value "${FORGE_PERF_PIRI_KEY_ID_PARAM:-$ssm_path/piri-s3-access-key-id}")" || exit 1
+    secret="$(ssm_value "${FORGE_PERF_PIRI_SECRET_PARAM:-$ssm_path/piri-s3-secret-access-key}")" || exit 1
   fi
   # Strings shorter than 8 characters are not checked against (see below).
   [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ] || { echo "recover: piri's key ID or secret is empty" >&2; exit 1; }
   printf '%s\n' "$id" "$secret" >"$1.all" || exit 1
   if ! host_ops_skipped; then
     # The harness credential's parameter may not exist yet; any other error fails.
-    ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-/forge-perf/harness-deploy-key}" >>"$1.all" 2>"$1.err" ||
+    ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-$ssm_path/harness-deploy-key}" >>"$1.all" 2>"$1.err" ||
       grep -q ParameterNotFound "$1.err" || exit 1
   fi
   # Keep strings of 8 or more characters, so no blank line matches everything.
@@ -137,7 +140,8 @@ forbid="$FORGE_PERF_RUNTIME/secrets/recover-forbid"
 step "stop containers"
 ids="$(stack_containers)"
 # shellcheck disable=SC2086 # container IDs
-[ -z "$ids" ] || docker stop -t 30 $ids >/dev/null
+[ -z "$ids" ] || docker stop -t 30 $ids >/dev/null ||
+  echo "recover: docker stop failed; the wipe removes the containers" >&2
 
 have_forbid=false
 if [ "$needs_record" = true ]; then
@@ -149,22 +153,20 @@ if [ "$needs_record" = true ]; then
   fi
 fi
 
-raw_missing=0
-if [ "$needs_record" = true ] && [ ! -e "$raw" ]; then
-  step "collect the raw tarball"
-  stage="$FORGE_PERF_WORK/recover-raw"
-  rm -rf "$stage"
-  mkdir -p "$stage/run" "$stage/logs"
+# Collect into $stage and write $raw. It runs as an `if` condition, where bash
+# ignores set -e, so every step is checked; a failure costs only the tarball.
+collect() {
+  rm -rf "$stage" && mkdir -p "$stage/run" "$stage/logs" || return 1
   if [ -d "$run_dir" ]; then
-    tar -C "$run_dir" --exclude '*.env' --exclude provider -cf - . | tar -C "$stage/run" -xf -
+    tar -C "$run_dir" --exclude '*.env' --exclude provider -cf - . | tar -C "$stage/run" -xf - || return 1
   fi
   for id in $ids; do
-    name="$(docker inspect --format '{{.Name}}' "$id")"
+    name="$(docker inspect --format '{{.Name}}' "$id")" || name="$id"
     docker logs --timestamps "$id" >"$stage/logs/${name#/}.log" 2>&1 || true
   done
   while IFS= read -r -d '' f; do
-    LC_ALL=C grep -a -viE 'access_key_id|secret_access_key' "$f" >"$f.scrub" || true
-    mv "$f.scrub" "$f"
+    LC_ALL=C grep -a -viE 'access_key_id|secret_access_key' "$f" >"$f.scrub"
+    [ "$?" -le 1 ] && mv "$f.scrub" "$f" || return 1
   done < <(find "$stage" -type f -print0)
   if [ "$have_forbid" != true ]; then
     echo "recover: without the credentials to check against, no raw tarball" >&2
@@ -173,16 +175,30 @@ if [ "$needs_record" = true ] && [ ! -e "$raw" ]; then
     echo "recover: a credential is still in the collected files; no raw tarball" >&2
     raw_missing=1
   else
-    tar -C "$stage" -cf - . | zstd -q -f -o "$raw.tmp"
-    mv "$raw.tmp" "$raw"
+    tar -C "$stage" -cf - . | zstd -q -f -o "$raw.tmp" && mv "$raw.tmp" "$raw"
   fi
-  rm -rf "$stage"
+}
+
+raw_missing=0
+if [ "$needs_record" = true ] && [ ! -e "$raw" ]; then
+  step "collect the raw tarball"
+  stage="$FORGE_PERF_WORK/recover-raw"
+  if ! collect; then
+    echo "recover: collecting the raw tarball failed; the record carries raw_missing" >&2
+    raw_missing=1
+  fi
+  rm -rf "$stage" "$raw.tmp"
 fi
 
 if [ "$needs_record" = true ] && [ ! -e "$record" ]; then
   step "write the no_data record"
   runner="$run_dir/runner.json"
   [ -e "$runner" ] || runner="$FORGE_PERF_STATE_DIR/runner.json"
+  # A runner copy left by another run's failed recovery is not this run's.
+  if [ -e "$amended" ] && ! python3 -c 'import json, sys
+sys.exit(json.load(open(sys.argv[1], encoding="utf-8")).get("run_id") != sys.argv[2])' "$amended" "$run_id" 2>/dev/null; then
+    rm -f "$amended"
+  fi
   if [ ! -e "$amended" ] && ! python3 - "$runner" "$amended" "$raw_missing" <<'PY'; then
 import datetime, json, sys
 try:
@@ -203,7 +219,7 @@ PY
   if [ -z "$no_record" ] && [ ! -s "$denylist" ]; then
     host_ops_skipped && die "set FORGE_PERF_DENYLIST_FILE to the denylist pattern file"
     mkdir -p "$(dirname "$denylist")"
-    if (umask 077 && ssm_value "${FORGE_PERF_DENYLIST_PARAM:-/forge-perf/denylist}" >"$denylist.tmp"); then
+    if (umask 077 && ssm_value "${FORGE_PERF_DENYLIST_PARAM:-$ssm_path/denylist}" >"$denylist.tmp"); then
       mv "$denylist.tmp" "$denylist"
     else
       rm -f "$denylist.tmp"
@@ -231,10 +247,12 @@ set_aside() {
 step "wipe"
 if ! FORGE_PERF_LOCK_HELD=1 "$here/wipe.sh"; then
   # On the last attempt, move current.json aside so the next boot formats the
-  # NVMe instead of failing the same way; the unit still shows failed.
+  # NVMe instead of failing the same way. Exit 4 is in the unit's
+  # RestartPreventExitStatus=, so the unit stays failed until then.
   [ "$attempt" -ge "$max_attempts" ] || die "the wipe failed; attempt $attempt of $max_attempts, current.json kept for a retry"
   set_aside
-  die "the wipe failed on the last attempt"
+  echo "ERROR: the wipe failed on the last attempt" >&2
+  exit 4
 fi
 if [ -n "$no_record" ]; then
   set_aside

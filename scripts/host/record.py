@@ -431,9 +431,11 @@ def build(runner, run_dir, latency, env):
                 reasons.add("drill_failure")
             if exit_code == 1 and not reasons:
                 reasons.add("drill_failure")
-    # verify pre runs before the drill and verify post after it. A missing pass checked nothing.
+    # verify pre runs before the drill and verify post after it. A missing pass checked nothing,
+    # unless the runner interrupted the run first (a stop request, or a reboot recovery found).
     pre, post = (latency or {}).get("pre"), (latency or {}).get("post")
-    if (started and pre is None) or (record["drill"]["results"] is not None and post is None):
+    if "drill_interrupted" not in runner["reasons"] and \
+            ((started and pre is None) or (record["drill"]["results"] is not None and post is None)):
         reasons.add("runner_error")
     return finish(record, reasons, restarted, flags)
 

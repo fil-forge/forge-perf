@@ -17,8 +17,10 @@ Environment=AWS_REGION=us-east-2
 ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/recover.sh
 TimeoutStartSec=30min
 # A failed attempt (an SSM read or the wipe) runs again a minute later; the
-# third attempt goes on without SSM or moves current.json aside.
+# third attempt goes on without SSM, or moves current.json aside after a
+# failed wipe and exits 4, which leaves the unit failed until the next boot.
 Restart=on-failure
+RestartPreventExitStatus=4
 RestartSec=1min
 
 [Install]
