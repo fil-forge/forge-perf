@@ -66,9 +66,63 @@ gh api repos/fil-forge/forge-perf/rulesets -q '.[] | [.name, .enforcement]'
 
 The last command should print `["main","active"]`. `integration_id` 15368 is GitHub Actions. To require an approving review, raise `required_approving_review_count` with `gh api -X PUT repos/fil-forge/forge-perf/rulesets/<id>`.
 
+### The network root
+
+`terraform/envs/network` holds the forge-perf subnet (`172.31.200.0/24` in `us-east-2a` of the default VPC), its route table and the S3 gateway endpoint `forge-perf-s3`. The `deploy` workflow plans it on every pull request and applies it on every push to main.
+
+Before its first apply, check that the subnet's range is free in the default VPC and that the zone offers every tier's instance type:
+
+```sh
+vpc=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
+aws ec2 describe-subnets --filters Name=vpc-id,Values="$vpc" \
+  --query 'Subnets[].[CidrBlock,AvailabilityZone]' --output text
+aws ec2 describe-instance-type-offerings --location-type availability-zone \
+  --filters Name=location,Values=us-east-2a Name=instance-type,Values=m9gd.2xlarge,m9gd.8xlarge,m9gd.16xlarge \
+  --query 'InstanceTypeOfferings[].InstanceType' --output text
+```
+
+No listed block may overlap `172.31.200.0/24`, and the second command must print all three types. If either fails, change `terraform.tfvars` in the same pull request.
+
+After the apply, the route table carries the endpoint's route to S3's prefix list:
+
+```sh
+aws ec2 describe-route-tables --filters Name=tag:Name,Values=forge-perf \
+  --query 'RouteTables[0].Routes[].[DestinationCidrBlock || DestinationPrefixListId, GatewayId]' --output text
+```
+
+It should list `0.0.0.0/0` to an `igw-` gateway and a `pl-` prefix list to a `vpce-` endpoint.
+
+Then apply the bootstrap root again. Its piri policy looks the endpoint up by its `Name` tag and binds piri's key to it with `aws:SourceVpce`. Check the policy:
+
+```sh
+aws iam get-user-policy --user-name forge-perf-piri --policy-name piri-buckets \
+  --query 'PolicyDocument.Statement[].Condition' --output json
+```
+
+Every statement should name `aws:SourceVpce` and the endpoint's id. From then on piri's key gets `AccessDenied` from anywhere outside the forge-perf subnet, which a request with the key from an operator's shell shows. The subshell keeps the key out of the process list and out of the operator's session:
+
+```sh
+(
+  export AWS_ACCESS_KEY_ID="$(aws ssm get-parameter --name /forge-perf/piri-s3-access-key-id \
+    --query Parameter.Value --output text)"
+  export AWS_SECRET_ACCESS_KEY="$(aws ssm get-parameter --name /forge-perf/piri-s3-secret-access-key \
+    --with-decryption --query Parameter.Value --output text)"
+  unset AWS_SESSION_TOKEN AWS_PROFILE
+  aws s3api list-objects-v2 --bucket <a piri bucket> --max-items 1
+)
+```
+
+On a new account the network root cannot come first, because the deploy workflow needs the roles the bootstrap root creates, and the bootstrap root's endpoint lookup fails until the endpoint exists. The first bootstrap apply therefore binds piri's key to the default VPC:
+
+```sh
+tofu apply -var piri_key_via_s3_endpoint=false
+```
+
+Once the network root is applied, apply the bootstrap root again without the variable.
+
 ### piri's S3 key
 
-piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only from inside the default VPC. A later change to the bootstrap root, applied after the network root, narrows it to the forge-perf S3 endpoint.
+piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only through the forge-perf S3 gateway endpoint, so the key works from a box and from nowhere else, including infra-nodes' dev node in the same VPC.
 
 The secret goes to SSM through a temporary file readable only by you, never a command-line argument, so other users on the machine cannot read it from the process list. (AWS CLI v2 on macOS reads nothing from `file:///dev/stdin`, so a pipe into `--cli-input-json` does not work.)
 

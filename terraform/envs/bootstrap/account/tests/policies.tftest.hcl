@@ -26,6 +26,11 @@ override_data {
   values = { id = "vpc-0test" }
 }
 
+override_data {
+  target = data.aws_vpc_endpoint.s3
+  values = { id = "vpce-0test" }
+}
+
 variables {
   budget_alert_email = "alerts@example.com"
 }
@@ -282,14 +287,38 @@ run "policies" {
   assert {
     condition = alltrue([
       for s in jsondecode(data.aws_iam_policy_document.piri.json).Statement :
-      flatten([s.Condition.StringEquals["aws:SourceVpc"]]) == ["vpc-0test"] &&
+      flatten([s.Condition.StringEquals["aws:SourceVpce"]]) == ["vpce-0test"] &&
+      !contains(keys(s.Condition.StringEquals), "aws:SourceVpc") &&
       alltrue([for r in flatten([s.Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-")])
     ])
-    error_message = "the piri user reaches piri buckets only, from the default VPC only"
+    error_message = "the piri user reaches piri buckets only, through the forge-perf S3 endpoint only"
   }
 
   assert {
     condition     = aws_budgets_budget.forge_perf_monthly.limit_amount == "600"
     error_message = "the budget takes its amount from terraform.tfvars"
+  }
+}
+
+# A new account's first apply, before the network root has made the endpoint.
+run "piri_before_the_network" {
+  command = plan
+
+  variables {
+    piri_key_via_s3_endpoint = false
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.piri.json).Statement :
+      flatten([s.Condition.StringEquals["aws:SourceVpc"]]) == ["vpc-0test"] &&
+      !contains(keys(s.Condition.StringEquals), "aws:SourceVpce")
+    ])
+    error_message = "without the endpoint, the piri user is bound to the default VPC"
+  }
+
+  assert {
+    condition     = length(data.aws_vpc_endpoint.s3) == 0
+    error_message = "without the endpoint, the root must not look it up"
   }
 }
