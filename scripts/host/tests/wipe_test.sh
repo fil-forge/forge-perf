@@ -98,7 +98,7 @@ setup() {
   printf '%s\n' "smelt_ingot-data smelt" "smelt_minio-data smelt" "laptop-data other" >"$D/volumes"
   touch "$D/network"
   printf '%s\n' "i1 nicolaka/netshoot@$netshoot" "i2 ghcr.io/fil-forge/ingot@$tracked" \
-    "i3 ghcr.io/fil-forge/ingot@sha256:2222" "i4 laptop/app@sha256:3333" >"$D/images"
+    "i3 ghcr.io/fil-forge/ingot@sha256:2222" "i4 laptop/app@sha256:3333" "i5 postgres@sha256:4444" >"$D/images"
   echo "ghcr.io/fil-forge/ingot:main@$tracked" >"$work/box/state/images.pinned"
   printf '%s\n' FORGE_PERF_PIRI_S3_KEY_ID=AKIAFAKE FORGE_PERF_PIRI_S3_SECRET=fake-secret >"$work/box/run/secrets/piri-s3.env"
   echo x >"$work/box/nvme/work/run/drill.out"
@@ -168,7 +168,7 @@ setup
 FORGE_PERF_HOST_OPS=skip "$host/wipe.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "local wipe failed"; }
 [ "$(cat "$D/containers")" = "c4 laptop-db other" ] || fail "local wipe touched other containers"
 [ "$(cat "$D/volumes")" = "laptop-data other" ] || fail "local wipe touched other volumes"
-[ "$(awk '{ print $1 }' "$D/images" | tr '\n' ' ')" = "i1 i2 i4 " ] || fail "local images left: $(cat "$D/images")"
+[ "$(awk '{ print $1 }' "$D/images" | tr '\n' ' ')" = "i1 i2 i4 i5 " ] || fail "local images left: $(cat "$D/images")"
 has "$work/out" "host-op skipped: fstrim"
 has "$work/out" "host-op skipped: sysctl -q vm.drop_caches=3"
 lacks "$D/host.log" "fstrim"

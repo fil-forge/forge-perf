@@ -1,8 +1,19 @@
 # Third-party images, pinned by digest. These are part of the instrument: a
 # bump is a forge-perf change, so it shows as a new forge-perf SHA in every
-# record that follows. One image per line, name:tag@sha256:digest; the digest
-# is the multi-platform index, so the same line serves arm64 and amd64 boxes.
+# record that follows. One image per line: the variable that selects it,
+# repo:tag, and the digest of the multi-platform index, so the same line
+# serves arm64 and amd64 boxes. run.sh exports each variable as repo@digest.
+
+POSTGRES_IMAGE        postgres:16-alpine                                   sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+OPENBAO_IMAGE         openbao/openbao:2.6                                  sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889
+REDIS_IMAGE           redis:7-alpine                                       sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+DYNAMODB_LOCAL_IMAGE  amazon/dynamodb-local:latest                         sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
+SMTP4DEV_IMAGE        rnwood/smtp4dev:v3                                   sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537
+IPNI_IMAGE            ghcr.io/fil-forge/storetheindex:latest               sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869
+BLOCKCHAIN_IMAGE      ghcr.io/fil-forge/filecoin-localdev:main             sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee
+MINIO_IMAGE           ghcr.io/fil-forge/minio:RELEASE.2025-10-15T17-29-55Z sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5
 
 # The sidecar scripts/host/netem.sh runs in a container's network namespace to
-# install the qdiscs, probe round trips and run iperf3.
-nicolaka/netshoot:v0.16@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+# install the qdiscs, probe round trips and run iperf3. smelt does not read
+# this variable; netem.sh does.
+NETSHOOT_IMAGE        nicolaka/netshoot:v0.16                              sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
