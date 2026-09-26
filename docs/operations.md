@@ -130,6 +130,39 @@ aws ce update-cost-allocation-tags-status \
 
 The same switch is in the Billing console under Cost allocation tags. Until it is on, the budget's filter matches no spend and never alerts.
 
+### The scratch box's instance profile
+
+`scripts/operator/scratch-box.sh up` launches with the instance profile named in `SCRATCH_INSTANCE_PROFILE` and the `forge-perf-scratch` security group. No root creates either. The role carries `AmazonSSMManagedInstanceCore` for a Session Manager shell. That managed policy also allows `ssm:GetParameter` on every parameter in the account, which would let a scratch box read the forge-perf secrets and infra-central's dev secrets, so the role gets the same `deny-parameter-reads` policy infra-nodes gives its node role. `up` refuses a role without it. Create the profile once:
+
+```sh
+aws iam create-role --role-name forge-perf-scratch \
+  --tags Key=Project,Value=forge-perf \
+  --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+aws iam attach-role-policy --role-name forge-perf-scratch \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+aws iam put-role-policy --role-name forge-perf-scratch --policy-name deny-parameter-reads \
+  --policy-document '{"Version":"2012-10-17","Statement":[{"Sid":"DenyParameterReads","Effect":"Deny","Action":"ssm:GetParameter*","Resource":"*"}]}'
+aws iam create-instance-profile --instance-profile-name forge-perf-scratch \
+  --tags Key=Project,Value=forge-perf
+aws iam add-role-to-instance-profile --instance-profile-name forge-perf-scratch \
+  --role-name forge-perf-scratch
+export SCRATCH_INSTANCE_PROFILE=forge-perf-scratch
+```
+
+The security group admits no inbound traffic; Session Manager needs only outbound. `up` looks it up in the VPC of the subnet it launches into: the default VPC until the network root exists, the forge-perf VPC after. Create it in each VPC the box can land in:
+
+```sh
+vpc=$(aws ec2 describe-vpcs --region us-east-2 --filters Name=is-default,Values=true \
+  --query 'Vpcs[0].VpcId' --output text)
+aws ec2 create-security-group --region us-east-2 --vpc-id "$vpc" \
+  --group-name forge-perf-scratch --description "forge-perf scratch box, no ingress" \
+  --tag-specifications 'ResourceType=security-group,Tags=[{Key=Project,Value=forge-perf}]'
+```
+
+For the forge-perf VPC, take `vpc` from `aws ec2 describe-subnets --region us-east-2 --filters Name=tag:Name,Values=forge-perf --query 'Subnets[0].VpcId' --output text` instead.
+
+The role reads no parameters and writes no buckets. A scratch box can provision, and cannot run the drill against AWS S3.
+
 ### Checking the roles
 
 The `roles` workflow assumes the plan role on any pull request that touches the roles. On main, dispatch it to check that the results role can list and read `published/` and is denied `raw/`:

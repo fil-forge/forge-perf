@@ -43,3 +43,6 @@ terraform.rc
 raw/
 *.tar.zst
 .env
+
+# A local run's box.conf and scratch files (docs/runner.md, "Local run").
+local/
