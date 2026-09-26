@@ -125,11 +125,12 @@ run "bootstrap" {
 
   assert {
     condition = alltrue([
+      strcontains(aws_instance.box.user_data, "apt-get -o DPkg::Lock::Timeout=300 install"),
       strcontains(aws_instance.box.user_data, "git clone --no-checkout 'https://github.com/fil-forge/forge-perf.git'"),
       strcontains(aws_instance.box.user_data, "\n\"$CHECKOUT/scripts/host/update.sh\" --local\n"),
       endswith(aws_instance.box.user_data, "date -Is >/etc/forge-perf/bootstrap-complete\n"),
     ])
-    error_message = "bootstrap clones forge-perf, hands off to update.sh --local, and marks completion last"
+    error_message = "bootstrap clones forge-perf, hands off to update.sh --local, waits for the dpkg lock, and marks completion last"
   }
 }
 

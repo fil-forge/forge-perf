@@ -11,8 +11,13 @@ CHECKOUT=/opt/forge-perf
 REF='${ref}'
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -q
-apt-get install -y -q ca-certificates curl git
+# The Ubuntu server image ships git, curl and ca-certificates, so apt runs only
+# on an image without them. An apt-daily run may hold the dpkg lock this early;
+# wait for it as provision.sh does.
+if ! command -v git >/dev/null || ! command -v curl >/dev/null; then
+  apt-get -o DPkg::Lock::Timeout=300 update -q
+  apt-get -o DPkg::Lock::Timeout=300 install -y -q ca-certificates curl git
+fi
 
 if [ ! -d "$CHECKOUT/.git" ]; then
   git clone --no-checkout '${repository_url}' "$CHECKOUT"
