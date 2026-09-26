@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fil-forge.github.io/forge-perf/schema/overrides.v1.json",
+  "title": "forge-perf class overrides v1",
+  "description": "Reviewed reclassifications of published runs. The record keeps its class; the page shows the override and its issue. docs/publishing.md.",
+  "type": "array",
+  "uniqueItems": true,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["run_id", "class", "issue"],
+    "properties": {
+      "run_id": {"type": "string", "pattern": "^[a-z0-9]{2,12}-[0-9]{8}t[0-9]{6}z$"},
+      "class": {"enum": ["valid", "availability_warning", "invalid", "failed", "no_data"]},
+      "issue": {"type": "string", "pattern": "^https://github\\.com/fil-forge/[A-Za-z0-9._-]{1,100}/issues/[0-9]{1,7}$"}
+    }
+  }
+}

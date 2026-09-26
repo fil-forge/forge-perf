@@ -11,6 +11,7 @@ forge-perf measures the sustained ingest rate of the Forge storage stack on a de
 | `host/`, `systemd/` | box provisioning, pinned tool versions and the unit files |
 | `scripts/host/` | scripts that run on the box as root |
 | `scripts/operator/` | scripts an operator runs from a laptop |
+| `scripts/publish/` | the publish workflow's ingest and site build ([docs/publishing.md](docs/publishing.md)) |
 | `cmd/` | Go programs run on the box, such as the S3 ceiling tool |
 | `scripts/ci/` | `check-*.sh`, run by `make check`, and their tests under `tests/` |
 | `config/` | run settings per instance type, pinned images, the harness pin |
