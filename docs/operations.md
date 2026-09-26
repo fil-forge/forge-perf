@@ -323,3 +323,114 @@ aws iam simulate-principal-policy \
 ```
 
 Adding `--context-entries ContextKeyName=iam:PermissionsBoundary,ContextKeyValues=arn:aws:iam::654654381893:policy/forge-perf-box-boundary,ContextKeyType=string` should turn it to `allowed`.
+
+## Holding a box
+
+A hold stops the persistent box from starting runs and updating its checkout; a run already going finishes, and new sets keep coalescing into one pending run. It is a file on the root volume, so it survives a reboot.
+
+```sh
+scripts/operator/hold.sh main on     # returns once no run is going, up to 7 hours
+scripts/operator/hold.sh main off    # the newest pending set starts at the next poll
+```
+
+On the box, `scripts/host/status.sh` prints the hold, the run in progress, the pending and last sets, poll failures and the timers. Hold the box before approving a box change, before paired runs, and before anything done by hand in a shell on it.
+
+## A campaign
+
+A campaign runs one committed set a few times on a box of its own beside the persistent one, publishes each run and powers off. The box is `campaign`: its records land in `published/campaign/`, its piri buckets are `forge-perf-piri-campaign-654654381893-piri-0-*`, and `terraform/envs/box/campaign` holds it.
+
+1. Commit the set under `calibration/sets/`. `scripts/operator/set-from-record.sh <run_id> calibration/sets/<name>.json` writes the set a published run ran, from the results branch.
+2. Merge it, then dispatch `campaign` from main:
+
+   ```sh
+   gh workflow run campaign.yml --ref main -f action=up -f instance_type=m9gd.16xlarge -f hours=6 \
+     -f set=calibration/sets/<name>.json -f runs=3 -f size=2000GB -f workers=64 -f duration=4h
+   ```
+
+| Input | Takes |
+|---|---|
+| `instance_type` | `m9gd.2xlarge`, `m9gd.8xlarge` or `m9gd.16xlarge`; in mode `campaign` the type needs `config/settings/<type>.env` |
+| `hours` | 1 to 24. The box's `ExpiresAt` tag is the dispatch time plus this |
+| `mode` | `campaign` runs the set; `calibration` boots the box and waits for the ceiling measurements |
+| `set` | a committed set under `calibration/sets/`, with a digest for every image in `config/images.tracked` |
+| `runs` | 1 to 20 |
+| `size`, `duration` | `--stop-ingest-at` and `--duration` of each run, such as `2000GB` and `4h` |
+| `workers` | empty for the settings file's `WORKERS`, one number, or a comma list to sweep |
+
+The workflow refuses bad inputs before it assumes a role, and refuses `up` while the campaign root's state holds a box. The box clones forge-perf at the dispatched commit and never updates. `/etc/forge-perf/campaign.json` holds the inputs, the commit and `expires_at`. `forge-perf-campaign.service` runs `scripts/host/campaign.sh`, which sets a timer that powers the box off at `expires_at`, runs each run through `forge-perf-run.service`, flushes the outbox and powers off. A reboot resumes the campaign after the last run that ended.
+
+One `workers` value runs `runs` times as series `campaign`. A list is a sweep: `runs` rounds over the list, reversed every other round, so `16,32,64` with two runs goes 16, 32, 64, 64, 32, 16 (docs/DESIGN.md §9). A sweep publishes as series `calibration`, since its values are not frozen; the smallest value within 5% of the best mean p5 and median wins, and freezing it in the type's settings file is a pull request.
+
+The box powers off when its runs are done and stops billing for compute. `campaign-reaper.yml` runs hourly: it destroys the campaign root once the box has been stopped for an hour or is past `ExpiresAt`, terminates any other forge-perf instance other than `main` in the same condition (a scratch box, or one without an `ExpiresAt` tag), and posts a line to `#filone-alerts` for each. It also posts when the persistent box's instance type differs from `terraform/envs/box/main/terraform.tfvars`. A forgotten 12-hour tier 3 campaign costs at most 13 hours of `m9gd.16xlarge`, about $52.
+
+To stop one sooner, dispatch `action=down`, which destroys the box and its buckets. Check that nothing is left:
+
+```sh
+aws ec2 describe-instances --region us-east-2 \
+  --filters Name=tag:Box,Values=campaign Name=instance-state-name,Values=pending,running,stopping,stopped \
+  --query 'Reservations[].Instances[].InstanceId' --output text
+aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-perf-piri-campaign-')].Name" --output text
+```
+
+Both should print nothing.
+
+For the ceiling measurements, dispatch with `mode=calibration` and the type to measure, then `scripts/operator/ssm-session.sh campaign` reaches it.
+
+## Tier 1 to tier 2
+
+When a valid run's p5 reaches gate 1:
+
+1. `hold.sh main on`. `set-from-record.sh <run_id> calibration/sets/tier2-bridge.json` writes the set of the run that lit the gate; commit it. On the box, run it three times at each size, with one pairing ID for the whole bridge:
+
+   ```sh
+   scripts/host/campaign.sh --set calibration/sets/tier2-bridge.json --runs 3 --pairing pair-<yyyymmdd>-t1t2
+   scripts/host/campaign.sh --set calibration/sets/tier2-bridge.json --runs 3 --size 350GB --duration 4h \
+     --pairing pair-<yyyymmdd>-t1t2
+   ```
+
+   Run them as root under `systemd-run --unit forge-perf-pairing --collect /bin/bash /opt/forge-perf/scripts/host/campaign.sh …`, so a closed session does not stop them, and follow with `journalctl -fu forge-perf-pairing`. On a persistent box `campaign.sh` refuses without the hold. Each run goes through `forge-perf-run.service` as the poller's would; the poller leaves the campaign's pending run alone and never retries it.
+2. Merge a pull request that sets `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars` and adds `config/settings/m9gd.8xlarge.env` with `WORKERS` empty. Approve `apply-box-main` once the box is idle ("The persistent box" above). The provider stops, modifies and starts the same instance, and the instance store comes back blank.
+3. Check the new drive (`findmnt /var/lib/docker/volumes`), then sweep workers at 1×, 2× and 4× the tier 1 value with `campaign.sh --set … --runs 1 --workers <a>,<b>,<c>`, freeze the winner in a pull request, repeat the paired runs of step 1 with the same pairing ID, and `hold.sh main off`. The page marks the box change and the offset between paired medians; past values never change.
+
+## Rotating secrets
+
+| Secret | Where | Rotation |
+|---|---|---|
+| piri's S3 key | SSM `/forge-perf/piri-s3-access-key-id`, `/forge-perf/piri-s3-secret-access-key` | every 90 days |
+| harness deploy key | SSM `/forge-perf/harness-deploy-key`; the public half on fil-one/storage-qualification | yearly, and when someone with access leaves |
+| denylist pattern | SSM `/forge-perf/denylist`; repository secret `PUBLIC_DENYLIST_REGEX` | when the pattern changes |
+| `SLACK_BOT_TOKEN` | repository secret | when the Slack app's token changes |
+
+**piri's key.** IAM allows two keys per user, so the new key overlaps the old. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
+
+**Harness deploy key.** Make and store a new key as in "The harness credential" above, with `--overwrite` on `put-parameter`, and add its public half beside the old one. After the next run fetches the harness, remove the old key from the repository's deploy keys.
+
+**Slack token.** `gh secret set SLACK_BOT_TOKEN -R fil-forge/forge-perf`, then dispatch `publish.yml` once to confirm a post goes through.
+
+Record each rotation's date here.
+
+| Secret | Last rotated |
+|---|---|
+| piri's S3 key | not yet |
+| harness deploy key | not yet |
+
+## Responding to alerts
+
+Alerts post to `#filone-alerts` from `publish.yml` (docs/publishing.md, "Alerts") and `campaign-reaper.yml`. Each run alert names the box, run ID, class and reasons, with compare links against the box's previous run. The run's raw tarball is at `s3://forge-perf-results-654654381893/raw/<box>/<run_id>/raw.tar.zst`.
+
+| Alert | First look | Usual cause |
+|---|---|---|
+| `no_data`, `stack_boot_failed` or `setup_failed` | `logs/` in the raw tarball: the service that did not come up | a new `:main` image that needs a smelt change; file it on the service or on smelt with the digest |
+| `no_data`, infrastructure reasons, third in a row | the reason: GHCR, SSM, S3 or a mirror fetch | an outage; the poller has retried three times, and the nightly tries again |
+| `no_data`, `drill_interrupted` | `journalctl -u forge-perf-run` on the box | a reboot, a stop, or the unit's 6-hour limit |
+| `failed`, `integrity_failure` | the record's failure codes | reproduce once with `run.sh --set <that set> --series calibration` on a held box before blaming a pull request |
+| `invalid`, `container_restarted` or `central_ip_changed` | the restarted service's log in the tarball | a crash under load: a bug in that service |
+| `invalid`, `rtt_out_of_band` or `netem_missing` | `netem/latency.json` in the tarball | a saturated host, or the sidecar image changed |
+| `heartbeat_stale` | `scripts/operator/ssm-session.sh main`, then `systemctl status forge-perf-poll.timer` | the box is down, or the poll unit fails |
+| `poll_failures` | `journalctl -u forge-perf-poll` | GHCR or GitHub unreachable from the box |
+| `long_run` | `scripts/host/status.sh` | a drill past its duration that the watchdog has not yet stopped |
+| `no_record` | the heartbeat and the outbox (`/var/lib/forge-perf/outbox`) | uploads failing, or the box held |
+| reaper: a box destroyed or terminated | the line's reason | a campaign or scratch box left running past its time |
+| reaper: the persistent box's type differs | `terraform/envs/box/main/terraform.tfvars` and the last `deploy` run | a resize waiting for approval, or one made by hand |
+
+Availability errors never alert: the page shows the run as a warning and keeps its numbers. Three in a row suggest the frozen `WORKERS` pushes a service past what it serves without errors.

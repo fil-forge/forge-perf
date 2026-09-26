@@ -20,6 +20,8 @@ crash.*.log
 # secret the box holds comes from SSM Parameter Store at run time and none of
 # it passes through OpenTofu, so these files are safe to commit.
 !terraform.tfvars
+# The campaign root's placeholders for destroy, which hold nothing at all.
+!destroy.tfvars
 
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in

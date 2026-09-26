@@ -48,6 +48,7 @@ locals {
     piri_bucket_prefix  = local.piri_bucket_prefix
     smelt_bucket_prefix = local.smelt_bucket_prefix
     ssm_path            = module.constants.ssm_path
+    campaign_json       = var.campaign == null ? "" : var.campaign
   })
 }
 

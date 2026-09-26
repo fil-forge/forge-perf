@@ -324,4 +324,22 @@ updating && ! dispatched || fail "origin moved and the pass did not update"
 [ "$(beat .poll_failures)" = 0 ] || fail "a moved origin counted as a failure"
 echo "ok: when origin moves the pass starts update.sh, not the run"
 
+setup
+poll 0
+start_run
+ingot 7
+jq -n --slurpfile s "$state/last-started.json" '{kind: "campaign", set: $s[0], superseded: 0, workers: "16"}' \
+  >"$state/pending.json"
+cp "$state/pending.json" "$work/campaign.json"
+echo '{"at": "2026-10-01T12:00:00Z"}' >"$state/hold"
+poll 0 --nightly
+cmp -s "$state/pending.json" "$work/campaign.json" || fail "the poller replaced a campaign's run: $(cat "$state/pending.json")"
+jq -n --slurpfile s "$work/campaign.json" '{run_id: "test-c", kind: "campaign", set: $s[0].set, superseded: 0,
+  attempt: 0, previous_started: null, reasons: ["image_pull_failed"]}' >"$state/last-run.json"
+rm "$state/pending.json"
+poll 0
+[ ! -e "$state/last-run.json" ] || fail "a campaign's last-run.json left"
+[ "$(pending '"\(.kind) \(.attempt)"')" = "trigger null" ] || fail "after the campaign $(cat "$state/pending.json")"
+echo "ok: the poller leaves a campaign's run alone and never retries one"
+
 echo "poll: all tests passed"

@@ -549,6 +549,22 @@ grep -q "the box is held" "$work/out" || fail "no hold message"
 [ -e "$work/box/state/pending.json" ] && [ ! -e "$work/box/state/runner.json" ] || fail "a held box started the run"
 echo "ok: a pending run that meets the hold waits"
 
+# campaign.sh's runs, on a held box, in the series its pending run names.
+for series in "" calibration; do
+  setup
+  sed 's/^SERIES_LIVE=.*/SERIES_LIVE=1/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
+  mv "$work/launch.conf" "$work/checkout/config/launch.conf"
+  git -C "$work/checkout" commit -qam live
+  jq --arg s "$series" '{kind: "campaign", set: ., superseded: 0, pairing_id: "pair-20261001-t1", workers: "32",
+    size: "10GB", duration: "30m"} + (if $s == "" then {} else {series: $s} end)' "$work/set.json" \
+    >"$work/box/state/pending.json"
+  echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+  run 0 -- --until preflight
+  [ "$(runner '"\(.series) \(.trigger.reason) \(.pairing_id) \(.settings | "\(.workers) \(.stop_ingest_at_bytes) \(.duration_s)")"')" = \
+    "${series:-campaign} pairing pair-20261001-t1 32 10000000000 1800" ] || fail "campaign run $(runner '[.series, .settings]')"
+done
+echo "ok: a campaign's pending run starts on a held box with its own series, pairing and settings"
+
 setup
 jq '{kind: "nightly", set: ., superseded: 1}' "$work/set.json" >"$work/box/state/pending.json"
 echo '{"run_id": "main-1"}' >"$work/box/state/last-run.json"

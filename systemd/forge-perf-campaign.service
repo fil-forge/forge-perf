@@ -1,0 +1,23 @@
+[Unit]
+# Campaign boxes only (systemd/enabled.campaign): campaign.sh runs the set in
+# /etc/forge-perf/campaign.json, each run through forge-perf-run.service, and
+# powers the box off. Started at every boot, and by the bootstrap on the
+# first, so a reboot resumes the campaign and sets the poweroff timer again.
+# Requires= on recovery, as the run unit: an interrupted run is closed out
+# before the next starts.
+Description=forge-perf campaign
+Wants=docker.service network-online.target
+Requires=forge-perf-recover.service
+After=docker.service forge-perf-nvme.service forge-perf-recover.service network-online.target
+ConditionPathExists=/etc/forge-perf/campaign.json
+
+[Service]
+# exec rather than oneshot: a campaign takes hours, and boot does not wait for
+# it. Each run's own limits are forge-perf-run.service's.
+Type=exec
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/campaign.sh
+
+[Install]
+WantedBy=multi-user.target

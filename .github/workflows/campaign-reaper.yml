@@ -1,0 +1,84 @@
+# Hourly cost backstop (docs/operations.md, "A campaign"). scripts/operator/
+# reap.sh lists every forge-perf instance other than the persistent box that
+# is pending, running, stopping or stopped, terminates any past its ExpiresAt
+# tag or stopped for over an hour, and leaves the campaign box to `tofu
+# destroy` of its root, which also removes its buckets. It also reports when
+# the persistent box's instance type differs from its terraform.tfvars. Every
+# finding is one line in #filone-alerts.
+
+name: campaign-reaper
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: forge-perf-campaign
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TOFU_VERSION: 1.12.5
+  AWS_REGION: us-east-2
+  APPLY_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-apply
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
+
+jobs:
+  reap:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-reaper-${{ github.run_id }}
+
+      - id: reap
+        run: scripts/operator/reap.sh
+
+      - if: steps.reap.outputs.campaign == 'true'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - if: steps.reap.outputs.campaign == 'true'
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - if: steps.reap.outputs.campaign == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/box/campaign/.terraform.lock.hcl') }}
+
+      - if: steps.reap.outputs.campaign == 'true'
+        working-directory: terraform/envs/box/campaign
+        run: |
+          set -euo pipefail
+          tofu init -input=false -lockfile=readonly
+          tofu destroy -auto-approve -input=false -lock-timeout=5m -var-file=destroy.tfvars
+
+      # Also after a failed destroy, which the next hour tries again. The
+      # lines hold instance IDs, tags and types only.
+      - if: always() && steps.reap.outputs.alerts != ''
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(steps.reap.outputs.alerts) }}
+            }

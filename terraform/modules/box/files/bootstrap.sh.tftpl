@@ -51,3 +51,12 @@ CONF
 "$CHECKOUT/scripts/host/update.sh" --local
 
 date -Is >/etc/forge-perf/bootstrap-complete
+%{ if campaign_json != "" ~}
+
+# A campaign box: what to run, then the unit that runs it. Enabled units start
+# at the next boot, so this boot starts it here.
+cat >/etc/forge-perf/campaign.json <<'CAMPAIGN'
+${campaign_json}
+CAMPAIGN
+systemctl start --no-block forge-perf-campaign.service
+%{ endif ~}
