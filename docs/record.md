@@ -30,6 +30,16 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `nic` | `allowance_exceeded` deltas, `egress_bytes_per_s_median` and `seconds_above_baseline` from `ethtool -S` and the one-second interface samples |
 | `raw_missing` | the raw tarball could not be built, was dropped from the outbox, or failed to upload for 24 hours |
 
+`scripts/host/record.py` is the builder:
+
+```
+record.py build --runner runner.json [--run-dir DIR] [--latency netem/latency.json] \
+                --denylist FILE [--forbid FILE] --out record.json
+record.py minimal --runner runner.json --denylist FILE [--forbid FILE] --out record.json
+```
+
+Before writing, it checks the record against the schema, the denylist patterns (extended regular expressions, one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. Exit status 0 means the full record was written, 3 the minimal record, 1 nothing, since even the minimal record was refused; 2 is a usage error. Messages name the check or stage that failed, never an input's value.
+
 When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and the runner writes the minimal record below.
 
 ## Field sources
@@ -252,4 +262,4 @@ The publish Action recomputes both fingerprints and rejects a record whose store
 
 ## Fixtures
 
-`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, and a run whose run directory belongs to another run, which ends in the minimal record. `scripts/host/test_schema.py` checks every `expected.json` against the schema.
+`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, and a run whose run directory belongs to another run, which ends in the minimal record. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.
