@@ -42,6 +42,7 @@ case "$1 ${2:-}" in
   "volume rm") shift 2; for v; do grep -qx "$v" "$D/stuck" 2>/dev/null || drop "$v" "$D/volumes"; done ;;
   "network inspect") [ -e "$D/network" ] ;;
   "network rm") rm "$D/network" ;;
+  "network prune") echo "$*" >>"$D/pruned" ;;
   "image ls") awk '{ print $1 }' "$D/images" ;;
   "image inspect") awk -v id="${!#}" '$1 == id && $2 != "-" { print $2 }' "$D/images" ;;
   "image rm") drop "${!#}" "$D/images" ;;
@@ -59,6 +60,9 @@ case "$args" in
   *" s3 cp "*) [ ! -e "$D/s3-down" ] ;;
   *" ssm get-parameter "*)
     [ ! -e "$D/ssm-down" ] || { echo "ssm unreachable" >&2; exit 255; }
+    if [ -s "$D/ssm-fail" ] && grep -qF -- "$(cat "$D/ssm-fail")" <<<"$args"; then
+      echo "ThrottlingException" >&2; exit 255
+    fi
     case "$args" in
       *piri-s3-access-key-id*) echo AKIAFAKE ;;
       *piri-s3-secret-access-key*) echo fake-secret ;;
@@ -129,6 +133,7 @@ has "$D/host.log" "sysctl -q vm.drop_caches=3"
 has "$D/host.log" "flock 9"
 lacks "$D/host.log" "systemctl"
 [ "$(awk '{ print $1 }' "$D/images" | tr '\n' ' ')" = "i1 i2 " ] || fail "images left: $(cat "$D/images")"
+has "$D/pruned" "network prune -f"
 echo "ok: the box wipe leaves no container, volume, network, work tree or unpinned image, and keeps Docker up"
 
 : >"$D/log"
@@ -168,6 +173,7 @@ has "$work/out" "host-op skipped: fstrim"
 has "$work/out" "host-op skipped: sysctl -q vm.drop_caches=3"
 lacks "$D/host.log" "fstrim"
 lacks "$D/host.log" "sysctl"
+has "$D/pruned" "network prune -f --filter label=com.docker.compose.project=smelt"
 echo "ok: skip mode wipes only the stack and logs the host operations"
 
 setup
@@ -329,3 +335,53 @@ PY
   count "$D/containers" 0
 done
 echo "ok: a piri or harness credential in the collected files refuses the tarball and flags raw_missing"
+
+# One piri read failing while the harness parameter answers must not pass.
+for param in piri-s3-access-key-id piri-s3-secret-access-key; do
+  setup
+  cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+  echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+  rm "$work/box/run/secrets/piri-s3.env"
+  printf '%s\n' '-----BEGIN KEY-----' 'aGFybmVzcy1rZXktYm9keQ' '-----END KEY-----' >"$D/harness"
+  echo "S3 {id: AKIAFAKE, key: fake-secret}" >>"$work/box/nvme/work/run/drill.out"
+  echo "$param" >"$D/ssm-fail"
+  if "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed with $param unreadable"; fi
+  has "$work/out" "attempt 1 of 3, current.json kept"
+  [ -e "$current" ] && [ "$(grep -c . "$D/containers")" = 4 ] || fail "$param failure wiped"
+  [ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox written with $param unreadable"
+  rm "$D/ssm-fail"
+done
+echo "ok: a failed read of piri's key ID or secret keeps current.json and writes no tarball"
+
+# A stop/start leaves the run directory blank; the root-volume copy of runner.json serves.
+setup
+rm -rf "$work/box/nvme/work/run"
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/state/runner.json"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+echo 3 >"$work/box/state/recover-attempts"
+touch "$D/s3-down"
+recover_ok "runner.json on the root volume"
+[ -s "$work/box/outbox/main-20261001t200000z.json" ] || fail "no record from the root-volume runner.json"
+[ ! -e "$current" ] && [ ! -e "$work/box/state/runner.json" ] || fail "state kept after recovery"
+echo "ok: after a stop/start recovery builds the record from the root-volume runner.json"
+
+# A wipe that keeps failing: kept for a retry, then set aside on the last attempt.
+setup
+echo '{"run_id": "main-20261001t200000z", "phase": "uploaded"}' >"$current"
+echo smelt_minio-data >"$D/stuck"
+if "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed with a failed wipe"; fi
+has "$work/out" "the wipe failed; attempt 1 of 3"
+[ -e "$current" ] || fail "current.json moved aside on attempt 1"
+if FORGE_PERF_RECOVER_ATTEMPTS=2 "$host/recover.sh" >"$work/out" 2>&1; then fail "recover passed on the last failed wipe"; fi
+has "$work/out" "the wipe failed on the last attempt"
+[ ! -e "$current" ] || fail "current.json kept after the last failed wipe"
+ls "$current".failed-* >/dev/null 2>&1 || fail "current.json not set aside"
+[ ! -e "$work/box/state/recover-attempts" ] || fail "attempt count kept"
+echo "ok: a wipe that fails on the last attempt moves current.json aside and fails the unit"
+
+# Without current.json a stale attempt count goes away.
+setup
+echo 2 >"$work/box/state/recover-attempts"
+"$host/recover.sh" >/dev/null 2>&1
+[ ! -e "$work/box/state/recover-attempts" ] || fail "stale attempt count kept"
+echo "ok: recovery without current.json clears a stale attempt count"

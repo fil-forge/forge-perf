@@ -16,6 +16,10 @@ EnvironmentFile=/etc/forge-perf/box.conf
 Environment=AWS_REGION=us-east-2
 ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/recover.sh
 TimeoutStartSec=30min
+# A failed attempt (an SSM read or the wipe) runs again a minute later; the
+# third attempt goes on without SSM or moves current.json aside.
+Restart=on-failure
+RestartSec=1min
 
 [Install]
 WantedBy=multi-user.target

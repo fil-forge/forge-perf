@@ -19,7 +19,9 @@
 # next boot formats the NVMe. An SSM read that fails stops recovery with
 # current.json kept, so a restart or the next boot retries it; after
 # $FORGE_PERF_RECOVER_ATTEMPTS attempts (default 3) recovery goes on without
-# that input.
+# that input. A failed wipe also keeps current.json until the last attempt,
+# which moves it aside and fails. runner.json comes from the run directory, or
+# from $FORGE_PERF_STATE_DIR/runner.json when a stop/start left the NVMe blank.
 #
 # The tarball leaves out *.env files and provider/, and drops every line that
 # names access_key_id or secret_access_key, which `piri init` prints. It is not
@@ -50,6 +52,7 @@ ssm_value() {
 
 if [ ! -e "$current" ]; then
   step "no interrupted run"
+  rm -f "$attempts"
   flush
   exit 0
 fi
@@ -67,32 +70,35 @@ transient() {
 
 # Write piri's key ID and secret and the harness credential to $1, one string
 # per line. piri's pair comes from its credentials file while /run still holds
-# it, otherwise from SSM. Fails when a value cannot be read.
+# it, otherwise from SSM. Fails when a value cannot be read. Every read is
+# checked explicitly, because callers run this as an `if` condition, where
+# bash ignores set -e.
 read_credentials() (
   umask 077
   creds="$FORGE_PERF_PIRI_S3_CREDENTIALS"
-  {
-    if [ -r "$creds" ]; then
-      # shellcheck disable=SC1090
-      . "$creds"
-      printf '%s\n' "${FORGE_PERF_PIRI_S3_KEY_ID:-}" "${FORGE_PERF_PIRI_S3_SECRET:-}"
-    elif host_ops_skipped; then
-      echo "recover: $creds is missing" >&2
-      exit 1
-    else
-      ssm_value "${FORGE_PERF_PIRI_KEY_ID_PARAM:-/forge-perf/piri-s3-access-key-id}"
-      ssm_value "${FORGE_PERF_PIRI_SECRET_PARAM:-/forge-perf/piri-s3-secret-access-key}"
-    fi
-    if ! host_ops_skipped; then
-      # The harness credential's parameter may not exist yet; any other error fails.
-      ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-/forge-perf/harness-deploy-key}" 2>"$1.err" ||
-        grep -q ParameterNotFound "$1.err" || exit 1
-    fi
-  } >"$1.all"
+  id="" secret=""
+  if [ -r "$creds" ]; then
+    # shellcheck disable=SC1090
+    . "$creds" || exit 1
+    id="${FORGE_PERF_PIRI_S3_KEY_ID:-}" secret="${FORGE_PERF_PIRI_S3_SECRET:-}"
+  elif host_ops_skipped; then
+    echo "recover: $creds is missing" >&2
+    exit 1
+  else
+    id="$(ssm_value "${FORGE_PERF_PIRI_KEY_ID_PARAM:-/forge-perf/piri-s3-access-key-id}")" || exit 1
+    secret="$(ssm_value "${FORGE_PERF_PIRI_SECRET_PARAM:-/forge-perf/piri-s3-secret-access-key}")" || exit 1
+  fi
+  # Strings shorter than 8 characters are not checked against (see below).
+  [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ] || { echo "recover: piri's key ID or secret is empty" >&2; exit 1; }
+  printf '%s\n' "$id" "$secret" >"$1.all" || exit 1
+  if ! host_ops_skipped; then
+    # The harness credential's parameter may not exist yet; any other error fails.
+    ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-/forge-perf/harness-deploy-key}" >>"$1.all" 2>"$1.err" ||
+      grep -q ParameterNotFound "$1.err" || exit 1
+  fi
   # Keep strings of 8 or more characters, so no blank line matches everything.
-  awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' "$1.all" >"$1"
+  awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' "$1.all" >"$1" || exit 1
   rm -f "$1.all" "$1.err"
-  [ "$(wc -l <"$1")" -ge 2 ] || { echo "recover: piri's key ID or secret is empty" >&2; exit 1; }
 )
 
 run_id="" phase=unknown run_dir="" no_record=""
@@ -175,7 +181,9 @@ fi
 
 if [ "$needs_record" = true ] && [ ! -e "$record" ]; then
   step "write the no_data record"
-  if [ ! -e "$amended" ] && ! python3 - "$run_dir/runner.json" "$amended" "$raw_missing" <<'PY'; then
+  runner="$run_dir/runner.json"
+  [ -e "$runner" ] || runner="$FORGE_PERF_STATE_DIR/runner.json"
+  if [ ! -e "$amended" ] && ! python3 - "$runner" "$amended" "$raw_missing" <<'PY'; then
 import datetime, json, sys
 try:
     r = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -213,15 +221,25 @@ PY
   [ -z "$no_record" ] || echo "recover: $no_record; wiping without a record" >&2
 fi
 
-step "wipe"
-FORGE_PERF_LOCK_HELD=1 "$here/wipe.sh"
-if [ -n "$no_record" ]; then
+set_aside() {
   failed="$current.failed-$(date -u +%Y%m%dT%H%M%SZ)"
   mv "$current" "$failed"
+  rm -f "$amended" "$attempts" "$FORGE_PERF_STATE_DIR/runner.json"
   echo "recover: kept the state as $failed" >&2
-else
-  rm -f "$current"
+}
+
+step "wipe"
+if ! FORGE_PERF_LOCK_HELD=1 "$here/wipe.sh"; then
+  # On the last attempt, move current.json aside so the next boot formats the
+  # NVMe instead of failing the same way; the unit still shows failed.
+  [ "$attempt" -ge "$max_attempts" ] || die "the wipe failed; attempt $attempt of $max_attempts, current.json kept for a retry"
+  set_aside
+  die "the wipe failed on the last attempt"
 fi
-rm -f "$amended" "$attempts"
+if [ -n "$no_record" ]; then
+  set_aside
+else
+  rm -f "$current" "$amended" "$attempts" "$FORGE_PERF_STATE_DIR/runner.json"
+fi
 flush
 step "recovered ${run_id:-an unnamed run}"

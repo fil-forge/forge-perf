@@ -103,6 +103,13 @@ step "containers, volumes, forge-network"
 ids="$(stack_containers)"
 # shellcheck disable=SC2086
 [ -z "$ids" ] || docker rm -f $ids >/dev/null
+# Compose networks survive when make nuke could not run. No container is left,
+# so every user network is unused; skip mode prunes only the project's.
+if host_ops_skipped; then
+  docker network prune -f --filter "label=com.docker.compose.project=$FORGE_PERF_PROJECT" >/dev/null
+else
+  docker network prune -f >/dev/null
+fi
 vols="$(stack_volumes)"
 # shellcheck disable=SC2086
 [ -z "$vols" ] || docker volume rm $vols >/dev/null || true
