@@ -17,10 +17,15 @@ LICENSE
 Makefile
 README.md
 calibration/
+# The ceiling tools run only on a calibration box, never during a run.
+cmd/
 data/
 docs/
+go.mod
+go.sum
 schema/
 scripts/ci/
+scripts/host/ceiling
 scripts/host/fixtures/
 scripts/host/test_
 scripts/host/tests/

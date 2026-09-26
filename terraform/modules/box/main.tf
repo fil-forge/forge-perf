@@ -166,14 +166,15 @@ data "aws_iam_policy_document" "box" {
   }
 
   # Write-only: a compromised box can overwrite its own records, which bucket
-  # versioning keeps, and read nothing back.
+  # versioning keeps, and read nothing back. A campaign box also measures the
+  # ceilings, whose evidence goes to raw/calibration/ (scripts/host/ceiling.sh).
   statement {
     sid     = "WriteOwnResults"
     actions = ["s3:PutObject", "s3:AbortMultipartUpload"]
-    resources = [
+    resources = concat([
       "${local.results}/raw/${var.box_name}/*",
       "${local.results}/published/${var.box_name}/*",
-    ]
+    ], var.mode == "campaign" ? ["${local.results}/raw/calibration/*"] : [])
   }
 
   # The wipe empties the buckets after every run. Reading and writing objects

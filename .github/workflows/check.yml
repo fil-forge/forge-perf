@@ -65,6 +65,12 @@ jobs:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
           key: tofu-providers-${{ hashFiles('terraform/**/.terraform.lock.hcl') }}
 
+      # cmd/s3-ceiling's checks (check-go.sh) need the Go line go.mod names.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
       # No pattern here, so the denylist check skips; the denylist job runs it.
       - run: make check
 

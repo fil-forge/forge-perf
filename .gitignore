@@ -54,3 +54,6 @@ __pycache__/
 
 # The site preview (make site-preview).
 _preview/
+
+# A local build of cmd/s3-ceiling.
+/s3-ceiling
