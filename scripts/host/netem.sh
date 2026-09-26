@@ -21,9 +21,10 @@
 # verify passes), throughput.json, and the sidecar and docker events output.
 #
 # The environment can name another project (COMPOSE_PROJECT_NAME, default
-# smelt) or network (NET_NAME), and can override RTT_MS, RTT_TOLERANCE_PCT and
-# NET_SUBNET for a local try. A Docker Desktop VM adds a few ms of timer slack
-# to every delayed packet, so a local verify may need a wider tolerance.
+# smelt) or network (NET_NAME). With NETEM_LOCAL=1 it can also override RTT_MS,
+# RTT_TOLERANCE_PCT and NET_SUBNET for a local try, and latency.json records
+# that it did. A Docker Desktop VM adds a few ms of timer slack to every
+# delayed packet, so a local verify may need a wider tolerance.
 #
 # Exit status: 0 passed, 1 a check failed (the run is invalid), 2 the stack,
 # the configuration or the sidecar is not usable (a harness error).
@@ -36,13 +37,17 @@ network="${NET_NAME:-forge-network}"
 state="${NETEM_DIR:-${RUN:+$RUN/netem}}"
 state="${state:-$PWD/netem}"
 
-# A value set in the environment wins over the file; the box sets none.
+# The file wins unless NETEM_LOCAL=1; then a value set in the environment does.
 env_rtt="${RTT_MS:-}" env_tol="${RTT_TOLERANCE_PCT:-}" env_subnet="${NET_SUBNET:-}"
 # shellcheck source=../../config/latency.env
 . "$config/latency.env"
-RTT_MS="${env_rtt:-$RTT_MS}"
-RTT_TOLERANCE_PCT="${env_tol:-$RTT_TOLERANCE_PCT}"
-NET_SUBNET="${env_subnet:-$NET_SUBNET}"
+overridden=false
+if [ "${NETEM_LOCAL:-}" = 1 ]; then
+  [ -z "$env_rtt$env_tol$env_subnet" ] || overridden=true
+  RTT_MS="${env_rtt:-$RTT_MS}"
+  RTT_TOLERANCE_PCT="${env_tol:-$RTT_TOLERANCE_PCT}"
+  NET_SUBNET="${env_subnet:-$NET_SUBNET}"
+fi
 # shellcheck source=../../config/groups.conf
 . "$config/groups.conf"
 netshoot="$(awk '$1 ~ /^nicolaka\/netshoot:/ { print $1; exit }' "$config/images.lock")"
@@ -59,7 +64,19 @@ ingot:ingot-postgres:intra upload:hilt:intra host:ingot:intra"
 # TCP connects, from:to:port:path, 10 each; the median must be in the band.
 CONNECTS="ingot:upload:80:/health upload:piri-0:3000:/readyz"
 
-harness() { echo "netem: $*" >&2; exit 2; }
+# harness: exit 2. Inside verify, the reason and the numbers so far still go
+# to latency.json first.
+verifying=""
+harness() {
+  echo "netem: $*" >&2
+  if [ -n "$verifying" ]; then
+    local pass="$verifying"
+    verifying=""
+    echo "harness error: $*" >>"$state/reasons-$pass"
+    write_json "$pass" || true
+  fi
+  exit 2
+}
 in_list() { case " $(echo "$2" | tr '\n' ' ') " in *" $1 "*) return 0 ;; esac; return 1; }
 between() { awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v >= lo && v <= hi) }'; }
 
@@ -75,10 +92,11 @@ in_subnet() {
 }
 
 # sidecar <network> <mode> [args...]: netem-apply.sh in a netshoot container.
+# Only apply and clear change qdiscs, so only they get NET_ADMIN.
 sidecar() {
-  local opts=(--network "$1" --cap-add NET_ADMIN)
+  local opts=(--network "$1")
+  case "$2" in apply | clear) opts+=(--cap-add NET_ADMIN) ;; esac
   shift
-  [ "${opts[1]}" != host ] || opts=(--network host)
   docker run --rm -i "${opts[@]}" "$netshoot" bash -s -- "$@" <"$here/netem-apply.sh"
 }
 
@@ -182,6 +200,8 @@ cmd_verify() {
   : >"$reasons"
   : >"$pings"
   : >"$connects"
+  : >"$state/sidecar-$pass.out"
+  verifying="$pass"
   fail() { echo "$*" >>"$reasons"; }
   address() {
     local ip
@@ -197,9 +217,41 @@ cmd_verify() {
     echo "container:$cid"
   }
 
+  # Containers first: one that is gone or not running is a failed check, and
+  # the probes from its namespace are skipped rather than counted as a harness
+  # error. Post also compares start time, restarts and address with apply.
+  local svc group cid started restarts ip now now_status now_started now_restarts now_ip down=" "
+  while read -r svc group cid started restarts ip; do
+    if ! now="$(facts "$cid" 2>/dev/null)"; then
+      fail "$svc: container $cid is gone"
+      down="$down$svc "
+      continue
+    fi
+    read -r now_status _ now_started now_restarts now_ip <<<"$now"
+    if [ "$now_status" != running ]; then
+      fail "$svc is $now_status"
+      down="$down$svc "
+    fi
+    [ "$pass" = post ] || continue
+    [ "$now_started" = "$started" ] && [ "$now_restarts" = "$restarts" ] ||
+      fail "$svc restarted after apply (a node loses its qdisc; a central container can return on another address)"
+    [ "$group" != central ] || [ "$now_ip" = "$ip" ] ||
+      fail "$svc address changed from $ip to $now_ip; the filters no longer match it"
+  done <"$state/containers.tsv"
+  if [ "$pass" = post ]; then
+    docker events --since "$(cat "$state/applied-at")" --until "$(date +%s)" \
+      --filter type=container --filter "label=com.docker.compose.project=$project" \
+      --filter event=die --filter event=start --filter event=restart \
+      --format '{{.Actor.ID}} {{.Action}} {{json .}}' >"$state/events-post" || harness "docker events failed"
+  fi
+
   # Round trips: one sidecar per source, its pings in parallel.
-  local p src net from to kind ip targets out n mean med max
+  local p src net from to kind targets out n mean med max
   for src in $(for p in $PAIRS; do echo "${p%%:*}"; done | awk '!seen[$0]++'); do
+    if [ "${down#* "$src" }" != "$down" ]; then
+      fail "$src is not running; its round trips were not measured"
+      continue
+    fi
     net="$(netns "$src")"
     targets=""
     for p in $PAIRS; do
@@ -229,6 +281,10 @@ cmd_verify() {
   local c port path ok tcp first
   for c in $CONNECTS; do
     IFS=: read -r from to port path <<<"$c"
+    if [ "${down#* "$from" }" != "$down" ]; then
+      fail "$from is not running; its connect to $to was not measured"
+      continue
+    fi
     net="$(netns "$from")"
     ip="$(address "$to")"
     out="$(sidecar "$net" connect "http://$ip:$port$path" 10)" ||
@@ -243,10 +299,11 @@ cmd_verify() {
   done
 
   # The qdiscs: present, the configured delay, filters equal to the central set.
-  local svc group cid started restarts want
+  local want
   want="$(tr '\n' ' ' <"$state/central-ips")"
   while read -r svc group cid _ _ ip; do
     [ "$group" = node ] && [ "$ip" != - ] || continue
+    [ "${down#* "$svc" }" = "$down" ] || continue
     out="$(sidecar "container:$cid" show "$ip" 2>&1)" || { fail "$svc: cannot read its qdiscs"; continue; }
     [ "$(echo "$out" | awk '$1 == "root" { print $2 }')" = prio ] || fail "$svc: no prio root qdisc"
     echo "$out" | awk -v r="$RTT_MS" '$1 == "delay" { v = $2 + 0; if ($2 ~ /us$/) v /= 1000; else if ($2 ~ /[0-9]s$/) v *= 1000; ok = (v == r) } END { exit !ok }' ||
@@ -256,29 +313,13 @@ cmd_verify() {
   done <"$state/containers.tsv"
 
   if [ "$pass" = post ]; then
-    local now now_status now_started now_restarts now_ip
-    while read -r svc group cid started restarts ip; do
-      if ! now="$(facts "$cid" 2>/dev/null)"; then
-        fail "$svc: container $cid is gone"
-        continue
-      fi
-      read -r now_status _ now_started now_restarts now_ip <<<"$now"
-      [ "$now_status" = running ] || fail "$svc is $now_status"
-      [ "$now_started" = "$started" ] && [ "$now_restarts" = "$restarts" ] ||
-        fail "$svc restarted after apply (a node loses its qdisc; a central container can return on another address)"
-      [ "$group" != central ] || [ "$now_ip" = "$ip" ] ||
-        fail "$svc address changed from $ip to $now_ip; the filters no longer match it"
-    done <"$state/containers.tsv"
-    docker events --since "$(cat "$state/applied-at")" --until "$(date +%s)" \
-      --filter type=container --filter "label=com.docker.compose.project=$project" \
-      --filter event=die --filter event=start --filter event=restart \
-      --format '{{.Actor.ID}} {{.Action}} {{json .}}' >"$state/events-post" || harness "docker events failed"
     while read -r cid kind _; do
       svc="$(awk -v c="$cid" '$3 == c { print $1 }' "$state/containers.tsv")"
       [ -z "$svc" ] || fail "$svc: $kind event after apply"
     done <"$state/events-post"
   fi
 
+  verifying=""
   awk '!seen[$0]++' "$reasons" >"$reasons.tmp" && mv "$reasons.tmp" "$reasons"
   write_json "$pass"
   if [ -s "$reasons" ]; then
@@ -292,7 +333,7 @@ cmd_verify() {
 # write_json <pass>: latency-<pass>.json from the pass's files, then
 # latency.json holding both passes.
 write_json() {
-  awk -v pass="$1" -v rtt="$RTT_MS" -v tol="$RTT_TOLERANCE_PCT" -v node=" $NODE " -v central=" $CENTRAL " '
+  awk -v pass="$1" -v rtt="$RTT_MS" -v tol="$RTT_TOLERANCE_PCT" -v subnet="$NET_SUBNET" -v overridden="$overridden" -v node=" $NODE " -v central=" $CENTRAL " '
     function num(v) { return v == "-" ? "null" : v + 0 }
     function median(a, n,   i, j, t) {
       if (!n) return "null"
@@ -314,9 +355,9 @@ write_json() {
       csep = ","
       next
     }
-    { reasons = reasons rsep "\"" $0 "\""; rsep = "," }
+    { gsub(/["\\]/, "\\\\&"); reasons = reasons rsep "\"" $0 "\""; rsep = "," }
     END {
-      printf "{\"pass\":\"%s\",\"rtt_ms\":%s,\"tolerance_pct\":%s,", pass, rtt, tol
+      printf "{\"pass\":\"%s\",\"rtt_ms\":%s,\"tolerance_pct\":%s,\"net_subnet\":\"%s\",\"overridden\":%s,", pass, rtt, tol, subnet, overridden
       printf "\"node_to_central_median_ms\":%s,\"central_to_node_median_ms\":%s,", median(out, no), median(back, nb)
       printf "\"intra_group_max_ms\":%s,\"host_to_ingot_ms\":%s,", (intra == "" ? "null" : intra), (host == "" ? "null" : host)
       printf "\"pairs\":[%s],\"connects\":[%s],\"ok\":%s,\"reasons\":[%s]}\n", pairs, conns, (reasons == "" ? "true" : "false"), reasons

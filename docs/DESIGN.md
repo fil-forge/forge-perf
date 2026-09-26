@@ -145,7 +145,7 @@ tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip dst <central-
 
 The all-zero priomap keeps unfiltered traffic in band 1. Delaying node egress adds one round trip to every exchange across the boundary, handshakes included. Healthchecks and Docker's DNS stay on loopback, undelayed.
 
-`netem.sh verify` runs before and after the drill. Pings and TCP connects across the boundary, in both directions, must average 13.5 to 16.5 ms; paths within a group, and host to ingot, stay under 1 ms. Afterwards the qdiscs must be present, and central addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) can return on an address the filter no longer matches. Calibration also moves 1 GiB from ingot to piri-0 with and without the qdisc; the rates must agree within 5%.
+`netem.sh verify` runs before and after the drill. Across the boundary, in both directions, the median of 20 pings per pair and the median of 10 TCP connects must fall between 13.5 and 16.5 ms; within a group, and from the host to ingot, the median stays under 1 ms. A container that is gone or not running fails the check, and its probes are skipped. Afterwards the qdiscs must be present, and central addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) can return on an address the filter no longer matches. Calibration also moves 1 GiB from ingot to piri-0 with and without the qdisc; the rates must agree within 5%.
 
 ## 6. Storage and the wipe
 

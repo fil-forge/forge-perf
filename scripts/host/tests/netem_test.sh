@@ -22,9 +22,9 @@ case "$cmd" in
   events) cat "$FIX/events" 2>/dev/null || true ;;
   rm) ;;
   run)
-    net="" detach=0
+    net="" detach=0 cap=none
     while [ "$1" != -- ]; do
-      case "$1" in --network) net="$2"; shift ;; -d) detach=1 ;; esac
+      case "$1" in --network) net="$2"; shift ;; --cap-add) cap="$2"; shift ;; -d) detach=1 ;; esac
       shift
       [ "$detach" = 0 ] || { echo server; exit 0; }
     done
@@ -32,7 +32,14 @@ case "$cmd" in
     mode="$1"
     shift
     key="${net//:/_}"
+    # Like docker: joining a namespace needs a running container.
+    if [ "${net#container:}" != "$net" ]; then
+      read -r st _ <"$FIX/inspect/${net#container:}" 2>/dev/null || st=gone
+      [ "$st" = running ] || { echo "docker: cannot join network of a non running container" >&2; exit 125; }
+    fi
     echo "$net $mode $*" >>"$FIX/log"
+    echo "$mode $cap" >>"$FIX/caps"
+    [ "$mode" != ping ] || [ ! -f "$FIX/ping-status" ] || exit "$(cat "$FIX/ping-status")"
     rtt() { awk -v n="$net" -v i="$1" '$1 == n && $2 == i { v = $3 } END { print (v == "" ? "0.100" : v) }' "$FIX/rtt"; }
     case "$mode" in
       apply) shift 2; printf '%s\n' "$@" >"$FIX/applied-$key"; echo "dev eth0"; exit "$(cat "$FIX/sidecar-status" 2>/dev/null || echo 0)" ;;
@@ -94,7 +101,7 @@ out="$work/out"
 expect() {
   local want="$1" what="$2" pattern="$3" got=0
   shift 4
-  NETEM_DIR="$work/state" RTT_MS="" RTT_TOLERANCE_PCT="" bash "$netem" "$@" >"$out" 2>&1 || got=$?
+  NETEM_DIR="$work/state" RTT_MS="${RTT_MS:-}" RTT_TOLERANCE_PCT="${RTT_TOLERANCE_PCT:-}" bash "$netem" "$@" >"$out" 2>&1 || got=$?
   if [ "$got" -ne "$want" ]; then
     echo "FAIL: $what: exit $got, want $want"
     sed 's/^/    /' "$out"
@@ -117,6 +124,13 @@ expect 0 "verify pre passes at 15 ms" "verify pre passed" -- verify pre
 grep -q '"node_to_central_median_ms":15,"central_to_node_median_ms":15,"intra_group_max_ms":0.1,"host_to_ingot_ms":0.1' "$work/state/latency.json" ||
   { echo "FAIL: latency.json summary"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
 expect 0 "verify post passes with nothing changed" "verify post passed" -- verify post
+grep -q '"net_subnet":"172.30.0.0/24","overridden":false' "$work/state/latency.json" ||
+  { echo "FAIL: latency.json lacks the subnet record"; failures=$((failures + 1)); }
+if [ -n "$(awk '$1 != "apply" && $1 != "clear" && $2 != "none"' "$FIX/caps")" ] || ! grep -q '^apply NET_ADMIN$' "$FIX/caps"; then
+  echo "FAIL: only apply and clear get NET_ADMIN"
+  cat "$FIX/caps"
+  failures=$((failures + 1))
+fi
 
 set_rtt ingot hilt 17.0
 expect 1 "a round trip above the band fails" "ingot -> hilt median round trip 17.0 ms is outside 13.5-16.5" -- verify pre
@@ -136,6 +150,33 @@ rm "$FIX/events"
 rm "$FIX/applied-container_c-piri-0"
 expect 1 "a missing qdisc fails verify" "piri-0: no prio root qdisc" -- verify pre
 
+# A crashed node container is a failed check with the post record kept.
+fixture
+expect 0 "apply before a crash" - -- apply
+expect 0 "verify pre before a crash" - -- verify pre
+echo "exited 137 2026-09-25T00:00:00Z 0 $(ip_of piri-0)" >"$FIX/inspect/c-piri-0"
+echo "c-piri-0 die {}" >"$FIX/events"
+expect 1 "an exited node container fails post" "piri-0 is exited" -- verify post
+grep -q "piri-0 is not running; its round trips were not measured" "$out" ||
+  { echo "FAIL: skipped probes not reported"; failures=$((failures + 1)); }
+grep -q '"post":{"pass":"post"' "$work/state/latency.json" && [ -s "$work/state/events-post" ] ||
+  { echo "FAIL: post record lost after a crash"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
+! command -v python3 >/dev/null || python3 -m json.tool "$work/state/latency.json" >/dev/null ||
+  { echo "FAIL: latency.json is not valid JSON"; failures=$((failures + 1)); }
+rm "$FIX/events" "$FIX/inspect/c-ingot"
+echo "running 0 2026-09-25T00:00:00Z 0 $(ip_of piri-0)" >"$FIX/inspect/c-piri-0"
+expect 1 "a recreated node container fails post" "ingot: container c-ingot is gone" -- verify post
+grep -q '"post":{"pass":"post"' "$work/state/latency.json" ||
+  { echo "FAIL: post record lost after a recreate"; failures=$((failures + 1)); }
+fixture
+expect 0 "apply before a sidecar failure" - -- apply
+echo 1 >"$FIX/ping-status"
+expect 2 "a ping sidecar failing in a running container is a harness error" "ping sidecar failed in ingot" -- verify post
+grep -q '"reasons":\["harness error: ping sidecar failed in ingot"\]' "$work/state/latency.json" ||
+  { echo "FAIL: harness error not recorded"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
+! command -v python3 >/dev/null || python3 -m json.tool "$work/state/latency.json" >/dev/null ||
+  { echo "FAIL: latency.json is not valid JSON after a harness error"; failures=$((failures + 1)); }
+
 fixture
 echo "newsvc c-newsvc" >>"$FIX/ps"
 expect 2 "a service in no group stops apply" "service newsvc is in no group" -- apply
@@ -143,7 +184,14 @@ fixture
 echo "exited 1 2026-09-25T00:00:00Z 0 -" >"$FIX/inspect/c-hilt-init"
 expect 2 "a failed one-shot stops apply" "one-shot hilt-init is exited with exit code 1" -- apply
 fixture
-NET_SUBNET=10.0.0.0/24 expect 2 "an address outside NET_SUBNET stops apply" "outside NET_SUBNET" -- apply
+NET_SUBNET=10.0.0.0/24 expect 0 "NET_SUBNET in the environment is ignored" - -- apply
+fixture
+NETEM_LOCAL=1 NET_SUBNET=10.0.0.0/24 expect 2 "an address outside NET_SUBNET stops apply" "outside NET_SUBNET" -- apply
+fixture
+expect 0 "apply before a local override" - -- apply
+NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 expect 0 "a local override is recorded" - -- verify pre
+grep -q '"tolerance_pct":40,"net_subnet":"172.30.0.0/24","overridden":true' "$work/state/latency.json" ||
+  { echo "FAIL: override not recorded"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
 fixture
 echo 1 >"$FIX/sidecar-status"
 expect 2 "a sidecar failure is a harness error" "sidecar could not shape" -- apply

@@ -94,16 +94,17 @@ case "$mode" in
     ;;
   connect)
     url="$1" count="$2" ok=0
-    : >/tmp/connect
+    times="$(mktemp)"
     for _ in $(seq "$count"); do
       if out="$(curl -so /dev/null --max-time 5 -w '%{time_connect} %{time_starttransfer}' "$url")"; then
-        echo "$out" >>/tmp/connect
+        echo "$out" >>"$times"
         ok=$((ok + 1))
       fi
     done
-    [ "$ok" -gt 0 ] || { echo "connect 0 - -"; exit 0; }
-    tcp="$(awk '{ printf "%.3f\n", $1 * 1000 }' /tmp/connect | median)"
-    first="$(awk '{ printf "%.3f\n", $2 * 1000 }' /tmp/connect | median)"
+    [ "$ok" -gt 0 ] || { echo "connect 0 - -"; rm -f "$times"; exit 0; }
+    tcp="$(awk '{ printf "%.3f\n", $1 * 1000 }' "$times" | median)"
+    first="$(awk '{ printf "%.3f\n", $2 * 1000 }' "$times" | median)"
+    rm -f "$times"
     echo "connect $ok $tcp $first"
     ;;
   iperf)

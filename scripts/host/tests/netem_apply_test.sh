@@ -46,6 +46,32 @@ cat >"$work/bin/ping" <<'STUB'
 #!/usr/bin/env bash
 for t in 15.2 14.9 15.1 16.0 15.0; do echo "64 bytes from x: icmp_seq=1 ttl=64 time=$t ms"; done
 STUB
+# curl -w '%{time_connect} %{time_starttransfer}': three calls, then failures
+# once $work/curl-down exists.
+cat >"$work/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+[ ! -f "$WORK/curl-down" ] || exit 7
+n="$(cat "$WORK/curl-n" 2>/dev/null || echo 0)"
+echo $((n + 1)) >"$WORK/curl-n"
+case "$n" in 0) printf '0.015200 0.030100' ;; 1) printf '0.014900 0.029800' ;; *) printf '0.016000 0.031000' ;; esac
+STUB
+# iperf3 3.21 client output from the pinned netshoot image, -n 200M -f m.
+cat >"$work/bin/iperf3" <<'STUB'
+#!/usr/bin/env bash
+cat <<'OUT'
+Connecting to host 127.0.0.1, port 5201
+[  5] local 127.0.0.1 port 35454 connected to 127.0.0.1 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.01   sec   200 MBytes  1667 Mbits/sec    0   1023 KBytes
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-1.01   sec   200 MBytes  1668 Mbits/sec    0            sender
+[  5]   0.00-1.01   sec   200 MBytes  1667 Mbits/sec                  receiver
+
+iperf Done.
+OUT
+STUB
+export WORK="$work"
 chmod +x "$work/bin/"*
 export PATH="$work/bin:$PATH"
 
@@ -85,6 +111,15 @@ check "show reports the root, the delay and the filters as addresses" \
 
 run ping 172.30.0.2
 check "ping reports received, mean, median and max" '[ "$(cat "$work/out")" = "ping 172.30.0.2 5 15.240 15.1 16.0" ]'
+
+run connect http://172.30.0.2:80/health 3
+check "connect reports successes and median connect and first-byte times" '[ "$(cat "$work/out")" = "connect 3 15.200 30.100" ]'
+touch "$work/curl-down"
+run connect http://172.30.0.2:80/health 3
+check "connect with no successful call reports zero" '[ "$status" -eq 0 ] && [ "$(cat "$work/out")" = "connect 0 - -" ]'
+
+run iperf 172.30.0.2 200M
+check "iperf reports the receiver rate" '[ "$(cat "$work/out")" = "iperf 1667" ]'
 
 if [ "$failures" -ne 0 ]; then
   echo "netem-apply: $failures failure(s)"
