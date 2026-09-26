@@ -55,11 +55,17 @@ run "policies" {
   assert {
     condition = alltrue([
       { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Effect == "Deny",
-      contains(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Action]), "ec2:TerminateInstances"),
-      contains(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Action]), "ec2:StopInstances"),
+      length(setsubtract([
+        "ec2:Attach*", "ec2:CreateRoute", "ec2:CreateSnapshot", "ec2:CreateSnapshots", "ec2:Delete*", "ec2:Detach*",
+        "ec2:Disassociate*", "ec2:Modify*", "ec2:Reboot*", "ec2:Replace*", "ec2:Revoke*", "ec2:Stop*", "ec2:Terminate*",
+      ], flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Action]))) == 0,
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Condition.StringNotEquals["aws:ResourceTag/Project"]]) == ["forge-perf"],
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Effect == "Deny",
+      length(setsubtract(["ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress"], flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Action]))) == 0,
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Resource]) == ["arn:aws:ec2:*:*:security-group/*"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Condition.StringNotEquals["aws:ResourceTag/Project"]]) == ["forge-perf"],
     ])
-    error_message = "the apply role must be denied stopping or terminating what lacks Project=forge-perf"
+    error_message = "the apply role must be denied stopping, modifying, deleting, detaching or copying what lacks Project=forge-perf"
   }
 
   assert {
@@ -75,15 +81,63 @@ run "policies" {
   assert {
     condition = length([
       for s in values({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }) : s if s.Effect == "Allow" && length([
-        for a in flatten([s.Action]) : a if can(regex("^(ssm|kms|iam:CreateUser|iam:CreateAccessKey|iam:\\*)", a))
+        for a in flatten([s.Action]) : a if can(regex("^(ssm:|kms:|iam:\\*|iam:[A-Za-z]*(User|AccessKey|LoginProfile|Group))", a))
       ]) > 0
     ]) == 0
     error_message = "the apply role must hold no ssm, kms or IAM user actions"
   }
 
   assert {
-    condition     = toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["WriteBoxRoles"].Resource])) == toset(["arn:aws:iam::654654381893:role/forge-perf-box-*", "arn:aws:iam::654654381893:instance-profile/forge-perf-box-*"])
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : alltrue([
+        for r in flatten([s.Resource]) : contains(["arn:aws:iam::654654381893:role/forge-perf-box-*", "arn:aws:iam::654654381893:instance-profile/forge-perf-box-*"], r)
+      ]) if s.Effect == "Allow" && anytrue([for a in flatten([s.Action]) : startswith(a, "iam:") && !can(regex("^iam:(Get|List)", a))])
+    ])
     error_message = "the apply role may write box roles only"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement :
+      try(flatten([s.Condition.StringEquals["iam:PermissionsBoundary"]]), []) == ["arn:aws:iam::654654381893:policy/forge-perf-box-boundary"]
+      if s.Effect == "Allow" && length(setintersection(toset(flatten([s.Action])), toset(["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:DeleteRolePolicy"]))) > 0
+    ])
+    error_message = "every role-writing action of the apply role must require the box permissions boundary"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement :
+      try(flatten([s.Condition.ArnEquals["iam:PolicyARN"]]), []) == ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]
+      if s.Effect == "Allow" && contains(flatten([s.Action]), "iam:AttachRolePolicy")
+    ])
+    error_message = "a box role may have only Session Manager's managed policy attached"
+  }
+
+  assert {
+    condition = alltrue([
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheBoundary"].Effect == "Deny",
+      length(setsubtract(["iam:DeleteRolePermissionsBoundary", "iam:PutRolePermissionsBoundary", "iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion"], flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepTheBoundary"].Action]))) == 0,
+    ])
+    error_message = "the apply role must not change or remove the box boundary"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : alltrue([
+        for a in flatten([s.Action]) : can(regex("^(ec2messages|ssmmessages|ssm|kms|s3):", a)) && !strcontains(a, "*")
+      ])
+    ])
+    error_message = "the box boundary grants Session Manager, parameters and S3 only, with no wildcards"
+  }
+
+  assert {
+    condition = alltrue([
+      flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["ReadOwnParameters"].Resource]) == ["arn:aws:ssm:us-east-2:654654381893:parameter/forge-perf/*"],
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["WriteResults"].Action])) == toset(["s3:PutObject", "s3:AbortMultipartUpload"]),
+      length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "ssm:GetParameter")]) && s.Sid != "ReadOwnParameters"]) == 0,
+    ])
+    error_message = "a box reads /forge-perf parameters only and writes results without reading them"
   }
 
   assert {
@@ -91,7 +145,7 @@ run "policies" {
       for s in concat(values({ for s in jsondecode(module.github_actions_iam.policy_json.plan).Statement : s.Sid => s }), values({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s })) : s
       if length([for r in flatten([s.Resource]) : r if strcontains(r, "forge-perf-results")]) > 0
     ]) == 0
-    error_message = "the plan and apply roles must not reach the results bucket"
+    error_message = "no plan or apply statement names the results bucket"
   }
 
   assert {
@@ -105,8 +159,10 @@ run "policies" {
 
   assert {
     condition = alltrue([
-      for s in values({ for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Sid => s }) : alltrue([for r in flatten([s.Resource]) : !strcontains(r, "/raw")])
-    ]) && flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Sid => s }["ListPublished"].Condition.StringLike["s3:prefix"]]) == ["published/*"]
+      toset(flatten([for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Resource])) == toset(["arn:aws:s3:::forge-perf-results-654654381893", "arn:aws:s3:::forge-perf-results-654654381893/published/*"]),
+      toset(flatten([for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Action])) == toset(["s3:ListBucket", "s3:GetObject"]),
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Sid => s }["ListPublished"].Condition.StringLike["s3:prefix"]]) == ["published/*"],
+    ])
     error_message = "the results role must reach published/ and nothing else"
   }
 
@@ -117,6 +173,17 @@ run "policies" {
       flatten([s.Condition.ArnEquals["aws:PrincipalArn"]]) == ["arn:aws:iam::654654381893:role/forge-perf-ci-results"]
     ])
     error_message = "the results bucket policy must deny the results role raw/*"
+  }
+
+  assert {
+    condition = anytrue([
+      for s in jsondecode(data.aws_iam_policy_document.results_bucket.json).Statement :
+      s.Effect == "Deny" && toset(flatten([s.Action])) == toset(["s3:ListBucket", "s3:ListBucketVersions"]) &&
+      flatten([s.Resource]) == ["arn:aws:s3:::forge-perf-results-654654381893"] &&
+      flatten([s.Condition.StringNotLike["s3:prefix"]]) == ["published/*"] &&
+      flatten([s.Condition.ArnEquals["aws:PrincipalArn"]]) == ["arn:aws:iam::654654381893:role/forge-perf-ci-results"]
+    ])
+    error_message = "the results bucket policy must deny the results role any listing outside published/"
   }
 
   assert {

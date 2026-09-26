@@ -49,11 +49,19 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-roles-results-${{ github.run_id }}
 
-      - name: published/ is readable
+      # docs/operations.md puts published/probe.json for when no box has
+      # published yet.
+      - name: published/ is listable and readable
         run: |
           set -euo pipefail
-          aws s3api list-objects-v2 --bucket "$RESULTS_BUCKET" --prefix published/ --max-items 1 >/dev/null
-          echo "listed published/"
+          key=$(aws s3api list-objects-v2 --bucket "$RESULTS_BUCKET" --prefix published/ \
+            --max-items 1 --query 'Contents[0].Key' --output text)
+          if [[ -z "$key" || "$key" == None ]]; then
+            echo "::error::published/ is empty; put the probe object from docs/operations.md"
+            exit 1
+          fi
+          aws s3api get-object --bucket "$RESULTS_BUCKET" --key "$key" /dev/null >/dev/null
+          echo "listed and read $key"
 
       # A missing key and a denied one both return 403 to a role that cannot
       # list raw/, so either way a 403 is the pass and anything else fails.

@@ -13,7 +13,7 @@ variable "repository_subject_prefix" {
 }
 
 variable "apply_environments" {
-  description = "GitHub environments whose jobs may assume the apply role. Each should allow main as its only deployment branch."
+  description = "GitHub environments whose jobs may assume the apply role. Each must exist, with main as its only deployment branch and a required reviewer, before this trust is applied: GitHub creates a missing environment unprotected the first time any branch's job names it (docs/operations.md)."
   type        = list(string)
   default     = []
 }
@@ -56,5 +56,15 @@ variable "tag_key" {
 
 variable "tag_value" {
   description = "Value of tag_key on this project's resources."
+  type        = string
+}
+
+variable "region" {
+  description = "Region of the boxes, their SSM parameters and the key SSM decrypts them with."
+  type        = string
+}
+
+variable "ssm_path" {
+  description = "SSM Parameter Store path a box may read, with a leading slash and no trailing one."
   type        = string
 }

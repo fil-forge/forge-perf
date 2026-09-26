@@ -5,7 +5,7 @@
 # It lives in its own root because of a chicken-and-egg problem. The bucket is
 # what every other root's backend points at, so it cannot be created by an
 # apply that already keeps its state there, and the CI roles cannot be created
-# by the CI they authorise. So this root is applied by hand and everything
+# by the CI they authorize. So this root is applied by hand and everything
 # downstream of it is ordinary. versions.tofu gives the first-apply procedure.
 #
 # The results bucket and the piri user live here too, so no CI role ever holds
@@ -35,6 +35,8 @@ locals {
   # derived there the way it is here. Stated in the same shape those blocks
   # state it, and guarded by allowed_account_ids above.
   state_bucket_name = "${module.constants.state_bucket_name_prefix}-${module.constants.nonprod_account_id}"
+
+  results_role_arn = "arn:aws:iam::${module.constants.nonprod_account_id}:role/forge-perf-ci-results"
 }
 
 module "tfstate" {
@@ -56,10 +58,14 @@ module "github_actions_iam" {
   #   gh api /repos/fil-forge/forge-perf/actions/oidc/customization/sub -q .sub_claim_prefix
   repository_subject_prefix = "repo:fil-forge@280998881/forge-perf@1388269703"
 
-  # The box roots apply in this environment, which has a required reviewer.
+  # The box roots apply in this environment. It must exist, with a required
+  # reviewer and main as its only deployment branch, before this is applied
+  # (docs/operations.md).
   apply_environments = ["box-change"]
 
   account_id  = module.constants.nonprod_account_id
+  region      = module.constants.region
+  ssm_path    = module.constants.ssm_path
   name_prefix = "forge-perf"
   tag_value   = "forge-perf"
 
@@ -74,6 +80,11 @@ module "github_actions_iam" {
 output "ci_role_arns" {
   description = "Literal role ARNs for the workflow env blocks."
   value       = module.github_actions_iam.role_arns
+}
+
+output "box_permissions_boundary_arn" {
+  description = "permissions_boundary for every box instance role."
+  value       = module.github_actions_iam.box_permissions_boundary_arn
 }
 
 # ---------------------------------------------------------------------------
@@ -152,7 +163,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "results" {
 }
 
 # Backs up the role's own policy: an explicit deny cannot be undone by a later
-# grant on the role.
+# grant on the role. Both statements name the results role through
+# aws:PrincipalArn rather than as the principal, so recreating the role does
+# not leave the policy naming a deleted role's unique id.
 data "aws_iam_policy_document" "results_bucket" {
   statement {
     sid       = "ResultsRoleNeverReadsRaw"
@@ -165,12 +178,36 @@ data "aws_iam_policy_document" "results_bucket" {
       identifiers = ["*"]
     }
 
-    # By ARN in a condition rather than as the principal, so recreating the
-    # role does not leave the policy naming a deleted role's unique id.
     condition {
       test     = "ArnEquals"
       variable = "aws:PrincipalArn"
-      values   = ["arn:aws:iam::${module.constants.nonprod_account_id}:role/forge-perf-ci-results"]
+      values   = [local.results_role_arn]
+    }
+  }
+
+  # A listing is authorized on the bucket, not on raw/, so the deny above does
+  # not cover it. A listing with no prefix is denied too.
+  statement {
+    sid       = "ResultsRoleListsPublishedOnly"
+    effect    = "Deny"
+    actions   = ["s3:ListBucket", "s3:ListBucketVersions"]
+    resources = ["arn:aws:s3:::${module.constants.results_bucket_name}"]
+
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [local.results_role_arn]
+    }
+
+    condition {
+      test     = "StringNotLike"
+      variable = "s3:prefix"
+      values   = ["published/*"]
     }
   }
 }
@@ -197,10 +234,10 @@ resource "aws_iam_user" "piri" {
   name = "forge-perf-piri"
 }
 
-# The source condition makes the key useless outside the default VPC, where S3
-# traffic from the forge-perf subnet goes through the gateway endpoint. Once
-# the network root has created that endpoint, this narrows to aws:SourceVpce,
-# which also excludes infra-nodes' dev node in the same VPC.
+# The source condition makes the key usable only from inside the default VPC,
+# where S3 traffic from the forge-perf subnet goes through the gateway
+# endpoint. Once the network root has created that endpoint, this narrows to
+# aws:SourceVpce, which also excludes infra-nodes' dev node in the same VPC.
 data "aws_iam_policy_document" "piri" {
   statement {
     sid       = "PiriBuckets"
