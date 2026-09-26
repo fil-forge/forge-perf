@@ -9,7 +9,9 @@
 # or a comma list that the box sweeps (docs/operations.md, "A campaign"). In
 # mode campaign, SET must be a committed set under calibration/sets/ with a
 # digest for every tracked image, and config/settings/<INSTANCE_TYPE>.env
-# must exist, since run.sh refuses a type without one. NOW (Unix seconds)
+# must exist, since run.sh refuses a type without one, and an empty WORKERS
+# needs a WORKERS value in it. DURATION is at most 4h, so a run and its
+# record fit in forge-perf-run.service's 6-hour limit. NOW (Unix seconds)
 # replaces the clock in tests.
 set -euo pipefail
 
@@ -33,7 +35,13 @@ case "${MODE:-}" in
 esac
 [[ "${RUNS:-}" =~ ^[1-9][0-9]*$ ]] && [ "$RUNS" -le 20 ] || die "runs takes 1 to 20"
 [[ "${SIZE:-}" =~ ^[1-9][0-9]*GB$ ]] || die "size is a whole number of GB, like 100GB"
-[[ "${DURATION:-}" =~ ^[1-9][0-9]*[smh]$ ]] || die "duration is like 30m or 4h"
+[[ "${DURATION:-}" =~ ^([1-9][0-9]{0,5})([smh])$ ]] || die "duration is like 30m or 4h"
+case "${BASH_REMATCH[2]}" in
+  s) duration_s="${BASH_REMATCH[1]}" ;;
+  m) duration_s=$((BASH_REMATCH[1] * 60)) ;;
+  h) duration_s=$((BASH_REMATCH[1] * 3600)) ;;
+esac
+[ "$duration_s" -le 14400 ] || die "duration is at most 4h, so the run fits in forge-perf-run.service's 6 hours"
 workers="${WORKERS:-}"
 workers="${workers// /}"
 [[ -z "$workers" || "$workers" =~ ^[1-9][0-9]{0,3}(,[1-9][0-9]{0,3}){0,7}$ ]] ||
@@ -53,6 +61,8 @@ if [ "$MODE" = campaign ]; then
     die "$set_path needs a smelt SHA, a harness SHA and a digest for every image in config/images.tracked"
   [ -f "$repo/config/settings/$INSTANCE_TYPE.env" ] ||
     die "no config/settings/$INSTANCE_TYPE.env; run.sh would refuse every run on this type"
+  [ -n "$workers" ] || grep -qE '^WORKERS=[1-9]' "$repo/config/settings/$INSTANCE_TYPE.env" ||
+    die "config/settings/$INSTANCE_TYPE.env has no WORKERS yet; give workers, one number or a list to sweep"
 fi
 
 at=$((now + HOURS * 3600))

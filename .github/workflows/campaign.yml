@@ -53,8 +53,9 @@ on:
         type: string
         default: 4h
 
-# Shared with the reaper, so an apply and a destroy never contend for the
-# state lock.
+# One campaign dispatch at a time. GitHub keeps one pending run per group and
+# cancels it for a newer one, so the reaper has its own group and waits on the
+# state lock instead. docs/operations.md says to check that a down completed.
 concurrency:
   group: forge-perf-campaign
   cancel-in-progress: false
@@ -122,11 +123,14 @@ jobs:
       - run: tofu init -input=false -lockfile=readonly
 
       # One campaign box at a time: a second apply would change the live one.
+      # `tofu show -json` prints no values for an empty or absent state and
+      # fails on a read error, which then fails this step.
       - name: up
         if: inputs.action == 'up'
         run: |
           set -euo pipefail
-          if [ -n "$(tofu state list)" ]; then
+          n="$(tofu show -json | jq '[.values.root_module.resources // [], .values.root_module.child_modules // []] | flatten | length')"
+          if [ "$n" -gt 0 ]; then
             echo "::error::a campaign box exists; dispatch down first"
             tofu state list
             exit 1

@@ -55,20 +55,24 @@ jq -e --arg sha "$sha" '. == {instance_type: "m9gd.2xlarge", expires_at: "2026-0
   duration: "30m"}}' "$work/out" >/dev/null || fail "variables"
 inputs 0 WORKERS="16, 32,64"
 [ "$(jq -c .campaign.workers "$work/out")" = "[16,32,64]" ] || fail "a workers list"
+inputs 1 WORKERS=
+grep -q "has no WORKERS yet" "$work/out" || fail "no workers, and none in the settings file"
+sed 's/^WORKERS=$/WORKERS=32/' "$repo/config/settings/m9gd.2xlarge.env" >"$tree/config/settings/m9gd.2xlarge.env"
 inputs 0 WORKERS=
 [ "$(jq -c .campaign.workers "$work/out")" = "[]" ] || fail "no workers"
+inputs 0 DURATION=240m
 inputs 0 MODE=calibration SET= INSTANCE_TYPE=m9gd.16xlarge
 echo "ok: the acceptance dispatch, a sweep, the settings file's workers and a calibration box pass"
 
 for bad in HOURS=0 HOURS=25 HOURS=2h INSTANCE_TYPE=m7i.large MODE=other RUNS=0 RUNS=21 SIZE=10G \
-  SIZE='10GB;x' DURATION=30 WORKERS=0 WORKERS=16,16 WORKERS=2000 WORKERS='16;id' SET=calibration/sets/none.json \
+  SIZE='10GB;x' DURATION=30 DURATION=5h DURATION=241m WORKERS=0 WORKERS=16,16 WORKERS=2000 WORKERS='16;id' SET=calibration/sets/none.json \
   SET=../config/images.lock INSTANCE_TYPE=m9gd.16xlarge FORGE_PERF_SHA=main; do
   inputs 1 "$bad"
 done
 jq '.images = {}' "$tree/calibration/sets/shakedown.json" >"$tree/calibration/sets/partial.json"
 inputs 1 SET=calibration/sets/partial.json
 grep -q "digest for every image" "$work/out" || fail "a set without digests"
-echo "ok: hours 0 and 25, a type without settings, a missing or partial set and malformed values are refused"
+echo "ok: hours 0 and 25, a type without settings, a missing or partial set, a run over 4h and malformed values are refused"
 
 # --- reap.sh ------------------------------------------------------------------------------
 
@@ -82,7 +86,8 @@ instance() { # id box state type expires reason
 {
   instance i-main main running m9gd.2xlarge "" ""
   instance i-live campaign running m9gd.16xlarge 2026-09-21T18:00:00Z ""
-  instance i-scratch-old scratch running m9gd.2xlarge 2026-09-21T14:00:00Z ""
+  instance i-scratch-old scratch running m9gd.2xlarge 2026-09-21T13:00:00Z ""
+  instance i-closing campaign stopping m9gd.2xlarge 2026-09-21T14:00:00Z ""
   instance i-scratch-new scratch running m9gd.2xlarge 2026-09-21T20:00:00Z ""
 } | jq -s . >"$work/instances.json"
 rm -f "$work/aws.log"
@@ -90,7 +95,8 @@ NOW="$now" GITHUB_OUTPUT="$work/gh" bash "$ops/reap.sh" >"$work/out" 2>&1 || fai
 grep -q "terminate-instances .*--instance-ids i-scratch-old --output" "$work/aws.log" || fail "the expired scratch box"
 grep -q "Project,Values=forge-perf .*pending,running,stopping,stopped" "$work/aws.log" || fail "the filter"
 grep -qx "campaign=false" "$work/gh" && [ "$(wc -l <"$work/out" | tr -d ' ')" = 1 ] || fail "only one to reap"
-echo "ok: an expired scratch box is terminated; a live campaign box and main stay"
+grep -q i-closing "$work/out" && fail "a box shutting down at its ExpiresAt was reaped"
+echo "ok: a scratch box an hour past ExpiresAt is terminated; one shutting down at ExpiresAt, a live box and main stay"
 
 {
   instance i-main main running m9gd.8xlarge "" ""
@@ -101,12 +107,19 @@ echo "ok: an expired scratch box is terminated; a live campaign box and main sta
 rm -f "$work/aws.log" "$work/gh"
 NOW="$now" GITHUB_OUTPUT="$work/gh" bash "$ops/reap.sh" >"$work/out" 2>&1 || fail "reap.sh failed"
 grep -qx "campaign=true" "$work/gh" || fail "the stopped campaign box is not destroyed"
-grep -q "destroying the campaign box i-done: it has been stopped for over an hour" "$work/out" || fail "stopped"
+grep -q "terminating and destroying the campaign box i-done: it has been stopped for over an hour" "$work/out" ||
+  fail "stopped"
 grep -q "i-recent" "$work/out" && fail "a box stopped 23 minutes ago"
-grep -q "terminate-instances .*--instance-ids i-untagged --output" "$work/aws.log" || fail "a box without ExpiresAt"
-grep -q "the persistent box is m9gd.8xlarge; terraform.tfvars says m9gd.2xlarge" "$work/gh" || fail "type drift"
+grep -q "terminate-instances .*--instance-ids i-done i-untagged --output" "$work/aws.log" ||
+  fail "the campaign box, which its state may not hold, and a box without ExpiresAt"
+grep -q "persistent box" "$work/out" && fail "type drift reported outside the 00:00 UTC hour"
 grep -q "i-main" "$work/aws.log" && fail "the persistent box was touched"
-echo "ok: a campaign box stopped over an hour goes to tofu destroy, and main's type drift is reported"
+rm -f "$work/gh"
+NOW=$((now - 14 * 3600)) GITHUB_OUTPUT="$work/gh" bash "$ops/reap.sh" >"$work/out" 2>&1 || fail "reap.sh failed"
+grep -q "the persistent box is m9gd.8xlarge; terraform.tfvars says m9gd.2xlarge" "$work/gh" || fail "type drift"
+REPORT_DRIFT=1 NOW="$now" bash "$ops/reap.sh" >"$work/out" 2>&1 || fail "reap.sh failed"
+grep -q "the persistent box is m9gd.8xlarge" "$work/out" || fail "type drift with REPORT_DRIFT=1"
+echo "ok: a campaign box stopped over an hour is terminated and destroyed; main's type drift is reported once a day"
 
 # --- set-from-record.sh ---------------------------------------------------------------------
 

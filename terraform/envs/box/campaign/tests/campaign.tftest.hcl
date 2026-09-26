@@ -86,6 +86,11 @@ run "campaign_box" {
   }
 
   assert {
+    condition     = can(regex("(?s)\nOnCalendar=2026-10-01 14:00:00 UTC\nPersistent=true\n.*\nsystemctl enable --now forge-perf-expire.timer\n.*\n  git clone ", module.box.user_data))
+    error_message = "the bootstrap arms a persistent poweroff timer at ExpiresAt before any step that can fail"
+  }
+
+  assert {
     condition     = module.box.tags["ExpiresAt"] == "2026-10-01T14:00:00Z" && module.box.tags["Box"] == "campaign"
     error_message = "the instance carries Box=campaign and the ExpiresAt the reaper reads"
   }

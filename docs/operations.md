@@ -354,16 +354,16 @@ A campaign runs one committed set a few times on a box of its own beside the per
 | `mode` | `campaign` runs the set; `calibration` boots the box and waits for the ceiling measurements |
 | `set` | a committed set under `calibration/sets/`, with a digest for every image in `config/images.tracked` |
 | `runs` | 1 to 20 |
-| `size`, `duration` | `--stop-ingest-at` and `--duration` of each run, such as `2000GB` and `4h` |
-| `workers` | empty for the settings file's `WORKERS`, one number, or a comma list to sweep |
+| `size`, `duration` | `--stop-ingest-at` and `--duration` of each run, such as `2000GB` and `4h`; `duration` is at most `4h`, so a run fits in `forge-perf-run.service`'s 6-hour limit |
+| `workers` | empty for the settings file's `WORKERS` (refused while that is empty), one number, or a comma list to sweep |
 
-The workflow refuses bad inputs before it assumes a role, and refuses `up` while the campaign root's state holds a box. The box clones forge-perf at the dispatched commit and never updates. `/etc/forge-perf/campaign.json` holds the inputs, the commit and `expires_at`. `forge-perf-campaign.service` runs `scripts/host/campaign.sh`, which sets a timer that powers the box off at `expires_at`, runs each run through `forge-perf-run.service`, flushes the outbox and powers off. A reboot resumes the campaign after the last run that ended.
+The workflow refuses bad inputs before it assumes a role, and refuses `up` while the campaign root's state holds a box. The box's first act at boot is a persistent `forge-perf-expire.timer` that powers it off at `ExpiresAt`, across reboots, so a bootstrap or recovery that fails still stops it. It then clones forge-perf at the dispatched commit and never updates. `/etc/forge-perf/campaign.json` holds the inputs, the commit and `expires_at`. `forge-perf-campaign.service` runs `scripts/host/campaign.sh`, which runs each run through `forge-perf-run.service`, flushes the outbox and powers off. If it stops on an error it also flushes the outbox and powers off. A reboot resumes the campaign after the last run that ended.
 
 One `workers` value runs `runs` times as series `campaign`. A list is a sweep: `runs` rounds over the list, reversed every other round, so `16,32,64` with two runs goes 16, 32, 64, 64, 32, 16 (docs/DESIGN.md §9). A sweep publishes as series `calibration`, since its values are not frozen; the smallest value within 5% of the best mean p5 and median wins, and freezing it in the type's settings file is a pull request.
 
-The box powers off when its runs are done and stops billing for compute. `campaign-reaper.yml` runs hourly: it destroys the campaign root once the box has been stopped for an hour or is past `ExpiresAt`, terminates any other forge-perf instance other than `main` in the same condition (a scratch box, or one without an `ExpiresAt` tag), and posts a line to `#filone-alerts` for each. It also posts when the persistent box's instance type differs from `terraform/envs/box/main/terraform.tfvars`. A forgotten 12-hour tier 3 campaign costs at most 13 hours of `m9gd.16xlarge`, about $52.
+The box powers off when its runs are done and stops billing for compute. `campaign-reaper.yml` runs hourly. It terminates any forge-perf instance other than `main` that has no `ExpiresAt` tag, is stopped and past `ExpiresAt`, has been stopped for an hour, or is still up an hour after `ExpiresAt`, which leaves a box shutting down at `ExpiresAt` the time to record and upload its last run. For the campaign box it then destroys the campaign root, buckets included. Each finding is a line in `#filone-alerts`, and so is a failed reaper run. Once a day, and on a manual run, it also posts when the persistent box's instance type differs from `terraform/envs/box/main/terraform.tfvars`. A forgotten 12-hour tier 3 campaign costs at most 13 hours of `m9gd.16xlarge`, about $52.
 
-To stop one sooner, dispatch `action=down`, which destroys the box and its buckets. Check that nothing is left:
+To stop one sooner, dispatch `action=down`, which destroys the box and its buckets. GitHub keeps one pending run per workflow and cancels it for a newer dispatch, so check in the Actions tab that the `down` run completed, then check that nothing is left:
 
 ```sh
 aws ec2 describe-instances --region us-east-2 \

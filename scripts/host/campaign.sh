@@ -11,10 +11,11 @@
 #       by hand on a persistent box that is held (status.sh hold)
 #
 # A campaign box stays at campaign.json's forge_perf_sha and never updates.
-# It powers itself off at expires_at through a transient timer, set again at
-# every boot, and once its runs are done. Mode calibration runs nothing: the
-# box waits for the ceiling measurements. A reboot mid-campaign resumes after
-# the last run that ended.
+# It powers off at expires_at through the persistent timer its bootstrap armed
+# (or, without one, a transient timer set again at every boot), once its runs
+# are done, and after an error. Mode calibration runs nothing: the box waits
+# for the ceiling measurements. A reboot mid-campaign resumes after the last
+# run that ended.
 #
 # One worker count runs N times, as series campaign. A comma list is a sweep:
 # N rounds over the list, reversed every other round (16,32,64,64,32,16 for
@@ -56,6 +57,29 @@ state="$FORGE_PERF_STATE_DIR"
 mkdir -p "$FORGE_PERF_RUNTIME" "$state"
 epoch() { jq -rn --arg t "$1" '$t | fromdateiso8601'; }
 
+# A campaign's pending run never outlives it: the poller would leave it alone.
+own_pending() { [ "$(jq -r '.kind // ""' "$1" 2>/dev/null)" = campaign ]; }
+clean_pending() {
+  local f
+  for f in "$state/pending.json" "$state/pending.json.rejected"; do
+    ! own_pending "$f" || rm -f "$f"
+  done
+}
+# locked: this process holds campaign.lock, so the pending run is its own.
+# armed: a campaign box past its checks, which must not sit idle after an
+# error until its timer fires.
+locked="" armed=""
+on_exit() {
+  local rc=$?
+  [ -z "$locked" ] || clean_pending
+  if [ "$rc" -ne 0 ] && [ -n "$armed" ]; then
+    echo "campaign: stopped on an error; flushing the outbox and powering off" >&2
+    "$here/outbox.sh" flush || true
+    host_op systemctl poweroff || true
+  fi
+}
+trap on_exit EXIT
+
 # poweroff_at TIME: a transient timer, gone at the next boot, when the
 # campaign unit sets it again. A box started after its time powers off now.
 poweroff_at() {
@@ -83,6 +107,7 @@ if [ -n "$from_conf" ]; then
     exec "$BASH" "$0"
   fi
   poweroff_at "$(jq -r '.expires_at // ""' <<<"$c")"
+  armed=1
   if [ "$(jq -r .mode <<<"$c")" = calibration ]; then
     echo "campaign: mode calibration; the box waits for the ceiling measurements"
     exit 0
@@ -117,15 +142,7 @@ exec 7>"$FORGE_PERF_RUNTIME/campaign.lock"
 if command -v flock >/dev/null; then
   flock -n 7 || die "another campaign is going"
 fi
-# A campaign's pending run never outlives it: the poller would leave it alone.
-own_pending() { [ "$(jq -r '.kind // ""' "$1" 2>/dev/null)" = campaign ]; }
-clean_pending() {
-  local f
-  for f in "$state/pending.json" "$state/pending.json.rejected"; do
-    ! own_pending "$f" || rm -f "$f"
-  done
-}
-trap clean_pending EXIT
+locked=1
 
 # Progress survives a reboot on a campaign box, keyed by the campaign itself.
 key="$(jq -cS --argjson set "$set_json" --arg w "$workers" --arg r "$runs" --arg s "$size" --arg d "$duration" \

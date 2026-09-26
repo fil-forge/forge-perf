@@ -109,6 +109,13 @@ campaign 0
 echo "ok: a workers list sweeps 16 32 64 64 32 16 as series calibration"
 
 setup campaign
+conf '.runs = 99'
+campaign 1
+[ ! -e "$D/runs.log" ] && [ "$(tail -1 "$D/systemctl.log")" = "systemctl poweroff" ] || fail "an error left the box up"
+grep -q "stopped on an error" "$work/out" || fail "no word of the error"
+echo "ok: a campaign box that stops on an error powers off"
+
+setup campaign
 conf '.mode = "calibration"'
 campaign 0
 [ ! -e "$D/runs.log" ] || fail "mode calibration ran the set"

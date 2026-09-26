@@ -6,6 +6,34 @@
 # is written only when every step passed.
 set -euo pipefail
 exec > >(tee -a /var/log/forge-perf-bootstrap.log) 2>&1
+%{ if expire_calendar != "" ~}
+
+# A box with an ExpiresAt powers itself off then, whatever happens after this
+# point: a persistent timer survives reboots and fires at boot once the time
+# has passed, so a failed bootstrap or recovery still stops the box.
+cat >/etc/systemd/system/forge-perf-expire.service <<'UNIT'
+[Unit]
+Description=Power off the box at its ExpiresAt time
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff
+UNIT
+cat >/etc/systemd/system/forge-perf-expire.timer <<'UNIT'
+[Unit]
+Description=Power off the box at its ExpiresAt time
+
+[Timer]
+OnCalendar=${expire_calendar} UTC
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now forge-perf-expire.timer
+%{ endif ~}
 
 CHECKOUT=/opt/forge-perf
 REF='${ref}'

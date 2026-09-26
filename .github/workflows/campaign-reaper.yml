@@ -1,10 +1,11 @@
 # Hourly cost backstop (docs/operations.md, "A campaign"). scripts/operator/
 # reap.sh lists every forge-perf instance other than the persistent box that
-# is pending, running, stopping or stopped, terminates any past its ExpiresAt
-# tag or stopped for over an hour, and leaves the campaign box to `tofu
-# destroy` of its root, which also removes its buckets. It also reports when
-# the persistent box's instance type differs from its terraform.tfvars. Every
-# finding is one line in #filone-alerts.
+# is pending, running, stopping or stopped, and terminates any without an
+# ExpiresAt tag, stopped past it, stopped for over an hour, or still up an
+# hour after it. For the campaign box it also runs `tofu destroy` of its root,
+# which removes its buckets. Once a day, and on every manual run, it reports
+# when the persistent box's instance type differs from its terraform.tfvars.
+# Every finding is one line in #filone-alerts, and so is a failed run.
 
 name: campaign-reaper
 
@@ -13,8 +14,11 @@ on:
     - cron: "23 * * * *"
   workflow_dispatch:
 
+# Its own group, so an hourly run never cancels a pending campaign dispatch.
+# A destroy waits up to 5 minutes for the state lock of a running apply; a
+# destroy that fails posts below and is tried again the next hour.
 concurrency:
-  group: forge-perf-campaign
+  group: forge-perf-campaign-reaper
   cancel-in-progress: false
 
 permissions:
@@ -45,6 +49,8 @@ jobs:
           role-session-name: gha-reaper-${{ github.run_id }}
 
       - id: reap
+        env:
+          REPORT_DRIFT: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: scripts/operator/reap.sh
 
       - if: steps.reap.outputs.campaign == 'true'
@@ -81,4 +87,16 @@ jobs:
             {
               "channel": "filone-alerts",
               "text": ${{ toJSON(steps.reap.outputs.alerts) }}
+            }
+
+      - if: failure()
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": "forge-perf: campaign-reaper failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }

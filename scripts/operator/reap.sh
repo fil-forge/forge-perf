@@ -2,13 +2,19 @@
 # The cost backstop, run hourly by campaign-reaper.yml with the apply role.
 #
 # Every forge-perf instance other than the persistent box (Box=main) that is
-# pending, running, stopping or stopped is reaped once it is past its
-# ExpiresAt tag, has none, or has been stopped for more than an hour. A
-# campaign box is left to `tofu destroy` of its root, which also removes its
-# buckets; any other box, such as a scratch box, is terminated here. The
-# persistent box is never touched, but an instance type that differs from
+# pending, running, stopping or stopped is reaped when it has no ExpiresAt
+# tag, is stopped and past ExpiresAt, has been stopped for more than an hour,
+# or is still up an hour after ExpiresAt. The hour lets a box that powers
+# itself off at ExpiresAt finish the run in progress, record and upload it.
+# Every reaped instance is terminated here. A campaign box is also left to
+# `tofu destroy` of its root, which removes its buckets and role, and which
+# cannot remove an instance its state does not hold.
+#
+# The persistent box is never touched, but an instance type that differs from
 # terraform/envs/box/main/terraform.tfvars is reported: a resize that never
-# applied, or one made by hand.
+# applied, or one made by hand. That line comes once a day, in the run in the
+# 00:00 UTC hour, or on every run with REPORT_DRIFT=1, since a tier change
+# holds the difference until its apply is approved.
 #
 # Prints one line per finding, and with GITHUB_OUTPUT set writes `campaign`
 # (true when the campaign root must be destroyed) and `alerts` (the lines, for
@@ -39,7 +45,8 @@ reap="$(jq -r --argjson now "$now" '
   | ([.reason // "" | capture("\\((?<t>[0-9-]+ [0-9:]+) GMT\\)")? | .t | strptime("%Y-%m-%d %H:%M:%S") | mktime]
      | first) as $stopped
   | (if $expires == null then "it has no ExpiresAt"
-     elif $expires <= $now then "it expired at \($tags.ExpiresAt)"
+     elif .state == "stopped" and $expires <= $now then "it expired at \($tags.ExpiresAt)"
+     elif $expires + 3600 <= $now then "it expired at \($tags.ExpiresAt) and is still \(.state)"
      elif .state == "stopped" and ($stopped == null or $now - $stopped > 3600) then "it has been stopped for over an hour"
      else empty end) as $why
   | "\(.id) \($tags.Box // "none") \($why)"' <<<"$instances")"
@@ -47,11 +54,11 @@ reap="$(jq -r --argjson now "$now" '
 alerts=() campaign=false terminate=()
 while read -r id box why; do
   [ -n "$id" ] || continue
+  terminate+=("$id")
   if [ "$box" = campaign ]; then
     campaign=true
-    alerts+=("forge-perf: destroying the campaign box $id: $why")
+    alerts+=("forge-perf: terminating and destroying the campaign box $id: $why")
   else
-    terminate+=("$id")
     alerts+=("forge-perf: terminating the $box box $id: $why")
   fi
 done <<<"$reap"
@@ -59,7 +66,8 @@ done <<<"$reap"
 # shellcheck disable=SC2016 # a jq program
 main_type="$(jq -r '[.[] | select(any(.tags[]?; .Key == "Box" and .Value == "main")) | .type] | unique | join(" ")' \
   <<<"$instances")"
-if [ -n "$main_type" ] && [ "$main_type" != "$want_type" ]; then
+if [ -n "$main_type" ] && [ "$main_type" != "$want_type" ] &&
+  { [ "${REPORT_DRIFT:-}" = 1 ] || [ $((now / 3600 % 24)) -eq 0 ]; }; then
   alerts+=("forge-perf: the persistent box is $main_type; terraform.tfvars says $want_type")
 fi
 
