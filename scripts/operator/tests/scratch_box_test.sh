@@ -14,7 +14,8 @@ mkdir -p "$work/bin"
 export LOG="$work/calls" WORK="$work"
 
 # Arguments one per line, a blank line between calls. describe-subnets finds
-# the forge-perf subnet $FP_SUBNET (none when unset), then a default one;
+# the forge-perf subnet $FP_SUBNET (none when unset) in $FP_VPC, which is the
+# default VPC unless set, as the network root places it; then a default one;
 # describe-security-groups finds sg-<vpc id> unless $NO_SG is set; the profile's
 # role has the deny policy unless $NO_DENY is set; describe-instances lists
 # $WORK/instances.
@@ -22,7 +23,7 @@ cat >"$work/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" "" >>"$LOG"
 case "$2 $*" in
-  "describe-subnets "*tag:Name*) if [ -n "${FP_SUBNET:-}" ]; then printf '%s\tvpc-forgeperf\n' "$FP_SUBNET"; else echo None; fi ;;
+  "describe-subnets "*tag:Name*) if [ -n "${FP_SUBNET:-}" ]; then printf '%s\t%s\n' "$FP_SUBNET" "${FP_VPC:-vpc-default}"; else echo None; fi ;;
   "describe-subnets "*) printf 'subnet-default2a\tvpc-default\n' ;;
   "describe-security-groups "*)
     if [ -n "${NO_SG:-}" ]; then echo None; else echo "sg-$(printf '%s\n' "$@" | grep -o 'vpc-[a-z]*$')"; fi ;;
@@ -87,9 +88,15 @@ fi
 
 if run 0 "up in the forge-perf subnet" env FP_SUBNET=subnet-forgeperf bash "$script" up --ref "$sha"; then
   has subnet-forgeperf && ! has subnet-default2a && has --associate-public-ip-address &&
-    in_call run-instances --security-group-ids sg-vpc-forgeperf &&
-    echo "ok: in the forge-perf subnet, which assigns no public address, up asks for one" ||
+    in_call run-instances --security-group-ids sg-vpc-default &&
+    echo "ok: in the forge-perf subnet, which assigns no public address, up asks for one and uses the default VPC's group" ||
     fail "up in the forge-perf subnet"
+fi
+
+if run 0 "group follows the subnet's VPC" env FP_SUBNET=subnet-forgeperf FP_VPC=vpc-other bash "$script" up --ref "$sha"; then
+  has Name=vpc-id,Values=vpc-other && in_call run-instances --security-group-ids sg-vpc-other &&
+    echo "ok: up takes the group from the VPC of the subnet it launches into" ||
+    fail "group follows the subnet's VPC"
 fi
 
 if run 1 "no security group" env NO_SG=1 bash "$script" up --ref "$sha"; then

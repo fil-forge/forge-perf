@@ -149,7 +149,7 @@ aws iam add-role-to-instance-profile --instance-profile-name forge-perf-scratch 
 export SCRATCH_INSTANCE_PROFILE=forge-perf-scratch
 ```
 
-The security group admits no inbound traffic; Session Manager needs only outbound. `up` looks it up in the VPC of the subnet it launches into: the default VPC until the network root exists, the forge-perf VPC after. Create it in each VPC the box can land in:
+The security group admits no inbound traffic; Session Manager needs only outbound. `up` looks it up in the VPC of the subnet it launches into. The forge-perf subnet is in the default VPC, so one group there serves both cases:
 
 ```sh
 vpc=$(aws ec2 describe-vpcs --region us-east-2 --filters Name=is-default,Values=true \
@@ -158,8 +158,6 @@ aws ec2 create-security-group --region us-east-2 --vpc-id "$vpc" \
   --group-name forge-perf-scratch --description "forge-perf scratch box, no ingress" \
   --tag-specifications 'ResourceType=security-group,Tags=[{Key=Project,Value=forge-perf}]'
 ```
-
-For the forge-perf VPC, take `vpc` from `aws ec2 describe-subnets --region us-east-2 --filters Name=tag:Name,Values=forge-perf --query 'Subnets[0].VpcId' --output text` instead.
 
 The role reads no parameters and writes no buckets. A scratch box can provision, and cannot run the drill against AWS S3.
 
