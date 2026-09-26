@@ -12,10 +12,16 @@ REF='${ref}'
 
 export DEBIAN_FRONTEND=noninteractive
 # The Ubuntu server image ships git, curl and ca-certificates, so apt runs only
-# on an image without them. An apt-daily run may hold the dpkg lock this early;
-# wait for it as provision.sh does.
+# on an image without them. An apt-daily run may hold apt's locks this early.
+# install waits for the dpkg lock through DPkg::Lock::Timeout; update takes the
+# lists lock, which that option does not cover, so it retries for 5 minutes.
 if ! command -v git >/dev/null || ! command -v curl >/dev/null; then
-  apt-get -o DPkg::Lock::Timeout=300 update -q
+  tries=0
+  until apt-get update -q; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 30 ] || exit 1
+    sleep 10
+  done
   apt-get -o DPkg::Lock::Timeout=300 install -y -q ca-certificates curl git
 fi
 
