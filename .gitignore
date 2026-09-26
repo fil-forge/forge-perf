@@ -52,3 +52,6 @@ __pycache__/
 
 # A local run's box.conf and scratch files (docs/runner.md, "Local run").
 local/
+
+# The site preview (make site-preview).
+_preview/

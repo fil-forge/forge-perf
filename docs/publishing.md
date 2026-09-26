@@ -87,11 +87,30 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | Field | Holds |
 |---|---|
 | `published_at` | the build's UTC time, so the page can show when it was last published. A build follows only an ingest that reached its commit, so the time ages while ingest fails or the schedule is disabled. GitHub disables a public repository's scheduled workflows after 60 days without activity |
-| `runs` | one row per run in start order: run ID, series, box id, tier and type, start time, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
+| `runs` | one row per run in start order: run ID, series, pairing ID, the components that triggered it (`changed`), the run's size (`size_bytes`), box id, tier and type, start time, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
 `instrument_changes` lists what differs from the previous run of the same series on the same box: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip) and `box` (the box fingerprint). It is null for a series' first run.
+
+## Gates
+
+`data/gates.json` lists one entry per gate, checked against `schema/gates.v1.json` and by `scripts/publish/check_data.py`, which `make check` runs through `scripts/ci/check-site.sh`. An unmeasured gate has every measurement field null, and the page draws it dashed with "not measured yet". A measured gate carries its ceiling, the S3 PUT and NVMe write rates it came from, when it was measured, the forge-perf commit and a link to the method. The check refuses a ceiling of zero or one that differs from the lower of the two rates, and gates numbered other than 1 to n.
+
+A recalibration moves the current measurement into the gate's `previous` list (oldest first) and writes the new one in its place. A run lights a gate against the measurement in force when it started, so a gate lit before a recalibration stays lit, and the page names the ceiling it reached and that ceiling's date.
+
+## The page
+
+`site/model.js` holds the rules the page applies to `index.json`, and `scripts/ci/tests/site_model_test.mjs` tests them under node:
+
+- A run counts when its class, after overrides, is `valid`, its series is `per-trigger`, `nightly` or `campaign`, and it has a p5. `calibration` runs appear only in the runs table.
+- The mercury is the latest counting per-trigger run on the box `main`, with its age and the number of runs on that box since. With none, the headline reads "No valid run yet" with the latest run's class and reasons.
+- A gate lights at the first counting run whose p5 reaches the ceiling in force when it started, from any series or box.
+- The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5, or to 1 GB/s when there is neither.
+- The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
+- The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint; a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring.
+
+`make site-preview` builds the page against six fixture scenarios (no runs, calibration runs only, a lit gate across a recalibration, every outcome class with an override, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 
 ### Publishing a local run
 

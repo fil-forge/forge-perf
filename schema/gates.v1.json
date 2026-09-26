@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fil-forge.github.io/forge-perf/schema/gates.v1.json",
+  "title": "forge-perf gates v1",
+  "description": "The measured ceiling of each gate's instance type, drawn on the page. An unmeasured gate has null measurements. scripts/publish/check_data.py adds the rules a schema cannot state: ceiling = min(S3 PUT, NVMe write), gates numbered 1..n, previous measurements older than the current one. docs/publishing.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "gates"],
+  "properties": {
+    "schema": {"const": "forge-perf.gates/v1"},
+    "gates": {"type": "array", "minItems": 1, "maxItems": 9, "items": {"$ref": "#/$defs/gate"}}
+  },
+  "$defs": {
+    "gate": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["gate", "instance_type", "nic_reference_gbps", "ceiling_bytes_per_s",
+                       "s3_put_bytes_per_s", "nvme_seq_write_bytes_per_s", "measured_at", "forge_perf_sha", "method"],
+          "properties": {
+            "gate": {"$ref": "#/$defs/number"},
+            "instance_type": {"$ref": "#/$defs/instance_type"},
+            "nic_reference_gbps": {"$ref": "#/$defs/gbps"},
+            "ceiling_bytes_per_s": {"type": "null"},
+            "s3_put_bytes_per_s": {"type": "null"},
+            "nvme_seq_write_bytes_per_s": {"type": "null"},
+            "measured_at": {"type": "null"},
+            "forge_perf_sha": {"type": "null"},
+            "method": {"type": "null"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["gate", "instance_type", "nic_reference_gbps", "ceiling_bytes_per_s",
+                       "s3_put_bytes_per_s", "nvme_seq_write_bytes_per_s", "measured_at", "forge_perf_sha", "method"],
+          "properties": {
+            "gate": {"$ref": "#/$defs/number"},
+            "instance_type": {"$ref": "#/$defs/instance_type"},
+            "nic_reference_gbps": {"$ref": "#/$defs/gbps"},
+            "ceiling_bytes_per_s": {"$ref": "#/$defs/rate"},
+            "s3_put_bytes_per_s": {"$ref": "#/$defs/rate"},
+            "nvme_seq_write_bytes_per_s": {"$ref": "#/$defs/rate"},
+            "measured_at": {"$ref": "#/$defs/utc"},
+            "forge_perf_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "method": {"$ref": "#/$defs/method"},
+            "previous": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/measurement"}}
+          }
+        }
+      ]
+    },
+    "measurement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ceiling_bytes_per_s", "s3_put_bytes_per_s", "nvme_seq_write_bytes_per_s",
+                   "measured_at", "forge_perf_sha", "method"],
+      "properties": {
+        "ceiling_bytes_per_s": {"$ref": "#/$defs/rate"},
+        "s3_put_bytes_per_s": {"$ref": "#/$defs/rate"},
+        "nvme_seq_write_bytes_per_s": {"$ref": "#/$defs/rate"},
+        "measured_at": {"$ref": "#/$defs/utc"},
+        "forge_perf_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "method": {"$ref": "#/$defs/method"}
+      }
+    },
+    "number": {"type": "integer", "minimum": 1, "maximum": 9},
+    "instance_type": {"type": "string", "pattern": "^[a-z][a-z0-9]{1,8}\\.[0-9]{0,2}x?large$"},
+    "gbps": {"type": "number", "minimum": 0.001, "maximum": 1000},
+    "rate": {"type": "number", "minimum": 1, "maximum": 1e12},
+    "method": {"type": "string", "pattern": "^calibration/[A-Za-z0-9._/-]{1,120}(#[a-z0-9-]{1,60})?$"},
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}
+  }
+}

@@ -46,6 +46,9 @@ def row(record, previous):
     return {
         "run_id": record["run_id"],
         "series": record["series"],
+        "pairing_id": record["pairing_id"],
+        "changed": record["trigger"]["changed"],
+        "size_bytes": record["drill"]["settings"]["stop_ingest_at_bytes"],
         "box": {k: record["box"][k] for k in ("id", "tier", "instance_type")},
         "run_started_at": record["time"]["run_started_at"],
         "class": record["outcome"]["class"],

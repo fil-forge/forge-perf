@@ -15,7 +15,7 @@ forge-perf measures the sustained ingest rate of the Forge storage stack on a de
 | `cmd/` | Go programs run on the box, such as the S3 ceiling tool |
 | `scripts/ci/` | `check-*.sh`, run by `make check`, and their tests under `tests/` |
 | `config/` | run settings per instance type, pinned images, the harness pin |
-| `schema/` | the run record's JSON schema |
+| `schema/` | JSON schemas for the run record, gates and overrides |
 | `site/`, `data/` | the static page, gates and overrides |
 | `calibration/` | committed sets and measured ceilings |
 
@@ -27,6 +27,7 @@ forge-perf measures the sustained ingest rate of the Forge storage stack on a de
 - `make check` is the CI surface. It runs every `scripts/ci/check-*.sh` in name order and stops at the first failure. A new area adds its own `check-<area>.sh` instead of editing the Makefile or the workflow. Tests exercise behavior with fixtures and stubbed commands on `PATH`.
 - Go: `go test ./...` and `go vet` pass; minio-go stays at the version piri pins.
 - Python is standard library only; tests use `python3 -m unittest`.
+- The page (`site/`) is plain ES modules with Plot and d3 vendored, no bundler. Its rules live in `site/model.js`, tested with `node --test`. `make site-preview` serves it against fixture scenarios on http://127.0.0.1:8000/; look at a change there in light and dark and at a phone width.
 - Commits: imperative subject under 72 characters, a body saying what and why. main takes squash merges only.
 
 ## Public-repository rules
