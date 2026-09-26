@@ -380,9 +380,22 @@ has "$work/out" "the wipe failed on the last attempt"
 [ ! -e "$current" ] || fail "current.json kept after the last failed wipe"
 ls "$current".failed-* >/dev/null 2>&1 || fail "current.json not set aside"
 [ ! -e "$work/box/state/recover-attempts" ] || fail "attempt count kept"
-"$host/recover.sh" >"$work/out" 2>&1
-has "$work/out" "no interrupted run"
 echo "ok: a wipe that fails on the last attempt moves current.json aside and exits 4, which the unit does not restart"
+
+# The failure stays for the boot: a later start (a poll that requires the
+# unit) exits 4 without touching the stack, until the marker in /run goes.
+[ -e "$work/box/run/recover-failed" ] || fail "no recover-failed marker after the last failed wipe"
+rm -f "$D/stuck" "$D/log"
+status=0
+"$host/recover.sh" >"$work/out" 2>&1 || status=$?
+[ "$status" = 4 ] || fail "recovery after a failed last wipe exited $status, want 4"
+has "$work/out" "an earlier recovery could not wipe"
+lacks "$work/out" "no interrupted run"
+[ ! -e "$D/log" ] || fail "recovery touched docker while the marker was set"
+rm "$work/box/run/recover-failed"
+"$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recovery after the marker went failed"; }
+has "$work/out" "no interrupted run"
+echo "ok: after a failed last wipe every later recovery exits 4 until the marker is gone"
 
 # Without current.json a stale attempt count goes away.
 setup

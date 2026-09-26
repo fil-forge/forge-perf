@@ -81,7 +81,7 @@ With no `current.json` it only flushes the outbox. Otherwise, in order, it stops
 
 The tarball leaves out every `*.env` file and `provider/`, and drops every line that names `access_key_id` or `secret_access_key`, which `piri init` prints. Recovery then checks the collected files for piri's key ID, piri's secret and the harness credential. It reads piri's pair from its credentials file while `/run` still holds it; after a reboot `/run` is empty, so it reads them from the SSM parameters `piri-s3-access-key-id` and `piri-s3-secret-access-key` under `FORGE_PERF_SSM_PATH` (default `/forge-perf`), and the harness credential from `harness-deploy-key` there when that parameter exists. When a value appears, or the values cannot be read, recovery writes no tarball and the record carries `raw_missing`. The record builder checks the record against the same strings. The denylist it also checks comes from `FORGE_PERF_DENYLIST_FILE`, or from the SSM parameter `denylist` under the same path into `/run/forge-perf/secrets/denylist.regex`.
 
-Recovery always reaches the wipe, with or without a record. When `current.json` has no usable `run_id`, the run has no usable `runner.json`, or `record.py` writes nothing, recovery logs why, keeps any raw tarball in the outbox, wipes, and moves `current.json` to `current.json.failed-<time>` so the next boot formats the NVMe. A failed SSM read stops recovery with `current.json` kept, since a retry can succeed: each step skips what an earlier attempt finished, so `systemctl restart forge-perf-recover` or the next boot picks up where it stopped. The unit restarts a failed attempt after a minute (`Restart=on-failure`). On the third attempt (`FORGE_PERF_RECOVER_ATTEMPTS`) recovery goes on without the missing input and wipes. A failed wipe also keeps `current.json` until the third attempt, which moves it aside and exits 4. The unit does not restart on that status (`RestartPreventExitStatus=4`), so it stays failed until the next boot formats the NVMe. A collection step that fails, such as `zstd` on a full disk, costs only the tarball: recovery removes the partial files, writes the record with `raw_missing` and wipes. A failing `docker stop` is logged, and the wipe removes the containers. The poll and run units must declare `Requires=` as well as `After=` on `forge-perf-recover.service`, so no run starts on a box recovery has not closed out.
+Recovery always reaches the wipe, with or without a record. When `current.json` has no usable `run_id`, the run has no usable `runner.json`, or `record.py` writes nothing, recovery logs why, keeps any raw tarball in the outbox, wipes, and moves `current.json` to `current.json.failed-<time>` so the next boot formats the NVMe. A failed SSM read stops recovery with `current.json` kept, since a retry can succeed: each step skips what an earlier attempt finished, so `systemctl restart forge-perf-recover` or the next boot picks up where it stopped. The unit restarts a failed attempt after a minute (`Restart=on-failure`). On the third attempt (`FORGE_PERF_RECOVER_ATTEMPTS`) recovery goes on without the missing input and wipes. A failed wipe also keeps `current.json` until the third attempt, which moves it aside and exits 4. The unit does not restart on that status (`RestartPreventExitStatus=4`). It also leaves `/run/forge-perf/recover-failed`, and while that file exists every later start of the unit exits 4 at once, so a poll or run that requires the unit fails too and the heartbeat goes stale. A reboot clears `/run`, and the next boot formats the NVMe. After a manual `wipe.sh`, removing the file lets recovery run again. A collection step that fails, such as `zstd` on a full disk, costs only the tarball: recovery removes the partial files, writes the record with `raw_missing` and wipes. A failing `docker stop` is logged, and the wipe removes the containers. The poll and run units must declare `Requires=` as well as `After=` on `forge-perf-recover.service`, so no run starts on a box recovery has not closed out.
 
 ### The outbox
 
@@ -107,13 +107,14 @@ On a laptop, `FORGE_PERF_HOST_OPS=skip` turns every host-level operation into a 
 
 Skip mode also narrows what the wipe removes, since a laptop runs other things. It removes containers of compose project `smelt` (or `$COMPOSE_PROJECT_NAME`) and those named `smeltery-*` or `forge-perf-*`, volumes of that project or named `smelt_*`, and only those images outside the pinned set whose repository appears in `config/images.lock` or `images.pinned`. Everything else on the laptop stays. Without `flock` installed (macOS), the lock is skipped with a message.
 
-A local MinIO stands in for AWS S3. piri reaches it from its container as `host.docker.internal:9000`, the laptop as `localhost:9000`. From the root of a forge-perf checkout (`local/` is ignored by git):
+A local MinIO stands in for AWS S3. piri reaches it from its container as `host.docker.internal:9000`, the laptop as `localhost:9000`. It keeps its objects in `local/minio-data` on the laptop's disk. The MinIO image declares `/data` a volume, so without the bind mount every container leaves an anonymous volume on Docker's disk, where ingot's spool also grows during a drill. From the root of a forge-perf checkout (`local/` is ignored by git):
 
 ```sh
-mkdir -p local/state local/nvme local/outbox local/run
-docker run -d --name local-minio -p 9000:9000 \
+mkdir -p local/state local/nvme local/outbox local/run local/minio-data
+docker run -d --name local-minio -p 9000:9000 -v "$PWD/local/minio-data:/data" \
   -e MINIO_ROOT_USER=local-key -e MINIO_ROOT_PASSWORD=local-secret-key \
   ghcr.io/fil-forge/minio:RELEASE.2025-10-15T17-29-55Z server /data
+until curl -fs http://localhost:9000/minio/health/ready; do sleep 1; done
 
 cat >local/box.conf <<EOF
 FORGE_PERF_BOX_ID=local
@@ -145,6 +146,14 @@ aws s3 mb s3://local-results
 scripts/host/wipe.sh               # removes the smelt stack, empties the buckets
 scripts/host/wipe.sh --if-dirty    # prints "clean; nothing to do"
 scripts/host/recover.sh            # with local/state/current.json, closes out that run
+```
+
+To remove the local setup, wipe first, then remove MinIO with its data and the local state:
+
+```sh
+scripts/host/wipe.sh
+docker rm -f local-minio
+rm -rf local
 ```
 
 The credentials file sits outside `local/run/secrets`, which the wipe deletes. Skip mode leaves out what depends on the box itself: the instance-store format, `fstrim` and the page cache, the unit ordering after Docker, and AWS S3's network path.

@@ -20,7 +20,10 @@
 # current.json kept, so a restart or the next boot retries it; after
 # $FORGE_PERF_RECOVER_ATTEMPTS attempts (default 3) recovery goes on without
 # that input. A failed wipe also keeps current.json until the last attempt,
-# which moves it aside and exits 4, a status the unit does not restart on.
+# which moves it aside, leaves $FORGE_PERF_RUNTIME/recover-failed and exits 4,
+# a status the unit does not restart on. While that marker exists every later
+# start exits 4 as well, so no poll or run starts on the box until a reboot
+# clears /run.
 # A collection step that fails (a full disk, a Docker error) costs the raw
 # tarball, never the wipe. runner.json comes from the run directory, or from
 # $FORGE_PERF_STATE_DIR/runner.json when a stop/start left the NVMe blank.
@@ -40,6 +43,11 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 
 runner_init
 take_run_lock
+failed_marker="$FORGE_PERF_RUNTIME/recover-failed"
+if [ -e "$failed_marker" ]; then
+  echo "ERROR: an earlier recovery could not wipe; reboot, or remove $failed_marker after a manual wipe" >&2
+  exit 4
+fi
 current="$FORGE_PERF_STATE_DIR/current.json"
 attempts="$FORGE_PERF_STATE_DIR/recover-attempts"
 amended="$FORGE_PERF_STATE_DIR/recover-runner.json"
@@ -248,9 +256,12 @@ step "wipe"
 if ! FORGE_PERF_LOCK_HELD=1 "$here/wipe.sh"; then
   # On the last attempt, move current.json aside so the next boot formats the
   # NVMe instead of failing the same way. Exit 4 is in the unit's
-  # RestartPreventExitStatus=, so the unit stays failed until then.
+  # RestartPreventExitStatus=, so the unit stays failed until then. The marker
+  # makes every later start fail the same way until a reboot clears /run, so
+  # the poll and run units, which require this one, do not start either.
   [ "$attempt" -ge "$max_attempts" ] || die "the wipe failed; attempt $attempt of $max_attempts, current.json kept for a retry"
   set_aside
+  mkdir -p "$FORGE_PERF_RUNTIME" && : >"$failed_marker"
   echo "ERROR: the wipe failed on the last attempt" >&2
   exit 4
 fi
