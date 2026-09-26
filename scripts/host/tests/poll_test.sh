@@ -13,6 +13,10 @@ host="$(cd "$(dirname "$0")/.." && pwd -P)"
 repo="$(cd "$host/../.." && pwd -P)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/poll-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
+# No background gc or maintenance in the fixture repositories, which setup
+# removes (Apple git 2.54 otherwise races the rm).
+export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=gc.auto GIT_CONFIG_VALUE_1=0
 export D="$work/d"
 mkdir -p "$work/bin"
 unset INVOCATION_ID FORGE_PERF_LOCK_HELD SMELT_REF SQ_PIN
@@ -22,7 +26,11 @@ cat >"$work/bin/curl" <<'STUB'
 url="${!#}"
 case "$url" in
   *169.254.169.254*) exit 7 ;;
-  *ghcr.io/token*) [ ! -e "$D/ghcr-down" ] || exit 22; echo '{"token": "anon"}' ;;
+  *ghcr.io/token*)
+    [ ! -e "$D/ghcr-down" ] || exit 22
+    # status.sh hold, run while the pass resolves.
+    [ ! -e "$D/hold-mid-pass" ] || cp "$D/hold-mid-pass" "$FORGE_PERF_STATE_DIR/hold"
+    echo '{"token": "anon"}' ;;
   *ghcr.io/v2/*)
     repo="${url#*ghcr.io/v2/}" repo="${repo%/manifests/*}"
     d="$(awk -v r="$repo" '$1 == r { print $2 }' "$D/digests")"
@@ -226,6 +234,22 @@ status release
 poll 0
 dispatched || fail "no dispatch after release"
 echo "ok: a held box dispatches nothing, and release lets the pending run start"
+
+setup
+echo '{"at": "2026-10-01T12:00:00Z"}' >"$D/hold-mid-pass"
+poll 0
+[ -e "$state/hold" ] || fail "the stub set no hold"
+! dispatched || fail "a hold set during resolution still dispatched"
+[ -e "$state/pending.json" ] && [ "$(beat .state)" = held ] || fail "pending or state $(beat .state)"
+echo "ok: a hold set while the pass resolves stops that pass's dispatch"
+
+setup
+rm "$work/box/checkout/config/settings/local.env"
+poll 0
+! dispatched || fail "dispatched without a settings file"
+grep -q "no settings file for instance type local" "$work/out" || fail "no settings message"
+[ "$(beat .state)" = idle ] || fail "no heartbeat without a settings file"
+echo "ok: without a settings file the pending run waits and the heartbeat goes up"
 
 setup
 sed -i.bak 's/^WORKERS=.*/WORKERS=/' "$work/box/checkout/config/settings/local.env"

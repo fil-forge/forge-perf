@@ -15,7 +15,8 @@
 #      replaces what is pending, and --nightly writes a nightly run whatever
 #      changed;
 #   4. between runs, and unless the box is held: starts update.sh when
-#      origin moved, otherwise flushes the outbox and starts the pending run;
+#      origin moved, otherwise starts the pending run, or flushes the outbox
+#      when nothing can start;
 #   5. writes the heartbeat to published/<box>/heartbeat.json.
 #
 # Exit status 1 when the set could not be resolved or the heartbeat did not
@@ -190,7 +191,7 @@ background() {
   local unit="$1"
   shift
   host_op systemd-run --unit "$unit" --collect --no-block --quiet --setenv "AWS_REGION=${AWS_REGION:-us-east-2}" \
-    --property TimeoutStartSec=45min /bin/bash "$@" || echo "poll: $unit is already running" >&2
+    --property RuntimeMaxSec=45min /bin/bash "$@" || echo "poll: $unit is already running" >&2
 }
 
 # update: start update.sh when origin's head differs from the checkout's.
@@ -216,29 +217,43 @@ flush() {
   fi
 }
 
-dispatch() {
-  local p="$state/pending.json" workers
-  [ -e "$p" ] || return 0
+# ready: a run is pending, its not_before has passed, and it has workers.
+ready() {
+  local p="$state/pending.json" workers type
+  [ -e "$p" ] || return 1
   if [ "$(jq '.not_before // 0' "$p")" -gt "$(date +%s)" ]; then
     echo "poll: the pending retry waits until $(jq '.not_before' "$p")"
-    return 0
+    return 1
   fi
   workers="$(jq -r '.workers // empty' "$p")"
+  [ -z "$workers" ] || return 0
+  type="$(imds instance-type 2>/dev/null)" || type=""
+  if [ -z "$type" ] || [ ! -r "$cfg/settings/$type.env" ]; then
+    echo "poll: no settings file for instance type ${type:-unknown}; the pending run waits"
+    return 1
+  fi
   # shellcheck disable=SC1090
-  workers="${workers:-$(. "$cfg/settings/$(imds instance-type).env" 2>/dev/null && echo "${WORKERS:-}")}"
-  if [ -z "$workers" ]; then
-    echo "poll: WORKERS is empty for this instance type; the pending run waits"
+  workers="$(. "$cfg/settings/$type.env" && echo "${WORKERS:-}")"
+  [ -n "$workers" ] && return 0
+  echo "poll: WORKERS is empty for this instance type; the pending run waits"
+  return 1
+}
+
+# dispatch: start the pending run, unless an outbox flush is still uploading
+# beside where the run would measure; the run's own upload flushes the rest.
+dispatch() {
+  if ! host_ops_skipped && systemctl is-active --quiet forge-perf-outbox.service; then
+    echo "poll: the outbox flush is going; the pending run starts after it"
     return 0
   fi
   host_op systemctl start --no-block forge-perf-run.service
-  echo "poll: started forge-perf-run for the pending $(jq -r .kind "$p") run"
+  echo "poll: started forge-perf-run for the pending $(jq -r .kind "$state/pending.json") run"
 }
 
 # --- the pass ------------------------------------------------------------------------------
 
 active="" held=""
 ! run_active || active=1
-[ ! -e "$state/hold" ] || held=1
 [ -n "$active" ] || settle_last_run
 
 failures="$(cat "$state/poll-failures" 2>/dev/null || echo 0)"
@@ -257,20 +272,27 @@ else
 fi
 echo "$failures" | put poll-failures
 
+# The hold is read after resolution, which can take minutes, so a hold set
+# during it still stops this pass's dispatch. run.sh checks it again under
+# poll.lock.
+[ ! -e "$state/hold" ] || held=1
 if [ -n "$active" ]; then
   echo "poll: a run is going; the pending run starts after it"
 elif [ -n "$held" ]; then
   echo "poll: the box is held; nothing starts (scripts/host/status.sh release)"
   flush
-elif ! update; then
-  flush
+elif update; then
+  :
+elif ready; then
   dispatch
+else
+  flush
 fi
 
 # --- 5. the heartbeat --------------------------------------------------------------------
 
 run_id=null started=null box_state=idle
-[ -z "$held" ] || box_state=held
+[ ! -e "$state/hold" ] || box_state=held
 [ -z "$active" ] || box_state=running
 if [ -n "$active" ] && [ -e "$state/current.json" ]; then
   run_id="$(jq -c '.run_id // null' "$state/current.json")"

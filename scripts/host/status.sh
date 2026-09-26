@@ -48,6 +48,14 @@ case "${1:-}" in
     [ -e "$state/hold" ] || jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{at: $at}' | write_durable "$state/hold"
     echo "held since $(jq -r .at "$state/hold")"
     if [ "${2:-}" = --wait-idle ]; then
+      # A poll pass that read the box before the hold may be about to start
+      # a run; once it lets poll.lock go, that run counts as going.
+      mkdir -p "$FORGE_PERF_RUNTIME"
+      exec 8>"$FORGE_PERF_RUNTIME/poll.lock"
+      if command -v flock >/dev/null; then
+        flock -w 300 8 || die "a poll pass has held poll.lock for 300 s; the hold is set, run this again"
+      fi
+      exec 8>&-
       while run_active; do
         echo "a run is going; waiting"
         sleep "${FORGE_PERF_HOLD_POLL_SECONDS:-30}"

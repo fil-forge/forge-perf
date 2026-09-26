@@ -533,6 +533,22 @@ jq -e --slurpfile set "$work/set.json" '.kind == "nightly" and .attempt == 2 and
 echo "ok: a dispatched run leaves its set, attempt and reasons for the poller"
 
 setup
+jq '{kind: "trigger", set: ., superseded: 0}' "$work/set.json" >"$work/box/state/pending.json"
+echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+run 0 -- --workers 16
+grep -q "the box is held" "$work/out" || fail "no hold message"
+[ -e "$work/box/state/pending.json" ] && [ ! -e "$work/box/state/runner.json" ] || fail "a held box started the run"
+echo "ok: a pending run that meets the hold waits"
+
+setup
+jq '{kind: "nightly", set: ., superseded: 1}' "$work/set.json" >"$work/box/state/pending.json"
+echo '{"run_id": "main-1"}' >"$work/box/state/last-run.json"
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+[ "$(jq -r .kind "$work/box/state/pending.json")" = nightly ] && [ -e "$work/box/state/last-run.json" ] ||
+  fail "a manual run removed the poller's state"
+echo "ok: a manual run leaves pending.json and last-run.json"
+
+setup
 echo '{"kind": "trigger"}' >"$work/box/state/pending.json"
 run 2 -- --workers 16
 [ -e "$work/box/state/pending.json.rejected" ] && [ ! -e "$work/box/state/pending.json" ] || fail "pending not moved aside"

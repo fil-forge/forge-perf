@@ -127,9 +127,9 @@ The trigger key is `{smelt, harness.sha, images}` in canonical form. Third-party
 | File | Written by | Holds |
 |---|---|---|
 | `pending.json` | `poll.sh` under `poll.lock`; taken by `run.sh` under the same lock | `{kind, set, first_seen_at, superseded}`, plus `attempt` and `not_before` (Unix seconds) for a retry |
-| `last-started.json` | `run.sh` as a run starts | the set of that run, whatever its outcome |
+| `last-started.json` | `run.sh` as a run starts, a manual `--set` run included | the set of that run, whatever its outcome; after a manual run on another set, the next pass makes main's set pending again, since it was not the last to run on the box |
 | `current.json` | `run.sh` | the run in progress and its phase ([A run](#record-upload-and-wipe)) |
-| `last-run.json` | `run.sh` as a run it took from `pending.json` ends | `{run_id, kind, set, superseded, attempt, previous_started, reasons}` |
+| `last-run.json` | `run.sh` as a run it took from `pending.json` ends; a manual run leaves it and `pending.json` alone | `{run_id, kind, set, superseded, attempt, previous_started, reasons}` |
 | `pending.json.rejected` | `run.sh` | a pending run that could not start |
 | `hold` | `status.sh hold` | `{at}`; the box starts no run while it exists |
 | `poll-failures` | `poll.sh` | failed resolutions in a row |
@@ -156,8 +156,8 @@ A run is going while `run.lock` is held or `forge-perf-run.service` is activatin
 
 1. **Held:** with `state/hold` present, the pass flushes the outbox and starts nothing, not even an update.
 2. **Update:** when `git ls-remote origin` shows `FORGE_PERF_REF` (default `main`) ahead of the checkout's `HEAD`, the pass starts `update.sh` as the transient unit `forge-perf-update` and starts no run; the next pass does, from the new checkout. A campaign box (`FORGE_PERF_MODE=campaign`) and skip mode never update.
-3. **Flush:** `outbox.sh flush` as the transient unit `forge-perf-outbox`, when the outbox holds anything. Transient units keep a 15-minute upload or a provision clear of the poll unit's 240 seconds.
-4. **Dispatch:** `systemctl start --no-block forge-perf-run.service` when a run is pending, its `not_before` has passed, and `WORKERS` is set in the instance type's settings file (or the pending run names its own). Starting an active oneshot is a no-op. `run.sh` takes `poll.lock` while it reads and removes `pending.json`, so no pass writes a set that the run then discards.
+3. **Dispatch:** `systemctl start --no-block forge-perf-run.service` when a run is pending, its `not_before` has passed, and `WORKERS` is set in the instance type's settings file (or the pending run names its own). With no settings file for the instance type, the run waits and the pass says so. While a `forge-perf-outbox` flush is still uploading, the run waits for the next pass, so no upload shares the NIC with a drill; the run's own upload flushes whatever the outbox still holds. Starting an active oneshot is a no-op. `run.sh` takes `poll.lock` while it reads and removes `pending.json`, so no pass writes a set that the run then discards.
+4. **Flush:** when nothing can start, `outbox.sh flush` as the transient unit `forge-perf-outbox`, if the outbox holds anything. Transient units (`RuntimeMaxSec` 45 minutes) keep a 15-minute upload or a provision clear of the poll unit's 240 seconds.
 
 ### Heartbeat
 
@@ -180,7 +180,7 @@ scripts/host/status.sh release
 scripts/operator/hold.sh <box> on|off       # the same over SSM; `on` waits for idle, up to 7 hours
 ```
 
-The hold is a file on the root volume, so it survives a reboot. It stops dispatch and updates; a run already going finishes, and pending sets keep coalescing, so the newest one starts after `release`.
+The hold is a file on the root volume, so it survives a reboot. It stops dispatch and updates; a run already going finishes, and pending sets keep coalescing, so the newest one starts after `release`. A pass reads the hold after it resolves the set, just before it would dispatch, and `run.sh` reads it again under `poll.lock` before it takes `pending.json`, leaving the file in place when the box is held. `hold --wait-idle` waits for `poll.lock` once before it checks for a run, so a pass that decided to start a run before the hold has either started it, which then counts as going, or finished.
 
 ## A run
 

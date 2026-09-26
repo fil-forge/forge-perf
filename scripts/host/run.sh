@@ -39,7 +39,8 @@ from_pending=""
 refuse() {
   echo "run.sh: $*" >&2
   if [ -n "$from_pending" ] && [ -e "$state/pending.json" ]; then
-    mv -f "$state/pending.json" "$state/pending.json.rejected"
+    write_durable "$state/pending.json.rejected" <"$state/pending.json"
+    rm -f "$state/pending.json"
     echo "run.sh: moved pending.json to pending.json.rejected" >&2
   fi
   exit 2
@@ -109,6 +110,8 @@ else
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
   fi
   [ -e "$state/pending.json" ] || { echo "run.sh: nothing pending"; exit 0; }
+  # A hold set while a poll pass was deciding to start this run.
+  [ ! -e "$state/hold" ] || { echo "run.sh: the box is held; the pending run waits"; exit 0; }
   from_pending=1
   pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" ||
     refuse "pending.json is not a JSON object with a set"
@@ -831,8 +834,9 @@ trap finish EXIT
 trap 'on_stop 143' TERM
 trap 'on_stop 130' INT
 set_phase preflight
-jq . <<<"$set_json" >"$state/last-started.json"
-rm -f "$state/pending.json" "$state/last-run.json"
+jq . <<<"$set_json" | write_durable "$state/last-started.json"
+# A manual run leaves the poller's pending run and retry state alone.
+[ -z "$from_pending" ] || rm -f "$state/pending.json" "$state/last-run.json"
 exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 
