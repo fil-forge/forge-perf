@@ -276,7 +276,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 | Secret | Where | Rotation |
 |---|---|---|
 | piri's S3 key (IAM user `forge-perf-piri`, usable only through the forge-perf S3 gateway endpoint) | SSM `/forge-perf/piri-s3-*` | 90 days, two keys overlapping; made by hand so it never enters state |
-| read-only access to fil-one/storage-qualification | SSM `/forge-perf/harness-deploy-key` | yearly, and when someone with access leaves |
+| read-only access to fil-one/storage-qualification: a GitHub App with Contents: read, installed on that repository only | SSM `/forge-perf/harness-app` | yearly, and when someone with access leaves |
 | denylist pattern | SSM `/forge-perf/denylist`; secret `PUBLIC_DENYLIST_REGEX` | on change |
 | `SLACK_BOT_TOKEN` | repository secret | with the Slack app |
 
