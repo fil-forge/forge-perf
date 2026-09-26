@@ -124,17 +124,17 @@ It needs a digest for every line of `config/images.tracked`. A set without `smel
 
 ### Before the first step
 
-`run.sh` refuses to start, with exit status 2 and no record, when there is no `config/settings/<instance type>.env` for the type instance metadata reports, when `WORKERS` is empty there and no `--workers` is given, or when the set or a drill setting cannot be read. Otherwise it writes `runner.json` (fields in [record.md](record.md#what-the-builder-reads)) to the state directory, then `current.json` with phase `preflight`, and replaces `last-started.json` with the set. The run ID is `<box>-<yyyymmdd>t<hhmmss>z` of the moment the run starts.
+`run.sh` refuses to start, with exit status 2 and no record, when there is no `config/settings/<instance type>.env` for the type instance metadata reports, when `WORKERS` is empty there and no `--workers` is given, or when the set or a drill setting cannot be read. A run taken from `pending.json` that refuses to start moves the file to `pending.json.rejected`, so the next poll does not start it again. Otherwise it writes `runner.json` (fields in [record.md](record.md#what-the-builder-reads)) to the state directory, then `current.json` with phase `preflight`, and replaces `last-started.json` with the set. The run ID is `<box>-<yyyymmdd>t<hhmmss>z` of the moment the run starts.
 
 ### Steps
 
-Each step runs its slow commands under `timeout` with the budget below; an overrun stops the run with reason `step_timeout`. Any other failure stops it with the reason in the table, which `runner.json` records. A failure the table does not name is `runner_error`.
+Each step runs its slow commands under `timeout` with the budget below, and every other `docker` and `aws` call gets a minute (`FORGE_PERF_CALL_TIMEOUT`); an overrun stops the run with reason `step_timeout`. Any other failure stops it with the reason in the table, which `runner.json` records. A failure the table does not name is `runner_error`.
 
 | Step | What it does | Budget | Reasons |
 |---|---|---|---|
-| preflight | clock synchronized (`timedatectl show -p NTPSynchronized --value` prints `yes`); CPU with `sha2`; `modprobe sch_netem`; Docker 25 or newer; `git status --porcelain` of the forge-perf checkout empty; no container, volume, `forge-network` or object in piri's six buckets, or else one wipe and a second look; piri's S3 key from SSM to `/run/forge-perf/secrets/piri-s3.env` | wipe 30 min | `preflight_failed`, `instrument_modified`, `dirty_start` (the run goes on), `s3_unreachable`, `secrets_unavailable` |
+| preflight | clock synchronized (`timedatectl show -p NTPSynchronized --value` prints `yes`); CPU with `sha2`; `modprobe sch_netem`; Docker 25 or newer; every box fact the record schema requires was read (instance metadata, Docker and Compose versions, cores, memory, the instance-store model, size and filesystem); `git status --porcelain` of the forge-perf checkout empty; no container, volume, `forge-network` or object in piri's six buckets, or else one wipe and a second look; piri's S3 key from SSM to `/run/forge-perf/secrets/piri-s3.env` | wipe 30 min | `preflight_failed`, `instrument_modified`, `dirty_start` (the run goes on), `s3_unreachable`, `secrets_unavailable` |
 | checkout | fetch both mirrors; require both SHAs with `git cat-file -e <sha>^{commit}`; check out smelt and the harness in the work tree; check that smelt has the settings a run needs; build the drill (`GOWORK=off go build -o bin/drill ./cmd/drill`, after `go mod download`) | fetch 10 min each, modules 15 min, build 15 min | `mirror_fetch_failed`, `smelt_unreachable`, `harness_unreachable`, `go_module_fetch_failed`, `harness_build_failed` |
-| images | render `config/smelt-manifest.yml.tmpl`; `make generate`; `docker compose config --images` must list only pinned references; pull each pinned image that `docker image inspect` does not find, four at a time; map each image to its compose services | generate 10 min, pull 20 min | `image_pull_failed`, `runner_error` |
+| images | render `config/smelt-manifest.yml.tmpl`; `make generate`; `docker compose config --images` must list only pinned references; piri-0 must get `FORGE_PERF_PIRI_S3_ENDPOINT` and `FORGE_PERF_PIRI_BUCKET_PREFIX`, with no `piri-minio` service, since a smelt that predates the manifest's `storage.s3` ignores it; pull each pinned image that `docker image inspect` does not find, four at a time; map each image to its compose services in `compose-images.json`, which holds only each service's image and piri's S3 target, since the interpolated model carries piri's key | generate 10 min, pull 20 min | `image_pull_failed`, `runner_error` |
 | boot | `current.json` phase `boot`; `docker network create --subnet $NET_SUBNET forge-network` (`config/latency.env`); `make up`, which waits up to 600 s for health | 15 min | `stack_boot_failed` |
 | setup | `perf-drill.sh setup` with `INGOT_URL=http://<ingot's forge-network address>:80`, which mints the drill's key and stores and reads back 4 MiB through ingot | 10 min | `setup_failed` |
 
@@ -148,7 +148,7 @@ At exit `run.sh` removes `current.json` and prints the run's reasons. Exit statu
 |---|---|
 | `config/images.tracked` | the smelt variable and `repo:tag` of each image under test; the set supplies the digest |
 | `config/images.lock` | the smelt variable, `repo:tag` and index digest of each third-party image, and the netem sidecar |
-| `config/harness.conf` | `SQ_REPO`; `SQ_PIN`, the harness commit while harness main cannot run the capped drill |
+| `config/harness.conf` | `SQ_REPO`; `SQ_PIN`, the harness commit while harness main cannot run the capped drill; `SQ_AUTH`, the harness credential |
 | `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, smelt's `perf/shakedown` head until the smelt changes reach main; `MANIFEST_NAME` |
 | `config/smelt-manifest.yml.tmpl` | one piri node on Postgres with its blobs in S3; `@ENDPOINT@`, `@BUCKET_PREFIX@` and `@INSECURE@` come from `config/piri-s3.env` and `box.conf` |
 | `config/settings/<instance type>.env` | `BOX_TIER`, `BASELINE_BYTES_PER_S`, the size and duration per kind of run, and one smelt variable per drill flag; `WORKERS` stays empty until calibration freezes it |
@@ -162,12 +162,12 @@ Every image variable is exported as `<repo>@sha256:<digest>`, so each compose ca
 
 `/var/lib/forge-perf/mirror/{smelt,storage-qualification}.git` are bare mirrors on the root volume. Each fetch takes `+refs/heads/*:refs/heads/*` and `+refs/pull/*/head:refs/pull/*/head`, so a commit stays reachable after its branch is deleted on merge: the pinned harness commit is the head of an open pull request. A failed fetch stops the run only when the commit is not already in the mirror.
 
-smelt is public. The harness credential depends on `FORGE_PERF_HARNESS_AUTH`:
+smelt is public. The harness credential is `SQ_AUTH` in `config/harness.conf`; `FORGE_PERF_HARNESS_AUTH` overrides it for a local run:
 
 | Value | Credential |
 |---|---|
-| `deploy-key` (default) | a read-only deploy key in SSM `<path>/harness-deploy-key`, used over SSH with GitHub's host keys pinned in `config/github-known-hosts` |
-| `app` | a GitHub App installed on the harness repository alone with read access to contents. SSM `<path>/harness-app` holds `{"app_id", "installation_id", "private_key"}`, and `harness-token.sh` mints an installation token for each run |
+| `deploy-key` | a read-only deploy key in SSM `<path>/harness-deploy-key`, used over SSH with GitHub's host keys pinned in `config/github-known-hosts` |
+| `app` | a GitHub App with read access to the harness repository's contents. SSM `<path>/harness-app` holds `{"app_id", "installation_id", "private_key"}`, and `harness-token.sh` mints an installation token for each run, scoped to that one repository and `contents: read` |
 | `none` | the caller's own git credentials, for a local run |
 
 The deploy key works only where the fil-one organization allows deploy keys; the App gives the same read-only access where it does not. Either credential lives under `/run/forge-perf/secrets` for the run and goes with the wipe.
@@ -223,7 +223,7 @@ A run against Docker Desktop needs five more settings in `local/box.conf`, and `
 
 ```sh
 cat >>local/box.conf <<EOF
-FORGE_PERF_SECRETS=file                 # piri's key from FORGE_PERF_PIRI_S3_CREDENTIALS, not SSM
+FORGE_PERF_SECRETS=file                 # piri's key from the FORGE_PERF_PIRI_S3_CREDENTIALS file
 FORGE_PERF_HARNESS_AUTH=none            # your own git credentials for storage-qualification
 FORGE_PERF_CLIENT_PATH=published        # Docker Desktop does not route to container addresses
 FORGE_PERF_GO_CACHE=                    # your own Go caches and toolchain

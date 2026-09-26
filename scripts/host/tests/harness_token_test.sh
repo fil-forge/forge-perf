@@ -23,15 +23,18 @@ cat >"$work/bin/curl" <<'STUB'
 for a; do
   case "$a" in @*) cp "${a#@}" "$W/header" ;; https://*) echo "$a" >"$W/url" ;; esac
 done
+while [ $# -gt 0 ]; do [ "$1" != -d ] || printf '%s' "$2" >"$W/body"; shift; done
 [ -z "${API_DOWN:-}" ] || exit 22
 echo '{"token": "ghs_testtoken", "expires_at": "2026-10-01T13:00:00Z"}'
 STUB
 chmod +x "$work/bin/"*
 export PATH="$work/bin:$PATH"
 
-"$host/harness-token.sh" /forge-perf/harness-app "$work/secrets"
+"$host/harness-token.sh" /forge-perf/harness-app "$work/secrets" fil-one/storage-qualification
 [ "$(cat "$work/secrets/harness-token")" = ghs_testtoken ] || fail "token"
 [ "$(cat "$work/url")" = https://api.github.com/app/installations/7890/access_tokens ] || fail "url $(cat "$work/url")"
+jq -e '. == {repositories: ["storage-qualification"], permissions: {contents: "read"}}' "$work/body" >/dev/null ||
+  fail "token scope $(cat "$work/body")"
 [ "$(command ls "$work/secrets")" = harness-token ] || fail "left: $(command ls "$work/secrets")"
 case "$(stat -c %a "$work/secrets/harness-token" 2>/dev/null || stat -f %Lp "$work/secrets/harness-token")" in
   600) ;; *) fail "token file mode" ;;
@@ -44,9 +47,9 @@ unb64 "$p" | jq -e '.iss == "123456" and .exp - .iat == 600' >/dev/null || fail 
 printf '%s' "$h.$p" >"$work/signed"
 unb64 "$s" >"$work/sig"
 openssl dgst -sha256 -verify "$work/app.pub" -signature "$work/sig" "$work/signed" >/dev/null || fail "signature"
-echo "ok: the App JWT verifies and only the token stays"
+echo "ok: the App JWT verifies, the token is scoped to the one repository's contents, and only the token stays"
 
 rm -f "$work/secrets/harness-token"
-if API_DOWN=1 "$host/harness-token.sh" /forge-perf/harness-app "$work/secrets" 2>/dev/null; then fail "API down succeeded"; fi
+if API_DOWN=1 "$host/harness-token.sh" /forge-perf/harness-app "$work/secrets" fil-one/storage-qualification 2>/dev/null; then fail "API down succeeded"; fi
 [ -z "$(command ls "$work/secrets")" ] || fail "left after a failure: $(command ls "$work/secrets")"
 echo "ok: a failed token request leaves nothing behind"

@@ -86,7 +86,7 @@ printf '#!/usr/bin/env bash\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n' >"$w
 chmod +x "$work/bin/"*
 export PATH="$work/bin:$PATH"
 
-netshoot="$(grep -v "^#" "$repo/config/images.lock" | grep -oE "sha256:[0-9a-f]{64}" | head -1)"
+netshoot="$(awk '$1 == "NETSHOOT_IMAGE" { print $3; exit }' "$repo/config/images.lock")"
 tracked=sha256:1111111111111111111111111111111111111111111111111111111111111111
 
 # A box in the middle of a run: the smelt stack, a netem sidecar, one other

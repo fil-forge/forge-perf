@@ -97,7 +97,8 @@ Until storage-qualification main accepts `--stop-ingest-at`, which smelt's wrapp
 
 | Step | What happens | On failure |
 |---|---|---|
-| Preflight | no containers, volumes or `forge-network`; empty piri buckets; synchronized clock; clean checkout; settings file present; secrets from SSM to tmpfs | `no_data` |
+| Before preflight | a settings file for the instance type, with `WORKERS` set; otherwise the run stops before it starts, with no record | none |
+| Preflight | no containers, volumes or `forge-network`; empty piri buckets; synchronized clock; clean checkout; secrets from SSM to tmpfs | `no_data` |
 | Checkout | smelt and the harness from the mirrors at the set's SHAs; build the drill | `no_data` |
 | Images | set each image variable in `config/images.tracked` to `<repo>@sha256:<digest>`; pull what is missing; `docker compose config --images` lists only pinned digests | `no_data` |
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP>:80 perf-drill.sh setup` | `no_data` |

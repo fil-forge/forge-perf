@@ -168,7 +168,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 | Reason | Class | Detected from |
 |---|---|---|
 | `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started without a `verify pre` pass, or has numbers without a `verify post` pass, unless the runner interrupted it; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
-| `preflight_failed` | `no_data` | preflight: clock not synchronized, CPU without `sha2`, `sch_netem` not loadable, Docker older than 25. A missing settings file stops the run before it starts, with no record |
+| `preflight_failed` | `no_data` | preflight: clock not synchronized, CPU without `sha2`, `sch_netem` not loadable, Docker older than 25, a box fact the schema requires unreadable. A missing settings file stops the run before it starts, with no record |
 | `stack_boot_failed` | `no_data` | `make up` non-zero |
 | `setup_failed` | `no_data` | `perf-drill.sh setup` non-zero |
 | `harness_build_failed` | `no_data` | `go build` of the drill failed |

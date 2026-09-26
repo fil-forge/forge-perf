@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Mint a GitHub App installation token that reads the harness repository.
 #
-#   harness-token.sh PARAM DIR
+#   harness-token.sh PARAM DIR OWNER/REPO
 #
 # PARAM names an SSM SecureString holding {"app_id", "installation_id",
-# "private_key"} for a GitHub App installed on fil-one/storage-qualification
-# alone, with read access to its contents. Writes DIR/harness-token (mode
-# 0600). The token lasts an hour, which covers a checkout. The App's key never
+# "private_key"} for a GitHub App installed on OWNER/REPO, with read access to
+# its contents. The token is asked for that one repository and contents:read
+# alone, so GitHub mints nothing wider even where the App can do more. Writes
+# DIR/harness-token (mode 0600). The token lasts an hour, which covers a checkout. The App's key never
 # leaves DIR, which the wipe deletes.
 set -euo pipefail
 
-[ $# -eq 2 ] || { echo "usage: harness-token.sh PARAM DIR" >&2; exit 2; }
-param="$1" dir="$2"
+[ $# -eq 3 ] || { echo "usage: harness-token.sh PARAM DIR OWNER/REPO" >&2; exit 2; }
+param="$1" dir="$2" repo="${3#*/}"
 api="${FORGE_PERF_GITHUB_API:-https://api.github.com}"
 umask 077
 trap 'rm -f "$dir/harness-app.json" "$dir/harness-app.pem" "$dir/harness-app.header" "$dir/harness-token.tmp"' EXIT
@@ -34,6 +35,7 @@ unsigned="$(printf '{"alg":"RS256","typ":"JWT"}' | b64url).$(printf '{"iat":%d,"
 signature="$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign "$dir/harness-app.pem" | b64url)"
 # The header goes through a file, so the JWT never shows in the process list.
 printf 'Authorization: Bearer %s.%s\n' "$unsigned" "$signature" >"$dir/harness-app.header"
-curl -fsS -m 30 -X POST -H @"$dir/harness-app.header" -H 'Accept: application/vnd.github+json' \
+scope="$(jq -nc --arg r "$repo" '{repositories: [$r], permissions: {contents: "read"}}')"
+curl -fsS -m 30 -X POST -H @"$dir/harness-app.header" -H 'Accept: application/vnd.github+json' -d "$scope" \
   "$api/app/installations/$installation/access_tokens" | jq -er '.token' >"$dir/harness-token.tmp"
 mv "$dir/harness-token.tmp" "$dir/harness-token"

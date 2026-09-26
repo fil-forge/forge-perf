@@ -25,7 +25,7 @@ echo "docker $*" >>"$D/docker.log"
 case "$*" in
   "version --format"*) echo 28.5.1 ;;
   "compose version --short") echo 2.40.3 ;;
-  "ps -aq"*) cat "$D/containers" 2>/dev/null ;;
+  "ps -aq"*) [ -z "${DOCKER_HANG:-}" ] || exec sleep 10; cat "$D/containers" 2>/dev/null ;;
   "volume ls -q"*) cat "$D/volumes" 2>/dev/null ;;
   "network inspect forge-network") [ -e "$D/network" ] ;;
   "network create"*) touch "$D/network" ;;
@@ -34,9 +34,17 @@ case "$*" in
   "compose config --images")
     for v in INGOT_IMAGE PIRI_IMAGE UPLOAD_IMAGE POSTGRES_IMAGE IPNI_IMAGE ${EXTRA_IMAGE_VAR:-}; do echo "${!v}"; done ;;
   "compose config --format json")
-    jq -n '{services: {ingot: {image: env.INGOT_IMAGE}, "piri-0": {image: env.PIRI_IMAGE},
+    # As smelt's generator does: piri-0 gets the manifest's S3 target and the
+    # key from SMELT_PIRI_S3_*. OLD_SMELT: a smelt without storage.s3.
+    ep="$(sed -n 's/^ *endpoint: //p' "$SMELT_MANIFEST")" pre="$(sed -n 's/^ *bucket_prefix: //p' "$SMELT_MANIFEST")piri-0-"
+    [ -z "${OLD_SMELT:-}" ] || ep=piri-minio:9000 pre=piri-0-
+    jq -n --arg ep "$ep" --arg pre "$pre" --arg old "${OLD_SMELT:-}" '{services: ({ingot: {image: env.INGOT_IMAGE},
+      "piri-0": {image: env.PIRI_IMAGE, environment: {PIRI_S3_ENDPOINT: $ep, PIRI_S3_BUCKET_PREFIX: $pre,
+        PIRI_S3_ACCESS_KEY_ID: (env.SMELT_PIRI_S3_ACCESS_KEY_ID // ""),
+        PIRI_S3_SECRET_ACCESS_KEY: (env.SMELT_PIRI_S3_SECRET_ACCESS_KEY // "")}},
       upload: {image: env.UPLOAD_IMAGE}, "upload-init": {image: env.UPLOAD_IMAGE},
-      postgres: {image: env.POSTGRES_IMAGE}, ipni: {image: env.IPNI_IMAGE}}}' ;;
+      postgres: {image: env.POSTGRES_IMAGE}, ipni: {image: env.IPNI_IMAGE}}
+      + if $old == "" then {} else {"piri-minio": {image: env.POSTGRES_IMAGE}} end)}' ;;
   "compose ps -q ingot") echo cid-ingot ;;
   "inspect -f"*) echo 172.30.0.5 ;;
   *) echo "docker stub: unexpected $*" >&2; exit 1 ;;
@@ -83,7 +91,20 @@ STUB
 printf '#!/usr/bin/env bash\necho "go $*" >>"$D/go.log"\n' >"$work/bin/go"
 printf '#!/usr/bin/env bash\necho "${NTP:-yes}"\n' >"$work/bin/timedatectl"
 printf '#!/usr/bin/env bash\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n' >"$work/bin/id"
-for tool in flock modprobe lsblk findmnt; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+for tool in flock modprobe; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+# One instance-store NVMe beside the root EBS volume. NO_NVME: none is found.
+cat >"$work/bin/lsblk" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  "-dno PATH,MODEL")
+    echo "/dev/nvme0n1 Amazon Elastic Block Store"
+    [ -n "${NO_NVME:-}" ] || echo "/dev/nvme1n1 Amazon EC2 NVMe Instance Storage" ;;
+  "-dno MODEL /dev/nvme1n1") echo "Amazon EC2 NVMe Instance Storage    " ;;
+  "-bdno SIZE /dev/nvme1n1") echo " 474000000000" ;;
+  *) exit 1 ;;
+esac
+STUB
+printf '#!/usr/bin/env bash\necho ext4\n' >"$work/bin/findmnt"
 chmod +x "$work/bin/"*
 export PATH="$work/bin:$PATH"
 
@@ -202,6 +223,22 @@ grep -q "endpoint: s3.us-east-2.amazonaws.com" "$work/box/nvme/work/run/smelt-ma
 grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
 echo "ok: a clean run reaches setup with every image pinned; the harness pin comes through a pull ref"
 
+# piri's key reaches compose through the environment only, never the disk.
+! grep -rqF -e AKIAFAKEKEYID -e fake-secret-value "$work/box/nvme/work" "$work/box/state" || fail "piri's key on disk"
+jq -e '.piri_s3.PIRI_S3_BUCKET_PREFIX == "forge-perf-piri-main-1-piri-0-" and (.services.ingot | keys == ["image"])' \
+  "$work/box/nvme/work/run/compose-images.json" >/dev/null || fail "compose-images.json"
+echo "ok: piri's key stays off the disk"
+
+# The runner.json of a clean run is enough for the minimal record, once the
+# record step stamps run_finished_at as it does before any build.
+echo 'zz-no-such-term-zz' >"$work/deny"
+jq '.time.run_finished_at = "2026-10-01T12:00:00Z"' "$work/box/state/runner.json" >"$work/runner-done.json"
+python3 "$work/checkout/scripts/host/record.py" minimal --runner "$work/runner-done.json" \
+  --denylist "$work/deny" --out "$work/record.json" >/dev/null 2>&1 || fail "record.py minimal on runner.json"
+[ "$(jq -r '.box.nvme | "\(.model) \(.size_bytes) \(.filesystem)"' "$work/record.json")" = \
+  "Amazon EC2 NVMe Instance Storage 474000000000 ext4" ] || fail "nvme $(jq -c .box.nvme "$work/record.json")"
+echo "ok: a clean run's runner.json makes a minimal record that passes the schema"
+
 setup
 run 0 -- --set "$work/set.json" --workers 16 --until images
 [ ! -e "$D/make.log" ] || ! grep -q " up$" "$D/make.log" || fail "--until images booted the stack"
@@ -235,6 +272,25 @@ run 0 -- --set "$work/set.json" --workers 16 --until preflight
 [ "$(runner '.reasons | join(",")')" = dirty_start ] || fail "reasons $(runner .reasons)"
 grep -qx wipe "$D/wipe.log" || fail "no wipe"
 echo "ok: a dirty start wipes, goes on, and is recorded"
+
+setup
+run 1 NO_NVME=1 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = preflight_failed ] || fail "reasons $(runner .reasons)"
+grep -q "cannot read the box facts: nvme_model nvme_size_bytes" "$work/out" || fail "no box facts message"
+echo "ok: an unreadable box fact stops preflight"
+
+setup
+run 1 DOCKER_HANG=1 FORGE_PERF_CALL_TIMEOUT=1 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = step_timeout ] || fail "reasons $(runner .reasons)"
+[ ! -d "$work/box/mirror" ] || fail "went on after a hung Docker call"
+echo "ok: a hung Docker call in preflight stops with step_timeout"
+
+setup
+run 1 OLD_SMELT=1 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "does not point piri-0 at s3.us-east-2.amazonaws.com" "$work/out" || fail "no S3 target message"
+! grep -q "^docker pull" "$D/docker.log" || fail "pulled before the S3 check"
+echo "ok: a smelt that runs piri against in-stack MinIO stops the run"
 
 setup
 touch "$D/ssm-down"
@@ -275,7 +331,13 @@ setup
 echo '{"kind": "trigger"}' >"$work/box/state/pending.json"
 run 2 -- --workers 16
 [ -e "$work/box/state/pending.json.rejected" ] && [ ! -e "$work/box/state/pending.json" ] || fail "pending not moved aside"
-echo "ok: a pending run without a set is moved aside"
+setup
+jq '{kind: "trigger", set: (.images |= del(.["ghcr.io/fil-forge/ingot:main"]))}' "$work/set.json" \
+  >"$work/box/state/pending.json"
+run 2 -- --workers 16
+grep -q "no digest for ghcr.io/fil-forge/ingot:main" "$work/out" || fail "no digest message"
+[ -e "$work/box/state/pending.json.rejected" ] && [ ! -e "$work/box/state/pending.json" ] || fail "pending not moved aside"
+echo "ok: a pending run that cannot start is moved aside"
 
 # Skip mode on a laptop: config/settings/local.env, host checks logged.
 setup

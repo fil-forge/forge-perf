@@ -16,6 +16,8 @@
 # Exit status: 0 the run reached its last step, or another run holds the lock;
 # 1 a step failed, and runner.json names the reason; 2 the run did not start
 # (usage, no settings for this instance type, WORKERS empty, an unusable set).
+# A run taken from pending.json that does not start leaves the file as
+# pending.json.rejected, so the next poll does not start it again.
 #
 # SC2016: jq and awk programs are single-quoted on purpose. SC2015: `a && b ||
 # stop` is intended, since stop exits whichever of a and b failed.
@@ -29,8 +31,13 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 . "$here/runlib.sh"
 
 STEPS="preflight checkout images boot setup"
+from_pending=""
 refuse() {
   echo "run.sh: $*" >&2
+  if [ -n "$from_pending" ] && [ -e "$state/pending.json" ]; then
+    mv -f "$state/pending.json" "$state/pending.json.rejected"
+    echo "run.sh: moved pending.json to pending.json.rejected" >&2
+  fi
   exit 2
 }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
@@ -86,11 +93,9 @@ if [ -n "$set_file" ]; then
   set_json="$(jq -ce 'objects' "$set_file")" || refuse "$set_file is not a JSON object"
 else
   [ -e "$state/pending.json" ] || { echo "run.sh: nothing pending"; exit 0; }
-  # An unreadable pending run is moved aside, so the next poll does not start it again.
-  pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" || {
-    mv "$state/pending.json" "$state/pending.json.rejected"
-    refuse "pending.json is not a JSON object with a set; moved to pending.json.rejected"
-  }
+  from_pending=1
+  pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" ||
+    refuse "pending.json is not a JSON object with a set"
   set_json="$(jq -c '.set' <<<"$pending")"
   kind="$(jq -r '.kind // "trigger"' <<<"$pending")"
   superseded="$(jq '.superseded // 0' <<<"$pending")"
@@ -185,6 +190,22 @@ SMELT_ENV=(env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE -u AWS_ENDPOIN
 # q <command...>: its output, or nothing when it fails.
 q() { ( "$@" ) 2>/dev/null || true; }
 
+# Every docker and aws call this shell makes has a minute to answer
+# (FORGE_PERF_CALL_TIMEOUT), so a hung daemon or endpoint cannot hold the run
+# until the unit's own timeout. An overrun leaves its command in $overran,
+# even from a subshell, and the stop that follows becomes step_timeout. The
+# pulls, `make` and the wipe run as their own processes under `within`.
+overran="$FORGE_PERF_RUNTIME/overran"
+rm -f "$overran"
+limited() {
+  local status=0
+  timeout --kill-after=10 "${FORGE_PERF_CALL_TIMEOUT:-60}" "$@" || status=$?
+  [ "$status" != 124 ] && [ "$status" != 137 ] || echo "$*" >"$overran"
+  return "$status"
+}
+docker() { limited docker "$@"; }
+aws() { limited aws "$@"; }
+
 box_facts() {
   local cpuinfo arch dev="" model="" bytes=""
   cpuinfo="$(q host_read cat "$R/proc/cpuinfo")"
@@ -244,9 +265,13 @@ set_phase() {
 # stop REASON MESSAGE: the run cannot go on.
 failed=""
 stop() {
-  echo "run.sh: $1: $2" >&2
-  failed="$1"
-  rj --arg r "$1" '.reasons = (.reasons + [$r] | unique)'
+  local reason="$1" message="$2"
+  if [ -s "$overran" ]; then
+    message="$(head -c 200 "$overran") ran over ${FORGE_PERF_CALL_TIMEOUT:-60}s; $message" reason=step_timeout
+  fi
+  echo "run.sh: $reason: $message" >&2
+  failed="$reason"
+  rj --arg r "$reason" '.reasons = (.reasons + [$r] | unique)'
   exit 1
 }
 
@@ -254,7 +279,7 @@ finish() {
   local status=$?
   trap - EXIT
   if [ "$status" -ne 0 ] && [ -z "$failed" ]; then
-    rj '.reasons = (.reasons + ["runner_error"] | unique)'
+    rj --arg r "$([ -s "$overran" ] && echo step_timeout || echo runner_error)" '.reasons = (.reasons + [$r] | unique)'
   fi
   rm -f "$state/current.json"
   if [ "$status" -eq 0 ]; then
@@ -308,10 +333,11 @@ find_dirt() {
       --query KeyCount --output text)" || stop s3_unreachable "cannot list bucket $FORGE_PERF_PIRI_BUCKET_PREFIX$store"
     [ "$n" = 0 ] || dirt+=" $store"
   done
+  [ ! -s "$overran" ] || stop step_timeout "looking for an earlier run's containers, volumes and network"
 }
 
 step_preflight() {
-  local modified docker_major
+  local modified docker_major unread
   step "preflight"
   host_require preflight_failed "the clock is not synchronized" \
     sh -c '[ "$(timedatectl show -p NTPSynchronized --value)" = yes ]'
@@ -331,6 +357,15 @@ step_preflight() {
   fi
   [[ "$FORGE_PERF_PIRI_BUCKET_PREFIX" = "${smelt_prefix}piri-0-" ]] ||
     stop runner_error "FORGE_PERF_PIRI_BUCKET_PREFIX must be the smelt bucket prefix followed by piri-0-"
+  # The box facts the record schema requires; without them no record, not
+  # even the minimal one, could be written. Skip mode has no instance store.
+  unread="$(jq -r '.box | {tier, availability_zone, ami_id, docker_server, docker_compose, cores: .cpu.cores,
+    mem_total_bytes, nvme_model: .nvme.model, nvme_size_bytes: .nvme.size_bytes, nvme_filesystem: .nvme.filesystem}
+    | to_entries | map(select(.value == null) | .key) | join(" ")' "$state/runner.json")"
+  if [ -n "$unread" ]; then
+    host_ops_skipped && echo "box facts not read in skip mode: $unread" >&2 ||
+      stop preflight_failed "cannot read the box facts: $unread"
+  fi
 
   find_dirt
   if [ -n "$dirt" ]; then
@@ -364,11 +399,12 @@ step_preflight() {
 }
 
 # harness_git: how git reaches the harness repository, in HARNESS_GIT (a
-# command prefix) and HARNESS_URL. FORGE_PERF_HARNESS_AUTH: deploy-key (an
-# SSH key in SSM), app (a GitHub App installation token minted from the
-# App's key in SSM) or none (the caller's own git credentials).
+# command prefix) and HARNESS_URL. SQ_AUTH in config/harness.conf, or
+# FORGE_PERF_HARNESS_AUTH for a local run: deploy-key (an SSH key in SSM), app
+# (a GitHub App installation token minted from the App's key in SSM) or none
+# (the caller's own git credentials).
 harness_git() {
-  local auth="${FORGE_PERF_HARNESS_AUTH:-deploy-key}"
+  local auth="${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-deploy-key}}"
   case "$auth" in
     deploy-key)
       HARNESS_URL="${FORGE_PERF_HARNESS_URL:-git@github.com:$SQ_REPO.git}"
@@ -379,7 +415,7 @@ harness_git() {
       ;;
     app)
       HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://x-access-token@github.com/$SQ_REPO.git}"
-      "$here/harness-token.sh" "${FORGE_PERF_HARNESS_APP_PARAM:-$SSM/harness-app}" "$SECRETS" ||
+      limited "$here/harness-token.sh" "${FORGE_PERF_HARNESS_APP_PARAM:-$SSM/harness-app}" "$SECRETS" "$SQ_REPO" ||
         stop secrets_unavailable "cannot mint a harness token from the GitHub App key in SSM"
       local helper="!f() { [ \"\$1\" = get ] && printf 'username=x-access-token\npassword=%s\n' \"\$(cat '$SECRETS/harness-token')\"; }; f"
       HARNESS_GIT=(git -c credential.helper= -c "credential.helper=$helper")
@@ -388,7 +424,7 @@ harness_git() {
       HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://github.com/$SQ_REPO.git}"
       HARNESS_GIT=(git)
       ;;
-    *) stop runner_error "FORGE_PERF_HARNESS_AUTH must be deploy-key, app or none" ;;
+    *) stop runner_error "the harness credential (SQ_AUTH) must be deploy-key, app or none" ;;
   esac
 }
 
@@ -442,10 +478,27 @@ step_images() {
   within 600 runner_error "${SMELT_ENV[@]}" make -C "$SMELT" generate
 
   refs="$(for line in "${pinned[@]}"; do awk '{ print $2 "@" $4 }' <<<"$line"; done)"
-  listed="$(cd "$SMELT" && "${SMELT_ENV[@]}" docker compose config --images)" ||
+  listed="$(cd "$SMELT" && limited "${SMELT_ENV[@]}" docker compose config --images)" ||
     stop runner_error "docker compose config failed"
   bad="$(grep -vxF -f <(printf '%s\n' "$refs") <<<"$listed" || true)"
   [ -z "$bad" ] || stop runner_error "images outside the pinned set: $(tr '\n' ' ' <<<"$bad")"
+
+  # The interpolated model would carry piri's key, so this call runs without
+  # it and only each service's image and piri's S3 target reach the disk.
+  (cd "$SMELT" && limited "${SMELT_ENV[@]}" -u SMELT_PIRI_S3_ACCESS_KEY_ID -u SMELT_PIRI_S3_SECRET_ACCESS_KEY \
+    docker compose config --format json) |
+    jq '{services: (.services | map_values({image})),
+         piri_s3: (.services["piri-0"].environment // {} | {PIRI_S3_ENDPOINT, PIRI_S3_BUCKET_PREFIX})}' \
+      >"$RUN/compose-images.json" || stop runner_error "docker compose config failed"
+  # A smelt without the manifest's storage.s3 drops it and runs piri against
+  # an in-stack MinIO, which would measure another topology.
+  jq -e --arg e "$FORGE_PERF_PIRI_S3_ENDPOINT" --arg p "$FORGE_PERF_PIRI_BUCKET_PREFIX" \
+    '.piri_s3 == {PIRI_S3_ENDPOINT: $e, PIRI_S3_BUCKET_PREFIX: $p} and (.services | has("piri-minio") | not)' \
+    "$RUN/compose-images.json" >/dev/null ||
+    stop runner_error "smelt $smelt_sha does not point piri-0 at $FORGE_PERF_PIRI_S3_ENDPOINT/$FORGE_PERF_PIRI_BUCKET_PREFIX*"
+  rj --slurpfile c "$RUN/compose-images.json" '.images |= map(. as $i | .services =
+    if $i.variable == "NETSHOOT_IMAGE" then ["netem"]
+    else [$c[0].services | to_entries[] | select(.value.image == $i.repo + "@" + $i.digest) | .key] | sort end)'
 
   printf '%s\n' "${pinned[@]}" | awk '{ print $1, $2 ":" $3, $4 }' >"$state/images.pinned"
   : >"$RUN/pull.list"
@@ -455,12 +508,6 @@ step_images() {
   if [ -s "$RUN/pull.list" ]; then
     within 1200 image_pull_failed xargs -P4 -n1 docker pull --quiet <"$RUN/pull.list"
   fi
-
-  (cd "$SMELT" && "${SMELT_ENV[@]}" docker compose config --format json) >"$RUN/compose.json" ||
-    stop runner_error "docker compose config failed"
-  rj --slurpfile c "$RUN/compose.json" '.images |= map(. as $i | .services =
-    if $i.variable == "NETSHOOT_IMAGE" then ["netem"]
-    else [$c[0].services | to_entries[] | select(.value.image == $i.repo + "@" + $i.digest) | .key] | sort end)'
 }
 
 step_boot() {
