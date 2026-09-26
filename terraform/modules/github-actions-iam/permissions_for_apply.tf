@@ -11,20 +11,42 @@ data "aws_iam_policy_document" "apply" {
   }
 
   # The account also holds infra-nodes' dev node and infra-central's dev stage,
-  # and any workflow on main of a public repository can assume this role. It
-  # may not stop, modify, delete, detach or copy what it did not create. A
-  # negated condition also matches when the tag is absent, so untagged
-  # resources are protected too. Every forge-perf resource carries the tag
-  # through default_tags. The create actions left out (CreateSubnet,
-  # CreateSecurityGroup, CreateVpcEndpoint, RunInstances) authorize against the
-  # untagged default VPC or a Canonical AMI, so they cannot sit under this
-  # condition. Whether every family below spares the network and box roots'
-  # own calls is [unverified] until their first apply.
+  # and any workflow on main of a public repository can assume this role. On a
+  # resource lacking Project=forge-perf it may only describe, create in the
+  # default VPC, and tag at creation: every other action is denied there,
+  # including actions AWS adds later. A negated condition also matches when the
+  # tag is absent, so untagged resources are protected too. Every resource
+  # OpenTofu creates carries the tag through default_tags; a box root tags its
+  # root volume at creation, and a security group change on the box accepts
+  # replacement, since the primary network interface is created by RunInstances
+  # untagged. Whether the network and box roots need any other action on an
+  # AWS-owned resource (for example a managed prefix list read) is [unverified]
+  # until their first apply; such an action joins untagged_allowed_actions.
   statement {
-    sid       = "KeepOffOtherProjects"
-    effect    = "Deny"
-    resources = ["*"]
-    actions   = local.untagged_denied_actions
+    sid         = "KeepOffOtherProjects"
+    effect      = "Deny"
+    resources   = ["*"]
+    not_actions = local.untagged_allowed_actions
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "aws:ResourceTag/${var.tag_key}"
+      values   = [var.tag_value]
+    }
+  }
+
+  # The creates above authorize against a subnet, security group or route table
+  # too. They must be forge-perf's, so the role cannot launch into the dev
+  # node's subnet or add an endpoint route to another project's route table.
+  statement {
+    sid     = "LaunchIntoOwnNetworkOnly"
+    effect  = "Deny"
+    actions = ["ec2:CreateVpcEndpoint", "ec2:RunInstances"]
+    resources = [
+      "arn:aws:ec2:*:*:route-table/*",
+      "arn:aws:ec2:*:*:security-group/*",
+      "arn:aws:ec2:*:*:subnet/*",
+    ]
 
     condition {
       test     = "StringNotEquals"
@@ -95,9 +117,12 @@ data "aws_iam_policy_document" "apply" {
     sid = "WriteBoxRolesWithinBoundary"
     actions = [
       "iam:CreateRole",
+      "iam:DeleteRole",
       "iam:DeleteRolePolicy",
       "iam:DetachRolePolicy",
       "iam:PutRolePolicy",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:UpdateRole",
     ]
     resources = [local.box_role_arn]
 
@@ -128,20 +153,19 @@ data "aws_iam_policy_document" "apply" {
   }
 
   # None of these can widen what a box role may do, which the boundary caps.
+  # Trust-policy and role updates, and deletes, sit in the statement above, so a
+  # box-named role made by hand without the boundary is out of reach.
   statement {
     sid = "ManageBoxRoles"
     actions = [
       "iam:AddRoleToInstanceProfile",
       "iam:CreateInstanceProfile",
       "iam:DeleteInstanceProfile",
-      "iam:DeleteRole",
       "iam:RemoveRoleFromInstanceProfile",
       "iam:TagInstanceProfile",
       "iam:TagRole",
       "iam:UntagInstanceProfile",
       "iam:UntagRole",
-      "iam:UpdateAssumeRolePolicy",
-      "iam:UpdateRole",
     ]
     resources = [local.box_role_arn, local.box_profile_arn]
   }

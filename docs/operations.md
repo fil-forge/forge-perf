@@ -24,7 +24,7 @@ gh api repos/fil-forge/forge-perf/environments/box-change/deployment-branch-poli
   -q '[.branch_policies[].name]'
 ```
 
-The first check should list `required_reviewers` and `true`, the second only `main`.
+The first check should list `required_reviewers`, `branch_policy` and `true`, the second only `main`.
 
 The first apply creates the bucket its own state lives in. `versions.tofu` gives the procedure: comment out the backend block, apply against the local backend, restore the block, then `tofu init -migrate-state`. Every later apply is:
 
@@ -45,7 +45,7 @@ gh api /repos/fil-forge/forge-perf/actions/oidc/customization/sub -q .sub_claim_
 
 ### piri's S3 key
 
-piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only from inside the default VPC, and once the network root is applied it narrows to the forge-perf S3 endpoint.
+piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only from inside the default VPC. A later change to the bootstrap root, applied after the network root, narrows it to the forge-perf S3 endpoint.
 
 The secret travels through a pipe, never a command-line argument, so other users on the machine cannot read it from the process list:
 
@@ -64,7 +64,7 @@ AWS allows two keys per user, which lets a new key overlap the old one until bot
 
 ### The harness credential
 
-The box clones fil-one/storage-qualification over SSH with a read-only deploy key. A deploy key is scoped to one repository, tied to no person and does not expire. Adding one needs admin on that repository, and the fil-one organization must allow deploy keys. The organization has them turned off today; enabling them for storage-qualification, or reading the repository through a GitHub App instead, is an open decision for the owner.
+The box clones fil-one/storage-qualification over SSH with a read-only deploy key. A deploy key is scoped to one repository, tied to no person and does not expire. Adding one needs admin on that repository and deploy keys allowed for it in the fil-one organization's settings.
 
 The private half is written to a RAM-backed directory where the system has one (`$XDG_RUNTIME_DIR` on most Linux desktops) and deleted as soon as it is stored:
 
@@ -122,12 +122,17 @@ The read check fetches the first object under `published/`. Until a box publishe
 printf '{}\n' | aws s3 cp - s3://forge-perf-results-654654381893/published/probe.json
 ```
 
-The apply role's guards can be checked without touching a resource, with the policy simulator. For a resource with no `Project` tag, both actions should come back `explicitDeny`:
+The apply role's guards can be checked without touching a resource, with the policy simulator. For an instance and a volume with no `Project` tag, each call should come back `explicitDeny`:
 
 ```sh
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::654654381893:role/forge-perf-ci-apply \
-  --action-names ec2:CreateTags ec2:TerminateInstances \
+  --action-names ec2:TerminateInstances \
+  --resource-arns arn:aws:ec2:us-east-2:654654381893:instance/i-00000000000000000 \
+  --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::654654381893:role/forge-perf-ci-apply \
+  --action-names ec2:CreateTags \
   --resource-arns arn:aws:ec2:us-east-2:654654381893:volume/vol-00000000000000000 \
   --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
 ```
@@ -137,8 +142,8 @@ With the tag in the call's context, both should come back `allowed`, so forge-pe
 ```sh
 aws iam simulate-principal-policy \
   --policy-source-arn arn:aws:iam::654654381893:role/forge-perf-ci-apply \
-  --action-names ec2:CreateTags ec2:TerminateInstances \
-  --resource-arns arn:aws:ec2:us-east-2:654654381893:volume/vol-00000000000000000 \
+  --action-names ec2:TerminateInstances \
+  --resource-arns arn:aws:ec2:us-east-2:654654381893:instance/i-00000000000000000 \
   --context-entries ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=forge-perf,ContextKeyType=string \
   --query 'EvaluationResults[].[EvalActionName,EvalDecision]' --output text
 ```

@@ -49,7 +49,7 @@ variable "piri_bucket_name_prefix" {
 }
 
 variable "tag_key" {
-  description = "Tag every resource of this project carries, through default_tags. The apply role may not stop, modify, delete or retag an EC2 resource without it."
+  description = "Tag every resource OpenTofu creates for this project carries, through default_tags. On a resource without it the apply role may only describe, create in its own network, and tag at creation."
   type        = string
   default     = "Project"
 }

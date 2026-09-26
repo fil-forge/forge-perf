@@ -21,9 +21,17 @@ data "aws_iam_policy_document" "plan" {
       "s3:GetLifecycleConfiguration",
       "s3:GetReplicationConfiguration",
       "s3:ListAllMyBuckets",
-      "s3:ListBucket",
       "sts:GetCallerIdentity",
     ]
+  }
+
+  # Narrower than infra-central's plan policy, which lists every bucket: the
+  # network and box roots manage piri's buckets and no other, and a pull request
+  # from any branch of this public repository chooses what this role runs.
+  statement {
+    sid       = "ListPiriBuckets"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.piri_bucket_name_prefix}-*"]
   }
 
   statement {

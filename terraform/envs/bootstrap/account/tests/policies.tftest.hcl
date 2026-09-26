@@ -55,17 +55,50 @@ run "policies" {
   assert {
     condition = alltrue([
       { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Effect == "Deny",
-      length(setsubtract([
-        "ec2:Attach*", "ec2:CreateRoute", "ec2:CreateSnapshot", "ec2:CreateSnapshots", "ec2:Delete*", "ec2:Detach*",
-        "ec2:Disassociate*", "ec2:Modify*", "ec2:Reboot*", "ec2:Replace*", "ec2:Revoke*", "ec2:Stop*", "ec2:Terminate*",
-      ], flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Action]))) == 0,
+      try({ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Action, null) == null,
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].NotAction])) == toset([
+        "ec2:Describe*", "ec2:CreateRouteTable", "ec2:CreateSecurityGroup", "ec2:CreateSubnet", "ec2:CreateVpcEndpoint",
+        "ec2:RunInstances", "ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress", "ec2:CreateTags",
+        "iam:*", "s3:*", "sts:*",
+      ]),
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Resource]) == ["*"],
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherProjects"].Condition.StringNotEquals["aws:ResourceTag/Project"]]) == ["forge-perf"],
+      { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchIntoOwnNetworkOnly"].Effect == "Deny",
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchIntoOwnNetworkOnly"].Action])) == toset(["ec2:CreateVpcEndpoint", "ec2:RunInstances"]),
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchIntoOwnNetworkOnly"].Resource])) == toset(["arn:aws:ec2:*:*:route-table/*", "arn:aws:ec2:*:*:security-group/*", "arn:aws:ec2:*:*:subnet/*"]),
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchIntoOwnNetworkOnly"].Condition.StringNotEquals["aws:ResourceTag/Project"]]) == ["forge-perf"],
       { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Effect == "Deny",
       length(setsubtract(["ec2:AuthorizeSecurityGroupEgress", "ec2:AuthorizeSecurityGroupIngress"], flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Action]))) == 0,
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Resource]) == ["arn:aws:ec2:*:*:security-group/*"],
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["KeepOffOtherSecurityGroups"].Condition.StringNotEquals["aws:ResourceTag/Project"]]) == ["forge-perf"],
     ])
-    error_message = "the apply role must be denied stopping, modifying, deleting, detaching or copying what lacks Project=forge-perf"
+    error_message = "on a resource lacking Project=forge-perf the apply role may only describe, create in its own network and tag at creation"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : alltrue([
+        for r in flatten([s.Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-") || startswith(r, "arn:aws:s3:::forge-perf-tfstate-654654381893")
+      ]) if s.Effect == "Allow" && anytrue([for a in flatten([s.Action]) : startswith(a, "s3:")])
+    ])
+    error_message = "every S3 grant of the apply role stays on piri's buckets or the state bucket"
+  }
+
+  assert {
+    condition = alltrue([
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["WriteBoxRolesWithinBoundary"].Action])) == toset(["iam:CreateRole", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole"]),
+      length(setintersection(toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["ManageBoxRoles"].Action])), toset(["iam:DeleteRole", "iam:UpdateAssumeRolePolicy", "iam:UpdateRole"]))) == 0,
+    ])
+    error_message = "deleting, updating or re-trusting a box role requires the box permissions boundary"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(module.github_actions_iam.policy_json.plan).Statement : alltrue([
+        for r in flatten([s.Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-") || startswith(r, "arn:aws:s3:::forge-perf-tfstate-654654381893")
+      ]) if contains(flatten([s.Action]), "s3:ListBucket")
+    ])
+    error_message = "the plan role lists piri's buckets and the state bucket only"
   }
 
   assert {
@@ -135,6 +168,11 @@ run "policies" {
     condition = alltrue([
       flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["ReadOwnParameters"].Resource]) == ["arn:aws:ssm:us-east-2:654654381893:parameter/forge-perf/*"],
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["WriteResults"].Action])) == toset(["s3:PutObject", "s3:AbortMultipartUpload"]),
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["WriteResults"].Resource])) == toset(["arn:aws:s3:::forge-perf-results-654654381893/raw/*", "arn:aws:s3:::forge-perf-results-654654381893/published/*"]),
+      toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["EmptyPiriBuckets"].Action])) == toset(["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:ListBucket", "s3:ListBucketMultipartUploads"]),
+      alltrue([for r in flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["EmptyPiriBuckets"].Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-")]),
+      length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "s3:")]) && !contains(["WriteResults", "EmptyPiriBuckets"], s.Sid)]) == 0,
+      flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["DecryptParameters"].Condition.StringEquals["kms:ViaService"]]) == ["ssm.us-east-2.amazonaws.com"],
       length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "ssm:GetParameter")]) && s.Sid != "ReadOwnParameters"]) == 0,
     ])
     error_message = "a box reads /forge-perf parameters only and writes results without reading them"

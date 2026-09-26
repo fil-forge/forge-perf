@@ -12,29 +12,27 @@ locals {
   box_profile_arn  = "arn:aws:iam::${var.account_id}:instance-profile/${var.name_prefix}-box-*"
   box_boundary_arn = "arn:aws:iam::${var.account_id}:policy/${var.name_prefix}-box-boundary"
 
-  # What KeepOffOtherProjects denies on anything lacking the project tag: every
-  # family that acts on an existing resource, plus the create actions that copy
-  # or reroute one.
-  untagged_denied_actions = [
-    "ec2:AssociateAddress",
-    "ec2:AssociateIamInstanceProfile",
-    "ec2:Attach*",
-    "ec2:CreateImage",
-    "ec2:CreateInstanceExportTask",
-    "ec2:CreateReplaceRootVolumeTask",
-    "ec2:CreateRoute",
-    "ec2:CreateSnapshot",
-    "ec2:CreateSnapshots",
-    "ec2:Delete*",
-    "ec2:Detach*",
-    "ec2:Disassociate*",
-    "ec2:Modify*",
-    "ec2:Reboot*",
-    "ec2:Replace*",
-    "ec2:Revoke*",
-    "ec2:SendDiagnosticInterrupt",
-    "ec2:Stop*",
-    "ec2:Terminate*",
+  # The only actions KeepOffOtherProjects lets through on a resource lacking the
+  # project tag. Everything else is denied there, so a new EC2 action is denied
+  # on other projects' resources until it is named here.
+  untagged_allowed_actions = [
+    "ec2:Describe*",
+    # Creates that authorize against the untagged default VPC, a Canonical AMI or
+    # the resource being created. LaunchIntoOwnNetworkOnly keeps the subnet,
+    # security group and route table they use forge-perf's own.
+    "ec2:CreateRouteTable",
+    "ec2:CreateSecurityGroup",
+    "ec2:CreateSubnet",
+    "ec2:CreateVpcEndpoint",
+    "ec2:RunInstances",
+    # Judged by KeepOffOtherSecurityGroups and NoRetaggingIntoScope.
+    "ec2:AuthorizeSecurityGroupEgress",
+    "ec2:AuthorizeSecurityGroupIngress",
+    "ec2:CreateTags",
+    # Scoped by resource in their own statements.
+    "iam:*",
+    "s3:*",
+    "sts:*",
   ]
 }
 
