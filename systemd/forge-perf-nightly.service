@@ -1,0 +1,16 @@
+[Unit]
+# The nightly pass: poll.sh --nightly makes a nightly run pending whatever
+# changed and starts it when the box is free. A run going at 03:00 finishes
+# first, and a later poll pass starts the nightly.
+Description=forge-perf nightly run
+Wants=network-online.target
+Requires=forge-perf-recover.service
+After=forge-perf-recover.service network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/poll.sh --nightly
+# Up to 200 seconds waiting for a poll pass, then the pass's own 240.
+TimeoutStartSec=450

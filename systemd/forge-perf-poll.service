@@ -1,0 +1,18 @@
+[Unit]
+# One poll pass: resolve the set, keep one pending run, start it when the box
+# is free, flush the outbox, write the heartbeat. Requires= on recovery, so no
+# run starts on a box whose interrupted run is not closed out. No Docker
+# dependency: the pass itself never calls Docker.
+Description=forge-perf poll
+Wants=network-online.target
+Requires=forge-perf-recover.service
+After=forge-perf-recover.service network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/poll.sh
+# Each call in the pass has 60 seconds. Uploads and updates run as their own
+# transient units. No Restart=: the timer fires again in five minutes.
+TimeoutStartSec=240

@@ -520,6 +520,18 @@ run 0 -- --workers 16 --until preflight
 [ ! -e "$work/box/state/pending.json" ] || fail "pending.json left"
 echo "ok: a pending trigger runs, names what changed, and publishes as calibration"
 
+# A run the poller dispatched leaves last-run.json, from which the poller
+# retries a set an infrastructure failure stopped.
+setup
+jq '.images["ghcr.io/fil-forge/ingot:main"] = "sha256:" + ("9" * 64)' "$work/set.json" >"$work/box/state/last-started.json"
+jq '{kind: "nightly", set: ., superseded: 1, attempt: 2}' "$work/set.json" >"$work/box/state/pending.json"
+run 1 UP_EXIT=2 -- --workers 16
+jq -e --slurpfile set "$work/set.json" '.kind == "nightly" and .attempt == 2 and .superseded == 1
+  and .set.images == $set[0].images and .reasons == ["stack_boot_failed"]
+  and .previous_started.images["ghcr.io/fil-forge/ingot:main"] == "sha256:" + ("9" * 64)' \
+  "$work/box/state/last-run.json" >/dev/null || fail "last-run $(cat "$work/box/state/last-run.json")"
+echo "ok: a dispatched run leaves its set, attempt and reasons for the poller"
+
 setup
 echo '{"kind": "trigger"}' >"$work/box/state/pending.json"
 run 2 -- --workers 16
