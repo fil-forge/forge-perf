@@ -508,6 +508,19 @@ step_images() {
   if [ -s "$RUN/pull.list" ]; then
     within 1200 image_pull_failed xargs -P4 -n1 docker pull --quiet <"$RUN/pull.list"
   fi
+
+  # Each image's commit and repository, from its OCI labels, so a run that
+  # stops after this step still records what it would have measured.
+  local labels='{}' got ref
+  for ref in $refs; do
+    got="$(docker image inspect --format '{{json .Config.Labels}}' "$ref")" ||
+      stop image_pull_failed "$ref is not present after the pull"
+    labels="$(jq -c --arg r "$ref" --argjson l "$got" '.[$r] = {
+      revision: (($l // {})["org.opencontainers.image.revision"] // null),
+      source: (($l // {})["org.opencontainers.image.source"] // null)}' <<<"$labels")" ||
+      stop runner_error "unreadable labels on $ref"
+  done
+  rj --argjson l "$labels" '.images |= map(. + $l[.repo + "@" + .digest])'
 }
 
 step_boot() {
@@ -553,7 +566,8 @@ case "$kind" in
 esac
 
 images_json="$(printf '%s\n' "${pinned[@]}" | jq -Rsc 'split("\n") - [""] | map(split(" ") |
-  {variable: .[0], repo: .[1], ref: .[2], digest: .[3], role: .[4], services: []})')"
+  {variable: .[0], repo: .[1], ref: .[2], digest: .[3], role: .[4], revision: null, source: null,
+   services: []})')"
 jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing" --arg reason "$reason" \
   --argjson changed "$changed" --argjson superseded "$superseded" --argjson box "$(box_facts)" \
   --arg started "$started" --argjson settings "$settings_json" \

@@ -29,6 +29,13 @@ case "$*" in
   "volume ls -q"*) cat "$D/volumes" 2>/dev/null ;;
   "network inspect forge-network") [ -e "$D/network" ] ;;
   "network create"*) touch "$D/network" ;;
+  "image inspect --format"*)
+    grep -qxF "${!#}" "$D/images" || exit 1
+    case "${!#}" in
+      ghcr.io/fil-forge/ingot@*) jq -nc '{"org.opencontainers.image.revision": "b4ec1bb63c5f0eba032262ae1ccb8e673f585c99",
+        "org.opencontainers.image.source": "https://github.com/fil-forge/ingot"}' ;;
+      *) echo null ;;
+    esac ;;
   "image inspect"*) grep -qxF "${!#}" "$D/images" ;;
   "pull --quiet"*) echo "${!#}" >>"$D/images" ;;
   "compose config --images")
@@ -221,6 +228,10 @@ grep -qx "setup INGOT_URL=http://172.30.0.5:80 AWS_REGION=unset" "$D/drill.log" 
 grep -q "endpoint: s3.us-east-2.amazonaws.com" "$work/box/nvme/work/run/smelt-manifest.yml" &&
   grep -q "bucket_prefix: forge-perf-piri-main-1-$" "$work/box/nvme/work/run/smelt-manifest.yml" || fail "manifest"
 grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
+[ "$(runner '.images[] | select(.variable == "INGOT_IMAGE") | "\(.revision) \(.source)"')" = \
+  "b4ec1bb63c5f0eba032262ae1ccb8e673f585c99 https://github.com/fil-forge/ingot" ] || fail "ingot labels"
+[ "$(runner '[.images[] | select(.variable == "POSTGRES_IMAGE") | .revision, .source] | map(tostring) | join(" ")')" = \
+  "null null" ] || fail "postgres labels"
 echo "ok: a clean run reaches setup with every image pinned; the harness pin comes through a pull ref"
 
 # piri's key reaches compose through the environment only, never the disk.
@@ -237,6 +248,9 @@ python3 "$work/checkout/scripts/host/record.py" minimal --runner "$work/runner-d
   --denylist "$work/deny" --out "$work/record.json" >/dev/null 2>&1 || fail "record.py minimal on runner.json"
 [ "$(jq -r '.box.nvme | "\(.model) \(.size_bytes) \(.filesystem)"' "$work/record.json")" = \
   "Amazon EC2 NVMe Instance Storage 474000000000 ext4" ] || fail "nvme $(jq -c .box.nvme "$work/record.json")"
+jq -e '.provenance.images[] | select(.services == ["ingot"]) |
+  .revision == "b4ec1bb63c5f0eba032262ae1ccb8e673f585c99" and .source == "https://github.com/fil-forge/ingot"' \
+  "$work/record.json" >/dev/null || fail "image labels missing from the minimal record"
 echo "ok: a clean run's runner.json makes a minimal record that passes the schema"
 
 setup
