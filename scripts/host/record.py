@@ -118,6 +118,8 @@ def parse_size(text):
 def parse_duration(text):
     """A Go duration in whole seconds."""
     scale = {"h": 3600, "m": 60, "s": 1, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "ns": 1e-9}
+    if text == "0":
+        return 0
     parts = re.findall(r"([0-9.]+)(h|ms|us|µs|ns|m|s)", text)
     if not parts or "".join(n + u for n, u in parts) != text:
         raise Stop("argv: not a duration")
@@ -346,16 +348,20 @@ def build(runner, run_dir, latency, env):
                 entry["source"] = image["source"]
 
     if evidence is not None:
-        drill, facts, ev_prov = evidence["drill"], evidence["drill"]["facts"], evidence["provenance"]
-        codes = {f["code"] for f in evidence["failures"]} | {f["code"] for f in drill["failures"]}
+        # The harness omits an empty drill.failures, windows or facts (omitempty).
+        drill, ev_prov = evidence["drill"], evidence["provenance"]
+        facts = drill.get("facts") or {}
+        codes = {f["code"] for f in (evidence.get("failures") or []) + (drill.get("failures") or [])}
         record["outcome"]["failure_codes"] = sorted(codes)
         for code in codes:
             reasons.add(OWN_REASON.get(code, "drill_failure"))
         reasons.discard(None)
         harness = record["provenance"]["harness"]
-        harness.update(modified=ev_prov["harness_modified"], go_version=ev_prov["go_version"],
-                       binary_sha256=ev_prov["binary_sha256"])
-        if ev_prov["harness_revision"] != harness["sha"] or ev_prov["harness_modified"]:
+        # The harness writes "" for a value it could not read.
+        harness.update(modified=ev_prov["harness_modified"], go_version=ev_prov["go_version"] or None,
+                       binary_sha256=ev_prov["binary_sha256"] or None)
+        if not ev_prov["harness_revision"] or ev_prov["harness_revision"] != harness["sha"] \
+                or ev_prov["harness_modified"]:
             reasons.add("harness_mismatch")
         avail = drill["availability"]
         if drill["integrity_failures"] > 0:
@@ -408,11 +414,20 @@ def build(runner, run_dir, latency, env):
 
 # --- checks and output ---------------------------------------------------------
 
+ERE_ONLY = ("\\<", "\\>", "[[:")
+
+
 def read_denylist(path):
     patterns = [line for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
     if not patterns:
         raise Refused("the denylist is empty")
-    return [re.compile(p, re.I) for p in patterns]
+    # CI reads the same file with grep -E. Refuse the ERE forms Python reads differently.
+    if any(tok in p for p in patterns for tok in ERE_ONLY):
+        raise Refused("the denylist uses an ERE-only form")
+    try:
+        return [re.compile(p, re.I) for p in patterns]
+    except re.error:
+        raise Refused("the denylist holds a pattern that does not compile") from None
 
 
 def check_public(record, denylist, forbidden):
@@ -428,10 +443,21 @@ def check_public(record, denylist, forbidden):
 def write(record, out):
     out = Path(out)
     fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".record.")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, out)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, out)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    dfd = os.open(out.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def main(argv):
@@ -449,7 +475,7 @@ def main(argv):
         denylist = read_denylist(args.denylist)
         forbidden = []
         if args.forbid:
-            forbidden = [s for s in Path(args.forbid).read_text(encoding="utf-8").splitlines() if s.strip()]
+            forbidden = [s.strip() for s in Path(args.forbid).read_text(encoding="utf-8").splitlines() if s.strip()]
         runner = read_json(args.runner)
         env = read_env(args.latency_env)
     except (OSError, ValueError, Refused) as e:

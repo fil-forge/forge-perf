@@ -76,6 +76,24 @@ class Fixtures(unittest.TestCase):
                 self.assertEqual(got["outcome"], case.expected["outcome"])
                 self.assertEqual(got, case.expected)
 
+    def test_each_fixture_survives_go_omitempty(self):
+        # The harness marshals drill.failures, windows and facts with
+        # omitempty, so an empty one is absent rather than [] or {}.
+        def omit_empty(doc):
+            for key in ("failures", "windows", "facts"):
+                if key in doc.get("drill", {}) and not doc["drill"][key]:
+                    del doc["drill"][key]
+
+        for fixture in sorted(p.name for p in FIXTURES.iterdir()):
+            with self.subTest(fixture=fixture):
+                case = Case(self, fixture)
+                evidence = case.case / "run" / "drill" / "evidence"
+                for path in evidence.glob("drill-*.json") if evidence.is_dir() else []:
+                    case.edit(path.relative_to(case.case), omit_empty)
+                result = case.cli()
+                self.assertEqual(result.returncode, 3 if fixture == "record-build-failed" else 0, result.stderr)
+                self.assertEqual(load(case.out), case.expected)
+
     def test_the_minimal_command_ignores_the_run(self):
         case = Case(self, "record-build-failed")
         result = case.cli(command="minimal")
@@ -92,7 +110,7 @@ class FreeText(unittest.TestCase):
                 def mark_evidence(doc):
                     doc["downgrades"].append(MARKER)
                     doc["failures"].append({"code": "availability_error", "detail": MARKER})
-                    for failure in doc["drill"]["failures"]:
+                    for failure in doc["drill"].get("failures", []):
                         failure["detail"] = f"{MARKER} {failure['detail']}"
                     doc["drill"]["facts"]["notes"].append(MARKER)
                     doc["drill"]["facts"][MARKER] = MARKER
@@ -144,6 +162,30 @@ class PublicChecks(unittest.TestCase):
         self.assertEqual(case.cli("--forbid", str(forbid)).returncode, 1)
         self.assertFalse(case.out.exists())
 
+    def test_a_denylist_python_reads_unlike_grep_is_refused(self):
+        for pattern in ("\\<go1", "go[[:digit:]]", "go1(", "("):
+            with self.subTest(pattern=pattern):
+                case = Case(self, "valid")
+                case.denylist.write_text(pattern + "\n", encoding="utf-8")
+                result = case.cli()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertFalse(case.out.exists())
+
+    def test_forbidden_strings_ignore_surrounding_space(self):
+        case = Case(self, "valid")
+        forbid = case.dir / "forbid"
+        forbid.write_text("perf-piri-1-postgres-s3 \r\n", encoding="utf-8")
+        self.assertEqual(case.cli("--forbid", str(forbid)).returncode, 1)
+        self.assertFalse(case.out.exists())
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        case = Case(self, "valid")
+        with self.assertRaises(TypeError):
+            record.write({"x": object()}, case.out)
+        self.assertEqual(list(case.dir.glob(".record.*")), [])
+        self.assertFalse(case.out.exists())
+
     def test_an_empty_denylist_is_refused(self):
         case = Case(self, "valid")
         case.denylist.write_text("\n  \n", encoding="utf-8")
@@ -152,7 +194,7 @@ class PublicChecks(unittest.TestCase):
 
     def test_a_record_outside_the_schema_falls_back(self):
         case = Case(self, "valid")
-        case.edit(case.evidence(), lambda d: d["drill"]["failures"].append({"code": "made_up", "detail": ""}))
+        case.edit(case.evidence(), lambda d: d["drill"].setdefault("failures", []).append({"code": "made_up", "detail": ""}))
         self.assertEqual(case.cli().returncode, 3)
         self.assertEqual(load(case.out)["outcome"]["reasons"], ["record_build_failed"])
 
@@ -212,6 +254,7 @@ class Classification(unittest.TestCase):
         self.assertEqual((got["keep_objects"], got["enforce_floor"]), (False, True))
         with self.assertRaises(record.Stop):
             record.argv_settings(argv[:3])
+        self.assertEqual(record.parse_duration("0"), 0)
 
     def test_exit_1_without_a_code_is_a_drill_failure(self):
         case = Case(self, "valid")
@@ -221,7 +264,8 @@ class Classification(unittest.TestCase):
 
     def test_an_unlisted_code_is_a_drill_failure(self):
         case = Case(self, "valid")
-        case.edit(case.evidence(), lambda d: d["drill"]["failures"].append({"code": "put_failed", "detail": ""}))
+        case.edit(case.evidence(),
+                  lambda d: d["drill"].setdefault("failures", []).append({"code": "put_failed", "detail": ""}))
         self.assertEqual(self.outcome(case)["reasons"], ["drill_failure"])
 
     def test_the_watchdog_replaces_drill_interrupted(self):
@@ -255,6 +299,19 @@ class Classification(unittest.TestCase):
         case.edit("run/metadata.json", lambda d: d["images"][0].update(digest="sha256:" + "0" * 64))
         outcome = self.outcome(case)
         self.assertEqual((outcome["class"], outcome["reasons"]), ("invalid", ["image_changed"]))
+
+    def test_unreadable_harness_facts_are_null(self):
+        case = Case(self, "valid")
+        case.edit(case.evidence(), lambda d: d["provenance"].update(binary_sha256="", go_version=""))
+        result = case.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        harness = load(case.out)["provenance"]["harness"]
+        self.assertEqual((harness["binary_sha256"], harness["go_version"]), (None, None))
+
+    def test_an_unknown_harness_revision_is_a_mismatch(self):
+        case = Case(self, "valid")
+        case.edit(case.evidence(), lambda d: d["provenance"].update(harness_revision=""))
+        self.assertEqual(self.outcome(case)["reasons"], ["harness_mismatch"])
 
     def test_a_modified_harness_is_a_mismatch(self):
         case = Case(self, "valid")

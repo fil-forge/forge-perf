@@ -196,7 +196,7 @@ class FixtureRecords(unittest.TestCase):
                 for evidence in (fixture / "run" / "drill" / "evidence").glob("drill-*.json"):
                     doc = load(evidence)
                     self.assertIn(MARKER, doc["provider"]["config_note"])
-                    self.assertTrue(all(MARKER in f["detail"] for f in doc["drill"]["failures"]))
+                    self.assertTrue(all(MARKER in f["detail"] for f in doc["drill"].get("failures", [])))
                     self.assertTrue(all(MARKER in n for n in doc["drill"]["facts"]["notes"]))
 
 

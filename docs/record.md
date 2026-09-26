@@ -38,9 +38,9 @@ record.py build --runner runner.json [--run-dir DIR] [--latency netem/latency.js
 record.py minimal --runner runner.json --denylist FILE [--forbid FILE] --out record.json
 ```
 
-Before writing, it checks the record against the schema, the denylist patterns (extended regular expressions, one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. Exit status 0 means the full record was written, 3 the minimal record, 1 nothing, since even the minimal record was refused; 2 is a usage error. Messages name the check or stage that failed, never an input's value.
+Before writing, it checks the record against the schema, the denylist patterns (one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. The denylist file is shared with CI's `grep -E -i`, so its patterns must mean the same to both: the builder refuses a pattern that uses `\<`, `\>` or a `[[:class:]]` bracket, or that Python cannot compile. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. For `build`, exit status 0 means the full record was written and 3 the minimal record. For `minimal`, 0 means the minimal record was written. For both, 1 means nothing was written, because an input could not be read or even the minimal record was refused, and 2 is a usage error. Messages name the check or stage that failed, never an input's value.
 
-When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and the runner writes the minimal record below.
+When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and writes the minimal record below.
 
 ## Field sources
 
@@ -115,7 +115,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `provenance.forge_perf.instrument_tree` | the instrument tree hash, below |
 | `provenance.smelt.sha` | the smelt SHA in the run's set, which is `git rev-parse HEAD` of the run's smelt checkout once it is checked out. smelt's own `metadata.json` `repos` is not used |
 | `provenance.harness.sha` | the harness SHA in the run's set, which is `git rev-parse HEAD` of the storage-qualification checkout once it is checked out |
-| `provenance.harness.modified`, `provenance.harness.go_version`, `provenance.harness.binary_sha256` | evidence `provenance.harness_modified`, `go_version`, `binary_sha256`; null without evidence |
+| `provenance.harness.modified`, `provenance.harness.go_version`, `provenance.harness.binary_sha256` | evidence `provenance.harness_modified`, `go_version`, `binary_sha256`; null without evidence or when the harness wrote an empty string |
 | `provenance.images` | one entry per image in the runner's pinned set, sorted by `repo` |
 | `provenance.images[].repo`, `provenance.images[].ref`, `provenance.images[].digest`, `provenance.images[].role` | the pinned set; `role` is `under_test` for the tracked `ghcr.io/fil-forge/<svc>` images and `instrument` for the third-party images in `config/images.lock` |
 | `provenance.images[].services` | `runner.json` `images[].services`: the services whose image in `docker compose config --format json` of the rendered manifest has the pinned digest, sorted. The netshoot image lists `netem`, the sidecar `netem.sh apply` starts, whenever the manifest was rendered, whether or not netem ran. The list is empty when the run stopped before the manifest was rendered |
@@ -147,7 +147,7 @@ A run has drill numbers when its evidence file exists and the drill exited 0 or 
 | `availability_warning` | no; numbers shown and joined to the line |
 | `valid` | yes |
 
-If the builder fails, or stops because the run directory belongs to another run, the runner writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record.
+If the builder fails, or stops because the run directory belongs to another run, `record.py` writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record.
 
 ## Triggers
 
@@ -192,7 +192,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 | `netem_missing` | `invalid` | a qdisc, delay or filter missing at verify |
 | `container_restarted` | `invalid` | a node or central container restarted, stopped or disappeared after apply; the services go in `outcome.restarted_services` |
 | `image_changed` | `invalid` | a container's image ID at the post-check differs from its pinned digest's |
-| `harness_mismatch` | `invalid` | evidence `provenance.harness_revision` differs from `provenance.harness.sha`, or `harness_modified` is true |
+| `harness_mismatch` | `invalid` | evidence `provenance.harness_revision` is empty or differs from `provenance.harness.sha`, or `harness_modified` is true |
 | `read_back_incomplete` | `invalid` | failure code `read_back_incomplete`: the duration ended before every scheduled read-back ran |
 | `ingest_cutoff_before_measurement` | `invalid` | failure code `ingest_cutoff_before_measurement`: the cap was spent before the first window |
 | `no_steady_windows` | `invalid` | evidence without the fact `sustained_windows`, or with 0 |

@@ -377,8 +377,7 @@
    "sustained_writes_median_per_second": 0.2,
    "sustained_read_median_bytes_per_second": 0.0,
    "sustained_restore_median_bytes_per_second": 0.0
-  },
-  "failures": []
+  }
  },
  "failures": [],
  "evidence_sha256": "",
