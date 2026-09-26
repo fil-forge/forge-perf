@@ -247,6 +247,7 @@ STUB
   cat >"$work/checkout/scripts/host/netem.sh" <<'STUB'
 #!/usr/bin/env bash
 echo "netem $*" >>"$D/netem.log"
+echo "${NETEM_LOCAL:-} ${RTT_TOLERANCE_PCT:-}" >"$D/netem.env"
 mkdir -p "$NETEM_DIR"
 f="$FIXTURES/valid/netem/latency.json"
 case "$1 ${2:-}" in
@@ -534,10 +535,14 @@ echo "ok: a pending run that cannot start is moved aside"
 # Skip mode on a laptop: config/settings/local.env, host checks logged.
 setup
 run 0 IMDS_DOWN=1 FORGE_PERF_HOST_OPS=skip NTP=no -- --set "$work/set.json" --until preflight
-[ "$(runner '"\(.box.instance_type) \(.settings.workers) \(.settings.stop_ingest_at_bytes)"')" = "local 4 2000000000" ] ||
+[ "$(runner '"\(.box.instance_type) \(.settings.workers) \(.settings.stop_ingest_at_bytes)"')" = \
+  "local.large 4 2000000000" ] ||
   fail "local settings $(runner .settings)"
 grep -q "host-check skipped: sh -c" "$work/out" || fail "clock check not logged as skipped"
-echo "ok: skip mode uses the local settings and skips the host checks"
+jq '.time.run_finished_at = "2026-10-01T12:00:00Z"' "$work/box/state/runner.json" >"$work/runner-done.json"
+python3 "$work/checkout/scripts/host/record.py" minimal --runner "$work/runner-done.json" \
+  --denylist "$work/deny" --out "$work/record.json" >/dev/null 2>&1 || fail "a skip-mode runner.json cannot be recorded"
+echo "ok: skip mode uses the local settings, skips the host checks, and can still be recorded"
 
 # ingot killed mid-run: the drill fails before its evidence, the post-check
 # finds the container gone.
@@ -588,3 +593,8 @@ rec="$(find "$work/box/outbox" -name '*.json')"
 lacks "$D/aws.log" "put-object"
 grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "not wiped after a stop"
 echo "ok: a stop mid-drill interrupts the drill, records drill_interrupted and wipes"
+
+setup
+run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 -- --set "$work/set.json" --workers 16
+[ "$(cat "$D/netem.env")" = "1 40" ] || fail "netem.sh saw $(cat "$D/netem.env")"
+echo "ok: a local netem tolerance reaches netem.sh"

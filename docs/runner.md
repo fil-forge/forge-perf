@@ -255,7 +255,7 @@ GOBIN="$PWD/local/bin" go install github.com/fil-forge/ucantool@v0.1.0
 PATH="$PWD/local/bin:$PATH" scripts/host/run.sh --set calibration/sets/shakedown.json --until setup
 ```
 
-Without `--until`, the same command runs the whole run: netem, the drill, the post-check, the record, the upload and the wipe. The record and raw tarball land in `local/outbox`, then in the `local-results` bucket of the local MinIO through `AWS_ENDPOINT_URL`, and the wipe removes the stack and empties the `local-piri-0-*` buckets. Docker Desktop's VM adds a few milliseconds of timer slack to every delayed packet, so the netem checks usually need a wider band there; `NETEM_LOCAL=1` with a `RTT_TOLERANCE_PCT` in the environment widens it, and `latency.json` records that it was overridden:
+Without `--until`, the same command runs the whole run: netem, the drill, the post-check, the record, the upload and the wipe. The record and raw tarball land in `local/outbox`, then in the `local-results` bucket of the local MinIO through `AWS_ENDPOINT_URL`, and the wipe removes the stack and empties the `local-piri-0-*` buckets. Docker Desktop's VM adds a few milliseconds of timer slack to every delayed packet, so the netem checks usually need a wider band there; `NETEM_LOCAL=1` with a `RTT_TOLERANCE_PCT` in the environment widens it, and `latency.json` records that it was overridden. A laptop has no instance metadata, so in skip mode `runner.json` carries placeholder box facts the schema accepts: instance type `local.large`, zone `us-east-2a`, AMI `ami-00000000`, and memory 0 when unread. The box ID `local` marks such a record.
 
 ```sh
 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" \

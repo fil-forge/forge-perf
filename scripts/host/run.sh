@@ -82,8 +82,13 @@ state="$FORGE_PERF_STATE_DIR"
 . "$cfg/smelt.conf"
 # shellcheck source=../../config/launch.conf
 . "$cfg/launch.conf"
+# netem.sh reads config/latency.env itself, and with NETEM_LOCAL=1 takes
+# RTT_MS, RTT_TOLERANCE_PCT and NET_SUBNET from the environment, so this shell
+# reads the file in a subshell and leaves those variables alone.
 # shellcheck source=../../config/latency.env
-. "$cfg/latency.env"
+net_subnet="$(. "$cfg/latency.env" && echo "$NET_SUBNET")"
+# shellcheck disable=SC2031 # NET_SUBNET here is the environment's
+[ "${NETEM_LOCAL:-}" != 1 ] || net_subnet="${NET_SUBNET:-$net_subnet}"
 instance_type="$(imds instance-type)"
 settings="$cfg/settings/$instance_type.env"
 [ -r "$settings" ] || refuse "no settings file for instance type $instance_type ($settings)"
@@ -229,7 +234,8 @@ box_facts() {
     --arg features "$(awk -F': *' '/^(Features|flags)/ { print $2; exit }' <<<"$cpuinfo")" \
     --arg cores "$(q getconf _NPROCESSORS_ONLN)" \
     --arg mem "$(q host_read awk '/^MemTotal/ { print $2 * 1024 }' "$R/proc/meminfo")" \
-    --arg model "$model" --arg bytes "$bytes" --arg fs "$(q host_read findmnt -no FSTYPE "$FORGE_PERF_NVME_MOUNT")" '
+    --arg model "$model" --arg bytes "$bytes" --arg fs "$(q host_read findmnt -no FSTYPE "$FORGE_PERF_NVME_MOUNT")" \
+    --arg skip "$(host_ops_skipped && echo 1)" '
     def n: if . == "" then null else . end;
     def num: if . == "" then null else tonumber end;
     {id: $id, tier: ($tier | num), instance_type: $type, arch: $arch, region: $region,
@@ -237,7 +243,11 @@ box_facts() {
      docker_compose: ($compose | n),
      cpu: {implementer: ($impl | n), part: ($part | n), cores: ($cores | num),
            features: ($features | split(" ") | map(select(. != "")))},
-     mem_total_bytes: ($mem | num), nvme: {model: ($model | n), size_bytes: ($bytes | num), filesystem: ($fs | n)}}'
+     mem_total_bytes: ($mem | num), nvme: {model: ($model | n), size_bytes: ($bytes | num), filesystem: ($fs | n)}}
+    # A laptop has no instance metadata. Placeholders the schema accepts keep
+    # a local run recordable; the box ID marks the record as local.
+    | if $skip == "1" then .instance_type = "local.large" | .availability_zone = "us-east-2a"
+        | .ami_id = "ami-00000000" | .mem_total_bytes //= 0 else . end'
 }
 
 # SHA-256 of `git ls-tree -r --full-tree HEAD` without the paths in
@@ -299,7 +309,7 @@ finish() {
     exit "$status"
   fi
   close_out || [ "$status" -ne 0 ] || status=1
-  echo "run $run_id: ${record_class:-no record}; reasons: $(jq -r '.reasons | join(" ")' "$state/runner.json")"
+  echo "run $run_id: ${record_class:-no record ($(jq -r '.reasons | join(" ")' "$state/runner.json"))}"
   exit "$status"
 }
 
@@ -571,8 +581,8 @@ step_images() {
 step_boot() {
   step "boot"
   set_phase boot
-  docker network create --driver bridge --subnet "$NET_SUBNET" forge-network >/dev/null ||
-    stop stack_boot_failed "cannot create forge-network on $NET_SUBNET"
+  docker network create --driver bridge --subnet "$net_subnet" forge-network >/dev/null ||
+    stop stack_boot_failed "cannot create forge-network on $net_subnet"
   within 900 stack_boot_failed "${SMELT_ENV[@]}" make -C "$SMELT" up
   rj --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.time.stack_up_at = $t'
 }
@@ -756,7 +766,7 @@ close_out() {
   status=0
   python3 "$here/record.py" "$@" || status=$?
   if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
-    record_class="$(jq -r .outcome.class "$record")"
+    record_class="$(jq -r '.outcome | "\(.class) (\(.reasons | join(" ")))"' "$record")"
     set_phase recorded
   else
     echo "run.sh: record.py wrote no record (exit $status)" >&2
