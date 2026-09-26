@@ -1,0 +1,21 @@
+[Unit]
+# Close out a run a reboot interrupted: stop what Docker restarted, collect
+# and record the run, wipe, flush the outbox. Ordered before the timers and
+# the run unit, so no poll dispatches until it finishes. Wants= rather than
+# Requires= on Docker, as every forge-perf unit: a Docker restart must not stop
+# this unit.
+Description=forge-perf boot recovery
+Wants=docker.service network-online.target
+After=docker.service forge-perf-nvme.service network-online.target
+Before=forge-perf-poll.timer forge-perf-nightly.timer forge-perf-poll.service forge-perf-run.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/recover.sh
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target
