@@ -1,0 +1,65 @@
+# What CI can check without an AWS account.
+#
+# `check` runs `make check`, every scripts/ci/check-*.sh, so a laptop runs
+# exactly what this job runs, and a new check lands as a new script without
+# touching this file. Tools every check may need are installed here.
+#
+# `denylist` runs the denylist check alone. The pattern is a secret, and a
+# runner receives secrets per job, so only a job of its own keeps it away from
+# the tools and third-party code the other checks run. Both jobs are required.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned rather than latest, as in infra-central: a shellcheck release that
+  # adds a check would otherwise start failing merges that had nothing to do
+  # with it. The runner image ships an older one.
+  SHELLCHECK_VERSION: 0.11.0
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Into RUNNER_TEMP rather than /usr/local/bin, which needs sudo. The release
+      # publishes no checksum file.
+      - name: install shellcheck
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -f - -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      # No pattern here, so the denylist check skips; the denylist job runs it.
+      - run: make check
+
+  denylist:
+    runs-on: ubuntu-24.04
+    steps:
+      # Full history, so the check can read every commit in the range it is
+      # given.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The commit range is the pull request's own commits, or what the push
+      # added to main. A fork's pull request gets no secrets and may skip with
+      # a notice; everywhere else a missing pattern fails the job.
+      - run: bash scripts/ci/check-denylist.sh
+        env:
+          PUBLIC_DENYLIST_REGEX: ${{ secrets.PUBLIC_DENYLIST_REGEX }}
+          DENYLIST_REQUIRED: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+          DENYLIST_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          DENYLIST_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
