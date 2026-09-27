@@ -1,0 +1,21 @@
+{
+  "now": "2026-10-01T12:30:00Z",
+  "cases": [
+    {"name": "valid, built on a commit outside main", "reject": null},
+    {"name": "valid, built on main", "set": {"provenance.forge_perf.sha": "sha:main"}, "reject": null},
+    {"name": "unknown field", "set": {"note": 1}, "reject": "schema"},
+    {"name": "schema skew: a field its own commit's schema lacks", "set": {"provenance.forge_perf.sha": "sha:older"}, "reject": "schema"},
+    {"name": "denied term", "set": {"provenance.images.1.digest": "sha256:d3add3add3add3add3add3add3add3add3add3add3add3add3add3add3add3ad"}, "reject": "denylist"},
+    {"name": "denied term behind a JSON escape", "set": {"provenance.images.1.ref": "ESCAPED"}, "raw": ["ESCAPED", "\\u00643add3add3ad"], "reject": "denylist"},
+    {"name": "finish time that is not a date", "set": {"time.run_finished_at": "2026-02-30T00:00:00Z"}, "reject": "time"},
+    {"name": "run ID time that is not a date", "set": {"run_id": "main-20260230t120000z", "time.run_started_at": "2026-02-30T12:00:00Z"}, "reject": "time"},
+    {"name": "run ID 15 minutes ahead of the clock", "set": {"run_id": "main-20261001t124500z", "time.run_started_at": "2026-10-01T12:45:00Z", "time.run_finished_at": "2026-10-01T12:50:00Z"}, "reject": "future_run_id"},
+    {"name": "run ID and start time disagree", "set": {"run_id": "main-20261001t120001z"}, "reject": "run_id_time"},
+    {"name": "finished before it started", "set": {"time.run_finished_at": "2026-10-01T11:59:00Z"}, "reject": "finished_before_started"},
+    {"name": "key under another box", "key": "published/other/main-20261001t120000z.json", "reject": "key"},
+    {"name": "p5 above the median", "set": {"drill.results.ingest_p5_bytes_per_s": 30000000.0}, "reject": "p5_above_median"},
+    {"name": "valid with drill exit 1", "set": {"outcome.drill_exit": 1}, "reject": "valid_inconsistent"},
+    {"name": "instrument fingerprint does not recompute", "set": {"drill.settings.workers": 8}, "reject": "fingerprint"},
+    {"name": "box fingerprint does not recompute", "set": {"box.kernel": "6.14.0-1016-aws"}, "reject": "fingerprint"}
+  ]
+}

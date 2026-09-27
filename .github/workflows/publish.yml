@@ -1,0 +1,182 @@
+# Moves run records from the results bucket to the results branch, posts
+# alerts, and deploys the page. docs/publishing.md describes the checks and
+# the alert rules.
+#
+# `ingest` holds the AWS role and the Slack token; `deploy` holds the Pages
+# token. They are separate jobs because a job bound to the github-pages
+# environment presents an environment OIDC subject, which the results role
+# does not trust. Runs never overlap, and a queued run waits rather than
+# cancelling one half-way through a commit.
+
+name: publish
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *" # every 15 minutes, off the quarter hour
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - schema/**
+      - data/**
+      - scripts/publish/**
+      - scripts/host/schemacheck.py
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  RESULTS_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-results
+  RESULTS_BUCKET: forge-perf-results-654654381893
+
+jobs:
+  ingest:
+    # The results role trusts main only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      heartbeats: ${{ steps.ingest.outputs.heartbeats }}
+      ingested: ${{ steps.ingested.outputs.ingested }}
+    steps:
+      # Full history, so a record's forge-perf SHA can be checked against main
+      # and its schema read from that commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The token stays in this checkout only, for the push below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: results
+          path: results
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.RESULTS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-publish-${{ github.run_id }}
+
+      - id: ingest
+        run: >-
+          python3 main/scripts/publish/ingest.py --bucket "$RESULTS_BUCKET"
+          --results results --repo main --boxes main/data/boxes.json
+        env:
+          PUBLIC_DENYLIST_REGEX: ${{ secrets.PUBLIC_DENYLIST_REGEX }}
+          PYTHONDONTWRITEBYTECODE: "1"
+
+      # Before the commit, with `errors: true` so a failed post fails the job:
+      # nothing is committed and the next run posts again, so an alert can
+      # repeat but is never lost. While Slack refuses posts, new records wait
+      # in the bucket. The text is built from public record fields only.
+      - id: slack
+        if: steps.ingest.outputs.alerts != ''
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(steps.ingest.outputs.alerts) }}
+            }
+
+      - name: commit to results
+        working-directory: results
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet; then
+            echo "results: nothing new"
+            exit 0
+          fi
+          added=$(git diff --cached --name-only --diff-filter=A -- runs | wc -l)
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Add ${added// /} run record(s)" -m "Publish run ${GITHUB_RUN_ID}."
+          git push -q origin HEAD:results
+
+      # The page's publish time moves only when ingest got this far, so a
+      # broken ingest shows on the page as an ageing "Last published".
+      - id: ingested
+        run: echo ingested=true >>"$GITHUB_OUTPUT"
+
+      # After the commit, so the records that passed are published.
+      - id: rejected
+        if: steps.ingest.outputs.rejected != '0'
+        run: |
+          echo "::error::$REJECTED record(s) rejected; see the ingest step"
+          exit 1
+        env:
+          REJECTED: ${{ steps.ingest.outputs.rejected }}
+
+      # Any failure but a rejection, which has posted already, or the alert
+      # post, which this post would repeat with the same token: the role, S3,
+      # an exception or the commit. The page's "Last published" then ages
+      # because deploy does not run.
+      - if: failure() && steps.slack.outcome != 'failure' && steps.rejected.outcome != 'failure'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": "forge-perf: publish failed; check SLACK_BOT_TOKEN, the results role's trust and PUBLIC_DENYLIST_REGEX. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+
+  deploy:
+    needs: ingest
+    # Also after a rejection, so the page carries the records that passed,
+    # but never after an ingest that stopped before its commit.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.ingest.outputs.ingested == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: main
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: results
+          path: results
+          persist-credentials: false
+
+      - run: >-
+          python3 main/scripts/publish/build-site.py --site main/site --data main/data
+          --results results --out _site --heartbeats "$HEARTBEATS"
+        env:
+          HEARTBEATS: ${{ needs.ingest.outputs.heartbeats }}
+          PYTHONDONTWRITEBYTECODE: "1"
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
