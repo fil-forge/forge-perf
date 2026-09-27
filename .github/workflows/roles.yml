@@ -1,0 +1,81 @@
+# Proves each CI role can be assumed from where it should be, and that the
+# results role reaches published/ and not raw/.
+#
+# `plan-role` runs on pull requests that touch the roles. `results-role` runs
+# when dispatched on main, the only ref the results role trusts. Both need the
+# bootstrap root applied first (docs/operations.md).
+
+name: roles
+
+on:
+  pull_request:
+    paths:
+      - terraform/modules/github-actions-iam/**
+      - terraform/envs/bootstrap/account/**
+      - .github/workflows/roles.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-2
+  PLAN_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-plan
+  RESULTS_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-results
+  RESULTS_BUCKET: forge-perf-results-654654381893
+
+jobs:
+  plan-role:
+    # A fork's pull request gets no OIDC token for this repository.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PLAN_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-roles-plan-${{ github.run_id }}
+
+      - run: aws sts get-caller-identity --query Arn --output text | grep -q ':assumed-role/forge-perf-ci-plan/'
+
+  results-role:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.RESULTS_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-roles-results-${{ github.run_id }}
+
+      # docs/operations.md puts published/probe.json for when no box has
+      # published yet.
+      - name: published/ is listable and readable
+        run: |
+          set -euo pipefail
+          key=$(aws s3api list-objects-v2 --bucket "$RESULTS_BUCKET" --prefix published/ \
+            --max-items 1 --query 'Contents[0].Key' --output text)
+          if [[ -z "$key" || "$key" == None ]]; then
+            echo "::error::published/ is empty; put the probe object from docs/operations.md"
+            exit 1
+          fi
+          aws s3api get-object --bucket "$RESULTS_BUCKET" --key "$key" /dev/null >/dev/null
+          echo "listed and read $key"
+
+      # A missing key and a denied one both return 403 to a role that cannot
+      # list raw/, so either way a 403 is the pass and anything else fails.
+      - name: raw/ is denied
+        run: |
+          set -euo pipefail
+          denied() {
+            local out
+            if out=$("$@" 2>&1); then
+              echo "::error::results role was allowed: $*"
+              exit 1
+            fi
+            grep -q 'AccessDenied' <<<"$out" || { echo "::error::$*: $out"; exit 1; }
+            echo "denied: $*"
+          }
+          denied aws s3api list-objects-v2 --bucket "$RESULTS_BUCKET" --prefix raw/ --max-items 1
+          denied aws s3api get-object --bucket "$RESULTS_BUCKET" --key raw/probe /dev/null
