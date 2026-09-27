@@ -89,7 +89,7 @@ Every five minutes a poll resolves a set: the smelt SHA, the harness SHA and the
 | postgres, openbao, dynamodb-local, redis, smtp4dev, storetheindex, filecoin-localdev, minio, netshoot | digests in `config/images.lock` | no; a bump is an instrument change |
 | forge-perf | `update.sh` between runs | no |
 
-Until storage-qualification main accepts `--stop-ingest-at`, which smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`), `config/harness.conf` pins the harness at `5cfeaf3` and harness main does not trigger runs.
+Runs follow storage-qualification main, which accepts the `--stop-ingest-at` flag smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`). Setting `SQ_PIN` in `config/harness.conf` holds the harness at one commit instead, and harness main then does not trigger runs.
 
 `/var/lib/forge-perf/state/` holds `pending.json`, `current.json` (with the run's phase), `last-started.json`, and a `hold` file that survives reboots. A set that ended `failed`, or `no_data` for a Forge-side reason, waits for the nightly. A set stopped by an infrastructure failure (image pull, SSM, S3, mirror fetch) is retried up to three times, 15 minutes apart. Each poll writes `published/<box>/heartbeat.json` and retries the outbox, a directory on root that holds uploads until S3 accepts them.
 
