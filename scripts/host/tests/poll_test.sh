@@ -89,10 +89,11 @@ setup() {
   rm -rf "$work/box" "$D"
   mkdir -p "$D" "$work/box/checkout" "$work/box/state" "$work/box/outbox" "$work/box/run"
   cp -R "$repo/config" "$work/box/checkout/"
-  # The fixture box pins the harness, so these cases never look up harness
-  # main; the case that unpins it below clears the pin again.
+  # The fixture box pins the harness and smelt, so these cases never look up
+  # either main; the case that unpins them below clears the pins again.
   sed -i.bak 's/^SQ_PIN=.*/SQ_PIN=5cfeaf390803809acd089614ee2aaa5cf3a4153d/' "$work/box/checkout/config/harness.conf"
-  rm "$work/box/checkout/config/harness.conf.bak"
+  sed -i.bak 's/^SMELT_REF=.*/SMELT_REF=21940118fa1863e1f56f950959ad54e0d4d032c3/' "$work/box/checkout/config/smelt.conf"
+  rm "$work/box/checkout/config/harness.conf.bak" "$work/box/checkout/config/smelt.conf.bak"
   /usr/bin/git -C "$work/box/checkout" init -q
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t add -A
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t commit -qm config
@@ -134,7 +135,7 @@ dispatched || fail "no dispatch"
   fail "pending $(cat "$state/pending.json")"
 [ "$(pending '.set.images | length')" = "$(sed 's/#.*//' "$repo/config/images.tracked" | awk 'NF == 2' | wc -l | tr -d ' ')" ] ||
   fail "images $(pending .set.images)"
-[ "$(pending '.set.smelt')" = "$(sed -n 's/^SMELT_REF=//p' "$repo/config/smelt.conf")" ] || fail "smelt from SMELT_REF"
+[ "$(pending '.set.smelt')" = "$(sed -n 's/^SMELT_REF=//p' "$work/box/checkout/config/smelt.conf")" ] || fail "smelt from SMELT_REF"
 [ "$(beat '"\(.box) \(.state) \(.poll_failures) \(.pending_kind)"')" = "test idle 0 trigger" ] ||
   fail "heartbeat $(cat "$D/heartbeat.json")"
 grep -q -- "--key published/test/heartbeat.json" "$D/aws.log" || fail "heartbeat key"
