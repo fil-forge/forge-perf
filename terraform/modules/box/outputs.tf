@@ -15,3 +15,12 @@ output "piri_bucket_prefix" {
 output "role_name" {
   value = aws_iam_role.box.name
 }
+
+output "user_data" {
+  description = "The first-boot script, for the roots' tests."
+  value       = aws_instance.box.user_data
+}
+
+output "tags" {
+  value = aws_instance.box.tags
+}

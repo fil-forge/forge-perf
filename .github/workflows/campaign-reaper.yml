@@ -1,0 +1,145 @@
+# Hourly cost backstop (docs/operations.md, "A campaign"). scripts/operator/
+# reap.sh lists every forge-perf instance other than the persistent box that
+# is pending, running, stopping or stopped, and terminates any without an
+# ExpiresAt tag, stopped past it, stopped for over an hour, or still up an
+# hour after it. Every hour it reads the campaign root's state and runs
+# `tofu destroy` of that root, buckets included, when the box the state holds
+# was reaped or is already gone. Once a day, and on every manual run, it
+# reports when the persistent box's instance type differs from its
+# terraform.tfvars. It also posts when publish.yml, which sends every other
+# alert, has not succeeded for 2 hours. Every finding is one line in
+# #filone-alerts, and so is a failed run.
+
+name: campaign-reaper
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+# Its own group, so an hourly run never cancels a pending campaign dispatch.
+# A destroy waits up to 5 minutes for the state lock of a running apply; a
+# destroy that fails posts below and is tried again the next hour, since the
+# state still holds the terminated box.
+concurrency:
+  group: forge-perf-campaign-reaper
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TOFU_VERSION: 1.12.5
+  AWS_REGION: us-east-2
+  APPLY_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-apply
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
+
+jobs:
+  reap:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-reaper-${{ github.run_id }}
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/box/campaign/.terraform.lock.hcl') }}
+
+      # `tofu output -json` prints {} for an empty state and fails on a read
+      # error. The reap below runs either way; a failed read fails the job.
+      - id: state
+        working-directory: terraform/envs/box/campaign
+        run: |
+          set -euo pipefail
+          tofu init -input=false -lockfile=readonly
+          id="$(tofu output -json | jq -r '.instance_id.value // ""')"
+          echo "instance_id=$id" >>"$GITHUB_OUTPUT"
+
+      - id: reap
+        if: ${{ !cancelled() }}
+        env:
+          CAMPAIGN_INSTANCE: ${{ steps.state.outputs.instance_id }}
+          REPORT_DRIFT: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+        run: scripts/operator/reap.sh
+
+      # Destroys only the box the reap decided on: a `down` and `up` since
+      # then leave a newer box in the state, and this skips it.
+      - if: ${{ !cancelled() && steps.reap.outputs.campaign != '' && steps.reap.outputs.campaign != 'false' }}
+        working-directory: terraform/envs/box/campaign
+        env:
+          REAPED: ${{ steps.reap.outputs.campaign }}
+        run: |
+          set -euo pipefail
+          id="$(tofu output -json | jq -r '.instance_id.value // ""')"
+          if [ "$id" != "$REAPED" ]; then
+            echo "the campaign state now holds '$id', not $REAPED; nothing to destroy"
+            exit 0
+          fi
+          tofu destroy -auto-approve -input=false -lock-timeout=5m -var-file=destroy.tfvars
+
+      - id: publish
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          lines="$(scripts/operator/publish-watch.sh)"
+          printf 'alerts<<ALERTS\n%s\nALERTS\n' "$lines" >>"$GITHUB_OUTPUT"
+
+      # Also after a failed destroy, which the next hour tries again. The
+      # lines hold instance IDs, tags and types only.
+      - id: lines
+        if: always()
+        env:
+          REAP: ${{ steps.reap.outputs.alerts }}
+          PUBLISH: ${{ steps.publish.outputs.alerts }}
+        run: |
+          {
+            echo "alerts<<ALERTS"
+            printf '%s\n%s\n' "$REAP" "$PUBLISH" | sed '/^$/d'
+            echo "ALERTS"
+          } >>"$GITHUB_OUTPUT"
+
+      - if: always() && steps.lines.outputs.alerts != ''
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": ${{ toJSON(steps.lines.outputs.alerts) }}
+            }
+
+      - if: failure()
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": "forge-perf: campaign-reaper failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }

@@ -6,6 +6,41 @@
 # is written only when every step passed.
 set -euo pipefail
 exec > >(tee -a /var/log/forge-perf-bootstrap.log) 2>&1
+%{ if expire_calendar != "" ~}
+
+# A box with an ExpiresAt powers itself off then, whatever happens after this
+# point: a persistent timer survives reboots and fires at boot once the time
+# has passed, so a failed bootstrap or recovery still stops the box.
+cat >/etc/systemd/system/forge-perf-expire.service <<'UNIT'
+[Unit]
+Description=Power off the box at its ExpiresAt time
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff
+UNIT
+cat >/etc/systemd/system/forge-perf-expire.timer <<'UNIT'
+[Unit]
+Description=Power off the box at its ExpiresAt time
+
+[Timer]
+OnCalendar=${expire_calendar} UTC
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now forge-perf-expire.timer
+%{ endif ~}
+%{ if try(jsondecode(campaign_json).mode, "") == "campaign" ~}
+
+# A campaign box whose bootstrap fails powers off now rather than idling to
+# ExpiresAt, since nothing would start its runs. A calibration box stays up
+# for the operator attached to it.
+trap 'rc=$?; [ "$rc" -eq 0 ] || systemctl poweroff' EXIT
+%{ endif ~}
 
 CHECKOUT=/opt/forge-perf
 REF='${ref}'
@@ -51,3 +86,14 @@ CONF
 "$CHECKOUT/scripts/host/update.sh" --local
 
 date -Is >/etc/forge-perf/bootstrap-complete
+%{ if campaign_json != "" ~}
+
+# A campaign box: what to run, then the units that flush its outbox at
+# shutdown and run it. Enabled units start at the next boot, so this boot
+# starts them here.
+cat >/etc/forge-perf/campaign.json <<'CAMPAIGN'
+${campaign_json}
+CAMPAIGN
+systemctl start --no-block forge-perf-final-flush.service
+systemctl start --no-block forge-perf-campaign.service
+%{ endif ~}

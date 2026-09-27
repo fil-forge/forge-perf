@@ -140,6 +140,7 @@ Latest wins, and at most one run is pending. With the set resolved, a pass write
 
 | Case | `pending.json` |
 |---|---|
+| a campaign's run is pending (`kind: campaign`) | unchanged: the campaign's run is its own, and the newest set is pending once the campaign ends |
 | `--nightly` | `kind: nightly` with the new set, whatever changed; a pending trigger becomes the nightly, and its `superseded` grows by one when the set differs |
 | the set's key equals `last-started.json`'s | unchanged: the set already ran, or is running now |
 | the set's key equals the pending set's or `pending.json.rejected`'s | unchanged |
@@ -148,7 +149,7 @@ Latest wins, and at most one run is pending. With the set resolved, a pass write
 
 `superseded` counts the sets a run covers beyond its own, and the record carries it. A set that ended `failed`, or `no_data` for a Forge-side reason, stays in `last-started.json`, so the key matches and the set waits for the nightly run. A nightly pass whose resolution fails still makes a nightly run pending, on the pending set or else the last one started.
 
-**Infrastructure retries.** Before resolving, a pass between runs reads `last-run.json`. When its reasons include `image_pull_failed`, `secrets_unavailable`, `s3_unreachable`, `mirror_fetch_failed` or `go_module_fetch_failed` and its `attempt` is under 3, the pass puts `previous_started` back as `last-started.json` and makes the set pending again with `attempt + 1` and `not_before` 15 minutes on, keeping its kind. When a newer set is already pending, that set covers the failed one, and its `superseded` grows by one. After the third retry the set stays in `last-started.json` and waits for the nightly run. The pass then removes `last-run.json`.
+**Infrastructure retries.** Before resolving, a pass between runs reads `last-run.json`. When its reasons include `image_pull_failed`, `secrets_unavailable`, `s3_unreachable`, `mirror_fetch_failed` or `go_module_fetch_failed` and its `attempt` is under 3, the pass puts `previous_started` back as `last-started.json` and makes the set pending again with `attempt + 1` and `not_before` 15 minutes on, keeping its kind. When a newer set is already pending, that set covers the failed one, and its `superseded` grows by one. After the third retry the set stays in `last-started.json` and waits for the nightly run. The pass then removes `last-run.json`; a campaign's run is never retried.
 
 ### Between runs
 
@@ -190,7 +191,7 @@ The hold is a file on the root volume, so it survives a reboot. It stops dispatc
 run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `workers`, `size` and `duration` for a campaign) and removes that file, holding `poll.lock` while it does. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
+Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size` and `duration` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
 
 A set is the JSON the poller resolves:
 
@@ -271,6 +272,30 @@ smelt is public. The harness credential is `SQ_AUTH` in `config/harness.conf`; `
 | `none` | the caller's own git credentials, for a local run |
 
 The default is `app`, set up as in [operations.md](operations.md#the-harness-credential-through-a-github-app). The deploy key works only where the organization allows deploy keys, and fil-one does not. Either credential lives under `/run/forge-perf/secrets` for the run and goes with the wipe.
+
+## Campaigns
+
+`campaign.sh` runs one set several times, each run through `forge-perf-run.service`, so every run keeps the unit's time limit, its record and its wipe.
+
+```
+campaign.sh                                    # a campaign box, from forge-perf-campaign.service
+campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE] [--duration DURATION] [--pairing ID]
+```
+
+For each run it writes `pending.json` with `kind: campaign`, the set, and the workers, size, duration and pairing ID it was given, under `poll.lock`, then runs `systemctl start --wait forge-perf-run.service`. It removes the run's `last-run.json` and any campaign `pending.json` left behind, so the poller neither retries a campaign's run nor finds one after the campaign. One workers value, or none, runs N times as series `campaign`; a comma list runs N rounds over it, reversed every other round, as series `calibration`. A pairing ID (`pair-<yyyymmdd>-<id>`) makes each record's trigger `pairing`. `SERIES_LIVE=0` still turns every series into `calibration`.
+
+On a campaign box (`FORGE_PERF_MODE=campaign`) it takes no arguments and reads `/etc/forge-perf/campaign.json`, which the box's user data writes:
+
+```json
+{"mode": "campaign", "set": "calibration/sets/cal-1.json", "runs": 3, "size": "2000GB",
+ "workers": [64], "duration": "4h", "forge_perf_sha": "<40-hex>", "expires_at": "2026-10-01T18:00:00Z"}
+```
+
+It checks out `forge_perf_sha` if the checkout is elsewhere and starts again from it; the box never runs `update.sh`. The bootstrap already armed a persistent `forge-perf-expire.timer` for `expires_at`; if that timer is not active, it schedules `systemctl poweroff` at `expires_at` with `systemd-run --on-calendar`, a transient timer that each boot sets again. Past that time it powers off at once. In mode `campaign` an error that stops it flushes the outbox and powers off once it has read `campaign.json`, so a checkout that fails does not leave the box idle until `expires_at`; the bootstrap's own failure powers the box off the same way. Mode `calibration` stops after the timer, leaving the box to the ceiling measurements, and an error leaves it up for the operator. Otherwise it runs the set, keeping its progress in `state/campaign-progress.json` so a reboot resumes after the last run that ended, flushes the outbox up to three times, and powers off. Before each run it checks that the run's duration plus 45 minutes for setup, record and wipe ends before `expires_at`; the first run that would not ends the campaign there. `forge-perf-campaign.service` starts it at every boot, and the bootstrap starts it on the first.
+
+A run that the poweroff at `expires_at` still interrupts is recorded and wiped as the run unit stops. `forge-perf-final-flush.service`, enabled on campaign boxes only, does nothing at start; it is ordered before the run and campaign units and after `network-online.target`, so at shutdown it stops after them and while the network is up, and its `ExecStop` runs `outbox.sh flush` for up to 20 minutes. A campaign box has no poller to upload that run later, and the reaper's terminate deletes the root volume.
+
+On a persistent box it refuses unless the box is held, and powers nothing off. [operations.md](operations.md#a-campaign) covers dispatching a campaign box and its reaper.
 
 ## Local run
 

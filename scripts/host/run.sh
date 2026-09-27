@@ -110,8 +110,10 @@ else
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
   fi
   [ -e "$state/pending.json" ] || { echo "run.sh: nothing pending"; exit 0; }
-  # A hold set while a poll pass was deciding to start this run.
-  [ ! -e "$state/hold" ] || { echo "run.sh: the box is held; the pending run waits"; exit 0; }
+  # A hold set while a poll pass was deciding to start this run. campaign.sh
+  # runs its own on a held box.
+  [ ! -e "$state/hold" ] || [ "$(jq -r '.kind // ""' "$state/pending.json" 2>/dev/null)" = campaign ] ||
+    { echo "run.sh: the box is held; the pending run waits"; exit 0; }
   from_pending=1
   pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" ||
     refuse "pending.json is not a JSON object with a set"
@@ -138,7 +140,7 @@ case "$kind" in
   manual) series="${series:-calibration}" ;;
   trigger) series=per-trigger ;;
   nightly) series=nightly ;;
-  campaign) series=campaign ;;
+  campaign) series="$(jq -r '.series // "campaign"' <<<"$pending")" ;;
   *) refuse "pending.json has kind '$kind'" ;;
 esac
 grep -qxE 'per-trigger|nightly|campaign|calibration' <<<"$series" || refuse "unknown series '$series'"

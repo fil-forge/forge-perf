@@ -48,6 +48,9 @@ locals {
     piri_bucket_prefix  = local.piri_bucket_prefix
     smelt_bucket_prefix = local.smelt_bucket_prefix
     ssm_path            = module.constants.ssm_path
+    campaign_json       = var.campaign == null ? "" : var.campaign
+    # The persistent box has no ExpiresAt, so its user data has no timer.
+    expire_calendar = var.expires_at == null ? "" : formatdate("YYYY-MM-DD hh:mm:ss", var.expires_at)
   })
 }
 

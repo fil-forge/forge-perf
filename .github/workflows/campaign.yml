@@ -1,0 +1,142 @@
+# Starts or destroys the campaign box (docs/operations.md, "A campaign").
+#
+# `up` checks the inputs, refuses while the campaign root's state holds a box,
+# and applies terraform/envs/box/campaign with the box pinned at the commit
+# this run was dispatched on. The box runs the set, uploads each run to
+# published/campaign/, and powers off; campaign-reaper.yml destroys it after
+# an hour stopped, or at ExpiresAt. `down` destroys it at once, buckets
+# included. The results bucket is untouched, so the records outlive the box.
+#
+# The apply role trusts main only, so dispatch from main.
+
+name: campaign
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: up starts a box, down destroys it
+        type: choice
+        options: [up, down]
+        default: up
+      instance_type:
+        type: choice
+        options: [m9gd.16xlarge, m9gd.8xlarge, m9gd.2xlarge]
+        default: m9gd.16xlarge
+      hours:
+        description: 1 to 24; the box powers off and is destroyed after this
+        type: string
+        default: "15"
+      mode:
+        description: campaign runs the set; calibration waits for the ceiling measurements
+        type: choice
+        options: [campaign, calibration]
+        default: campaign
+      set:
+        description: a committed set, calibration/sets/<name>.json
+        type: string
+        default: ""
+      runs:
+        description: 1 to 20; a sweep runs each workers value this many times
+        type: string
+        default: "3"
+      size:
+        description: --stop-ingest-at per run
+        type: string
+        default: 2000GB
+      workers:
+        description: empty for the settings file's value, one number, or a comma list to sweep
+        type: string
+        default: ""
+      duration:
+        description: --duration per run
+        type: string
+        default: 4h
+
+# One campaign dispatch at a time. GitHub keeps one pending run per group and
+# cancels it for a newer one, so the reaper has its own group and waits on the
+# state lock instead. docs/operations.md says to check that a down completed.
+concurrency:
+  group: forge-perf-campaign
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TOFU_VERSION: 1.12.5
+  AWS_REGION: us-east-2
+  APPLY_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-apply
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
+
+jobs:
+  campaign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform/envs/box/campaign
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before any credential: a bad input costs nothing. Inputs reach the
+      # script through the environment, never the command line.
+      - name: check the inputs
+        if: inputs.action == 'up'
+        env:
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          HOURS: ${{ inputs.hours }}
+          MODE: ${{ inputs.mode }}
+          SET: ${{ inputs.set }}
+          RUNS: ${{ inputs.runs }}
+          SIZE: ${{ inputs.size }}
+          WORKERS: ${{ inputs.workers }}
+          DURATION: ${{ inputs.duration }}
+          FORGE_PERF_SHA: ${{ github.sha }}
+        run: |
+          ../../../../scripts/operator/campaign-inputs.sh >campaign.tfvars.json
+          cat campaign.tfvars.json
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-campaign-${{ github.run_id }}
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/box/campaign/.terraform.lock.hcl') }}
+
+      - run: tofu init -input=false -lockfile=readonly
+
+      # One campaign box at a time: a second apply would change the live one.
+      # `tofu show -json` prints no values for an empty or absent state and
+      # fails on a read error, which then fails this step.
+      - name: up
+        if: inputs.action == 'up'
+        run: |
+          set -euo pipefail
+          n="$(tofu show -json | jq '[.values.root_module.resources // [], .values.root_module.child_modules // []] | flatten | length')"
+          if [ "$n" -gt 0 ]; then
+            echo "::error::a campaign box exists; dispatch down first"
+            tofu state list
+            exit 1
+          fi
+          tofu apply -auto-approve -input=false -lock-timeout=5m -var-file=campaign.tfvars.json
+
+      - name: down
+        if: inputs.action == 'down'
+        run: tofu destroy -auto-approve -input=false -lock-timeout=5m -var-file=destroy.tfvars

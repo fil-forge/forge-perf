@@ -62,3 +62,14 @@ variable "repository_url" {
   type        = string
   default     = "https://github.com/fil-forge/forge-perf.git"
 }
+
+variable "campaign" {
+  description = "A campaign box's /etc/forge-perf/campaign.json, as JSON text; the bootstrap writes it and starts forge-perf-campaign.service. null on the persistent box, whose user_data it leaves unchanged."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.campaign == null || can(jsondecode(var.campaign))
+    error_message = "campaign is JSON text."
+  }
+}

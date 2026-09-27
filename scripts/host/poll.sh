@@ -82,6 +82,8 @@ put() { write_durable "$state/$1"; }
 settle_last_run() {
   local f="$state/last-run.json" infra attempt id
   [ -e "$f" ] || return 0
+  # A campaign retries nothing; campaign.sh removes its own.
+  [ "$(jq -r '.kind // ""' "$f")" != campaign ] || { rm -f "$f"; return 0; }
   id="$(jq -r .run_id "$f")" attempt="$(jq '.attempt // 0' "$f")"
   infra="$(jq -r --arg infra "$INFRA_REASONS" \
     '[.reasons[]? | select(. as $r | $infra | split(" ") | index($r))] | join(" ")' "$f")"
@@ -165,7 +167,10 @@ resolve() {
 # one and counts it in superseded; a pending nightly stays nightly.
 want() {
   local set="$1" p="$state/pending.json"
-  if [ -n "$nightly" ]; then
+  # campaign.sh's run is its own; the newest set is pending once it is done.
+  if [ "$(jq -r '.kind // ""' "$p" 2>/dev/null)" = campaign ]; then
+    echo "poll: a campaign run is pending; the set waits"
+  elif [ -n "$nightly" ]; then
     jq -n --arg at "$(now)" --argjson set "$set" --argjson same "$(same_key "$p" "$set" && echo true || echo false)" \
       --argjson p "$(jq -c . "$p" 2>/dev/null || echo null)" \
       '{kind: "nightly", set: $set, first_seen_at: ($p.first_seen_at // $at),
