@@ -7,7 +7,7 @@
 #       a campaign box, from forge-perf-campaign.service: reads
 #       /etc/forge-perf/campaign.json, which the box's user data wrote
 #   campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE]
-#               [--duration DURATION] [--pairing ID]
+#               [--duration DURATION] [--pairing ID] [--cap SERVICE=CPUS[,...]]
 #       by hand on a persistent box that is held (status.sh hold)
 #
 # A campaign box stays at campaign.json's forge_perf_sha and never updates.
@@ -24,6 +24,9 @@
 # N rounds over the list, reversed every other round (16,32,64,64,32,16 for
 # two rounds of 16,32,64), as series calibration, since no value is frozen
 # yet. --pairing puts the same pairing ID in each record (pair-<yyyymmdd>-<id>).
+# --cap limits each named compose service to CPUS CPUs (a positive decimal)
+# for every run, as the tier 1 falsification check does (docs/DESIGN.md §9);
+# a capped run is series calibration. campaign.json takes no caps.
 #
 # For each run it writes pending.json with kind campaign under poll.lock and
 # runs `systemctl start --wait forge-perf-run.service`. The poller leaves a
@@ -39,7 +42,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 
 conf="${FORGE_PERF_CAMPAIGN_CONF:-/etc/forge-perf/campaign.json}"
-set_file="" runs="" workers="" size="" duration="" pairing="" from_conf=""
+set_file="" runs="" workers="" size="" duration="" pairing="" cap="" from_conf=""
 [ $# -gt 0 ] || from_conf=1
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
@@ -50,6 +53,7 @@ while [ $# -gt 0 ]; do
     --size) size="$2" ;;
     --duration) duration="$2" ;;
     --pairing) pairing="$2" ;;
+    --cap) cap="$2" ;;
     *) usage ;;
   esac
   shift 2
@@ -103,6 +107,7 @@ poweroff_at() {
 if [ -n "$from_conf" ]; then
   [ "${FORGE_PERF_MODE:-}" = campaign ] || die "campaign.json drives only a campaign box; use --set here"
   c="$(jq -ce 'objects' "$conf")" || die "$conf is missing or not a JSON object"
+  ! jq -e 'has("cap") or has("caps")' <<<"$c" >/dev/null || die "campaign.json takes no caps; --cap runs only on a held persistent box"
   # Before the checkout, so a campaign that cannot start does not idle to
   # expires_at. A calibration box stays up: an operator is attached.
   [ "$(jq -r .mode <<<"$c")" = calibration ] || armed=1
@@ -128,6 +133,25 @@ fi
 [[ "$runs" =~ ^[1-9][0-9]*$ ]] && [ "$runs" -le 20 ] || die "runs takes 1 to 20"
 [[ -z "$workers" || "$workers" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "workers is a number or a comma list"
 [[ -z "$pairing" || "$pairing" =~ ^pair-[0-9]{8}-[a-z0-9]{1,12}$ ]] || die "--pairing is pair-<yyyymmdd>-<id>"
+# --cap: SERVICE=CPUS pairs, each service one config/groups.conf names once,
+# as {"ingot": "1.0"} in every run's pending.json.
+caps='{}'
+if [ -n "$cap" ]; then
+  [ "${FORGE_PERF_MODE:-persistent}" = persistent ] || die "--cap runs only on a held persistent box"
+  # shellcheck source=../../config/groups.conf
+  known="$(. "$FORGE_PERF_CHECKOUT/config/groups.conf" && echo " $NODE $CENTRAL $OTHER ")"
+  [[ "$cap" =~ ^[^,]+(,[^,]+)*$ ]] || die "--cap takes SERVICE=CPUS[,SERVICE=CPUS...] with CPUS a positive decimal"
+  IFS=, read -ra pairs <<<"$cap"
+  for p in "${pairs[@]}"; do
+    [[ "$p" =~ ^([a-z0-9][a-z0-9-]*)=([0-9]+(\.[0-9]+)?)$ ]] ||
+      die "--cap takes SERVICE=CPUS[,SERVICE=CPUS...] with CPUS a positive decimal"
+    svc="${BASH_REMATCH[1]}" cpus="${BASH_REMATCH[2]}"
+    [[ "$cpus" =~ [1-9] ]] || die "--cap: $svc's CPUS must be above 0"
+    [ "${known#* "$svc" }" != "$known" ] || die "--cap: $svc is not a service in config/groups.conf"
+    ! jq -e --arg s "$svc" 'has($s)' <<<"$caps" >/dev/null || die "--cap names $svc twice"
+    caps="$(jq -c --arg s "$svc" --arg n "$cpus" '.[$s] = $n' <<<"$caps")"
+  done
+fi
 case "$set_file" in /*) ;; *) set_file="$FORGE_PERF_CHECKOUT/$set_file" ;; esac
 set_json="$(jq -ce 'objects' "$set_file")" || die "$set_file is not a JSON object"
 
@@ -135,7 +159,7 @@ set_json="$(jq -ce 'objects' "$set_file")" || die "$set_file is not a JSON objec
 IFS=, read -ra values <<<"$workers"
 [ "${#values[@]}" -gt 0 ] || values=("")
 order=() series=campaign
-[ "${#values[@]}" -eq 1 ] || series=calibration
+[ "${#values[@]}" -eq 1 ] && [ "$caps" = '{}' ] || series=calibration
 for ((r = 0; r < runs; r++)); do
   if ((r % 2 == 0)); then
     order+=("${values[@]}")
@@ -186,13 +210,14 @@ for ((i = start; i < total; i++)); do
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
   fi
   jq -n --argjson set "$set_json" --arg series "$series" --arg w "$w" --arg size "$size" \
-    --arg duration "$duration" --arg pairing "$pairing" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    --arg duration "$duration" --arg pairing "$pairing" --argjson caps "$caps" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     def opt($k; $v): if $v == "" then {} else {($k): $v} end;
     {kind: "campaign", series: $series, set: $set, superseded: 0, first_seen_at: $at,
      pairing_id: (if $pairing == "" then null else $pairing end)}
-    + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration)' | write_durable "$state/pending.json"
+    + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration)
+    + (if $caps == {} then {} else {caps: $caps} end)' | write_durable "$state/pending.json"
   exec 8>&-
-  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}"
+  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}"
   if ! host_op systemctl start --wait forge-perf-run.service; then
     # run.sh moves a pending run it refuses to pending.json.rejected, and
     # writes no record for it.

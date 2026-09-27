@@ -10,7 +10,9 @@
 # run in SERIES (per-trigger, nightly, campaign or calibration; default
 # calibration). While config/launch.conf has SERIES_LIVE=0 every run is
 # series calibration. --workers, --size and --duration override the settings
-# file. The steps are preflight, checkout, images, boot, setup, latency, drill
+# file. A campaign's pending run can carry CPU caps (campaign.sh --cap), which
+# setup applies with `docker update --cpus`; a capped run is series
+# calibration. The steps are preflight, checkout, images, boot, setup, latency, drill
 # and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
@@ -98,7 +100,7 @@ settings="$cfg/settings/$instance_type.env"
 
 # --- the set, the series and the drill settings -------------------------------
 
-kind=manual superseded=0 pairing=null attempt=0
+kind=manual superseded=0 pairing=null attempt=0 caps='{}'
 if [ -n "$set_file" ]; then
   set_json="$(jq -ce 'objects' "$set_file")" || refuse "$set_file is not a JSON object"
 else
@@ -122,6 +124,9 @@ else
   superseded="$(jq '.superseded // 0' <<<"$pending")"
   pairing="$(jq -c '.pairing_id // null' <<<"$pending")"
   attempt="$(jq '.attempt // 0' <<<"$pending")"
+  caps="$(jq -ce '.caps // {} | objects | select(all(to_entries[]; (.key | test("^[a-z0-9][a-z0-9-]*$"))
+    and (.value | type == "string" and test("^[0-9]+(\\.[0-9]+)?$") and test("[1-9]"))))' <<<"$pending")" ||
+    refuse "pending.json has caps that are not {service: positive decimal}"
   # A campaign's own workers, size and duration, unless the command line says.
   for v in workers size duration; do
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
@@ -145,6 +150,8 @@ case "$kind" in
 esac
 grep -qxE 'per-trigger|nightly|campaign|calibration' <<<"$series" || refuse "unknown series '$series'"
 [ "${SERIES_LIVE:-0}" = 1 ] || series=calibration
+# A capped run is the falsification check: it never lights a gate.
+[ "$caps" = '{}' ] || series=calibration
 
 WORKERS="${workers:-${WORKERS:-}}"
 [[ "$WORKERS" =~ ^[1-9][0-9]*$ ]] || refuse "WORKERS is empty in $settings and no --workers was given"
@@ -605,6 +612,23 @@ step_setup() {
     *) stop runner_error "FORGE_PERF_CLIENT_PATH must be container-ip or published" ;;
   esac
   within 600 setup_failed "${SMELT_ENV[@]}" "$SMELT/scripts/perf-drill.sh" setup
+  apply_caps
+}
+
+# apply_caps: each capped service's container to its CPUs, checked through
+# HostConfig.NanoCpus. `docker update` restarts nothing, and netem.sh apply
+# records start times and addresses after it, so verify post sees no change.
+apply_caps() {
+  local svc cpus cid nano want
+  while read -r svc cpus; do
+    [ -n "$svc" ] || continue
+    cid="$(cd "$SMELT" && docker compose ps -q "$svc")" && [ -n "$cid" ] || stop runner_error "no $svc container to cap"
+    docker update --cpus "$cpus" "$cid" >/dev/null || stop runner_error "docker update --cpus $cpus failed for $svc"
+    nano="$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$cid")" || stop runner_error "cannot read $svc's CPU cap"
+    want="$(awk -v c="$cpus" 'BEGIN { printf "%.0f", c * 1e9 }')"
+    [ "$nano" = "$want" ] || stop runner_error "$svc has NanoCpus $nano after the update, not $want"
+    echo "capped $svc at $cpus CPUs"
+  done < <(jq -r 'to_entries[] | "\(.key) \(.value)"' <<<"$caps")
 }
 
 step_latency() {
@@ -830,7 +854,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
   --argjson changed "$changed" --argjson superseded "$superseded" --argjson box "$(box_facts)" \
   --arg started "$started" --argjson settings "$settings_json" \
   --arg fp "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" --arg tree "$(instrument_tree)" \
-  --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" '
+  --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" '
   {run_id: $run_id, series: $series, pairing_id: $pairing, trigger: {reason: $reason, changed: $changed},
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
@@ -839,7 +863,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
-   raw_missing: false}' >"$state/runner.json.tmp"
+   raw_missing: false, caps: $caps}' >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
 stop_requested="" drill_pid="" sampler="" nic_if="" record_class=""
 trap finish EXIT

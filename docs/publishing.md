@@ -43,6 +43,7 @@ Anyone can read every record with `git clone -b results https://github.com/fil-f
 | `finished_before_started` | `time.run_finished_at` before `time.run_started_at` |
 | `p5_above_median` | an ingest p5 above the ingest median, when both are numbers |
 | `valid_inconsistent` | class `valid` with a drill exit other than 0, any reason, or null results or requests |
+| `capped_not_calibration` | the flag `cpu_capped` on a record whose series is not `calibration`, since a capped run must never light a gate |
 | `fingerprint` | `instrument.fingerprint` or `instrument.box_fingerprint` that does not recompute by record.md's recipe |
 | `internal` | a record that makes a check raise an unexpected error; the log gives the key and the error's type, so one object never stops the others |
 
@@ -109,7 +110,7 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 - The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
 - The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
 - The history chart shows one series at a time. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring. Under the chart, each pairing with counting runs on two instance types gets a note with the median of each type's run medians and their ratio.
-- The runs table and details view name the flags `cap_not_reached` and `few_windows` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
+- The runs table and details view name the flags `cap_not_reached`, `few_windows` and `cpu_capped` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 
 `make site-preview` builds the page against seven fixture scenarios (no runs, one valid run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 

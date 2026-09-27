@@ -87,7 +87,7 @@
         "restarted_services": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/service"}},
         "flags": {"type": "array", "uniqueItems": true, "items": {"enum": [
           "few_windows", "cap_not_reached", "nic_allowance_exceeded", "offered_rate_near_median",
-          "superseded", "raw_missing"]}},
+          "superseded", "raw_missing", "cpu_capped"]}},
         "drill_exit": {"enum": [0, 1, 2, null]},
         "failure_codes": {"type": "array", "uniqueItems": true, "items": {"enum": [
           "config_error", "interrupted", "unexpected_error", "transport_error", "timeout",

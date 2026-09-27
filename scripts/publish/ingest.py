@@ -194,6 +194,9 @@ class Checks:
         if out["class"] == "valid" and (out["drill_exit"] != 0 or out["reasons"] or results is None
                                         or record["drill"]["requests"] is None):
             raise Rejected("valid_inconsistent")
+        # A CPU-capped run is a check run; as any other series it could light a gate.
+        if "cpu_capped" in out["flags"] and record["series"] != "calibration":
+            raise Rejected("capped_not_calibration")
         stored = (record["instrument"]["fingerprint"], record["instrument"]["box_fingerprint"])
         if stored != fingerprints(record):
             raise Rejected("fingerprint")

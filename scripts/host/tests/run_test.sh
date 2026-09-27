@@ -58,7 +58,15 @@ case "$*" in
       upload: {image: env.UPLOAD_IMAGE}, "upload-init": {image: env.UPLOAD_IMAGE},
       postgres: {image: env.POSTGRES_IMAGE}, ipni: {image: env.IPNI_IMAGE}}
       + if $old == "" then {} else {"piri-minio": {image: env.POSTGRES_IMAGE}} end)}' ;;
-  "compose ps -q ingot") echo cid-ingot ;;
+  "compose ps -q "*) echo "cid-${!#}" ;;
+  # A CPU cap: UPDATE_FAIL fails the update, NANO_WRONG reads back another
+  # value. The cap must land after setup and before netem.sh apply.
+  "update --cpus"*)
+    [ -z "${UPDATE_FAIL:-}" ] || exit 1
+    [ ! -e "$D/netem.log" ] && grep -q "^setup " "$D/drill.log" || echo "$*" >>"$D/cap-out-of-order"
+    awk -v c="$3" 'BEGIN { printf "%.0f\n", c * 1e9 }' >"$D/nanocpus-${!#}" ;;
+  "inspect -f {{.HostConfig.NanoCpus}}"*)
+    if [ -n "${NANO_WRONG:-}" ]; then echo 0; else cat "$D/nanocpus-${!#}"; fi ;;
   "inspect -f"*) echo 172.30.0.5 ;;
   "inspect --format"*) echo "/smelt-${!#}-1" ;;
   "logs --timestamps"*)
@@ -337,6 +345,7 @@ grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
   "b4ec1bb63c5f0eba032262ae1ccb8e673f585c99 https://github.com/fil-forge/ingot" ] || fail "ingot labels"
 [ "$(runner '[.images[] | select(.variable == "POSTGRES_IMAGE") | .revision, .source] | map(tostring) | join(" ")')" = \
   "null null" ] || fail "postgres labels"
+lacks "$D/docker.log" "update --cpus"
 echo "ok: a clean run reaches setup with every image pinned; the harness pin comes through a pull ref"
 
 # piri's key reaches compose through the environment only, never the disk.
@@ -564,6 +573,52 @@ for series in "" calibration; do
     "${series:-campaign} pairing pair-20261001-t1 32 10000000000 1800" ] || fail "campaign run $(runner '[.series, .settings]')"
 done
 echo "ok: a campaign's pending run starts on a held box with its own series, pairing and settings"
+
+# campaign.sh --cap: the caps land on each service's container after setup,
+# and the run publishes as calibration with cpu_capped even while live.
+capped() {
+  setup
+  sed 's/^SERIES_LIVE=.*/SERIES_LIVE=1/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
+  mv "$work/launch.conf" "$work/checkout/config/launch.conf"
+  git -C "$work/checkout" commit -qam live
+  jq --argjson caps "$1" '{kind: "campaign", series: "campaign", set: ., superseded: 0, workers: "16", caps: $caps}' \
+    "$work/set.json" >"$work/box/state/pending.json"
+  echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+}
+capped '{"ingot": "1.0", "piri-0": "0.5"}'
+run 0 --
+has "$D/docker.log" "docker update --cpus 1.0 cid-ingot"
+has "$D/docker.log" "docker update --cpus 0.5 cid-piri-0"
+[ ! -e "$D/cap-out-of-order" ] || fail "a cap was applied outside setup-to-apply: $(cat "$D/cap-out-of-order")"
+[ "$(runner '"\(.series) \(.caps | tojson)"')" = 'calibration {"ingot":"1.0","piri-0":"0.5"}' ] ||
+  fail "runner $(runner '[.series, .caps]')"
+[ "$(jq -r '"\(.series) \(.outcome.class) \(.outcome.flags | join(","))"' "$D/record.json")" = \
+  "calibration valid few_windows,nic_allowance_exceeded,cpu_capped" ] || fail "record $(jq -c '[.series, .outcome]' "$D/record.json")"
+lacks "$D/record.json" "caps"
+lacks "$D/record.json" '"0.5"'
+cmp -s "$work/box/nvme/work/run/runner.json" "$work/box/state/runner.json" || fail "the raw bundle's runner.json differs"
+echo "ok: a capped run caps each service after setup, stays valid, and publishes as calibration with cpu_capped"
+
+capped '{"ingot": "1.0"}'
+run 1 UPDATE_FAIL=1 --
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "docker update --cpus 1.0 failed for ingot" "$work/out" || fail "no update message"
+[ "$(outcome)" = "no_data runner_error" ] || fail "record $(outcome)"
+lacks "$D/netem.log" "netem apply"
+grep -qx wipe "$D/wipe.log" || fail "no wipe"
+capped '{"ingot": "1.0"}'
+run 1 NANO_WRONG=1 --
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "ingot has NanoCpus 0 after the update, not 1000000000" "$work/out" || fail "no NanoCpus message"
+echo "ok: a cap that fails or does not read back stops the run as no_data runner_error"
+
+for bad in '{"ingot": "0"}' '{"ingot": 1}' '{"Ingot": "1.0"}' '["ingot"]'; do
+  capped "$bad"
+  run 2 --
+  grep -q "pending.json has caps" "$work/out" || fail "caps $bad accepted"
+  [ -e "$work/box/state/pending.json.rejected" ] || fail "pending not moved aside for caps $bad"
+done
+echo "ok: a pending run with malformed caps does not start"
 
 setup
 jq '{kind: "nightly", set: ., superseded: 1}' "$work/set.json" >"$work/box/state/pending.json"

@@ -20,7 +20,7 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 
 | Field | Meaning |
 |---|---|
-| `run_id`, `series`, `pairing_id`, `trigger`, `box`, `time` | copied into the record unchanged |
+| `run_id`, `series`, `pairing_id`, `trigger`, `box`, `time` | copied into the record unchanged, except that a capped run's series is `calibration` |
 | `superseded` | how many pending sets the run's set replaced (`pending.json`) |
 | `settings` | the drill settings from `config/settings/<instance type>.env`, in the record's units; null when the file is missing or unreadable |
 | `provenance.forge_perf`, `provenance.smelt.sha`, `provenance.harness.sha` | the SHAs the run used, which its checkouts hold once checked out |
@@ -29,6 +29,7 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `watchdog_fired` | the drill's `timeout` fired |
 | `nic` | `allowance_exceeded` deltas, `egress_bytes_per_s_median` and `seconds_above_baseline` from `ethtool -S` and the one-second interface samples |
 | `raw_missing` | the run left no raw tarball: collection failed, a credential appeared in the collected files, or piri's key was never read to check against |
+| `caps` | the CPU caps `campaign.sh --cap` set, as `{"<service>": "<CPUs>"}`, or `{}`. The record takes only whether it is empty: a capped run gets the flag `cpu_capped` and series `calibration`, and the service names and CPUs stay in the raw tarball |
 
 `scripts/host/record.py` is the builder:
 
@@ -231,6 +232,7 @@ Flags never change the class.
 | `offered_rate_near_median` | the ingest median is at least 90% of `rate_target_bytes_per_s`, so the setting capped the number |
 | `superseded` | `runner.json` `superseded` above 0: the run covers several coalesced sets |
 | `raw_missing` | `runner.json` `raw_missing`: the private raw tarball is missing. When the outbox drops the tarball after the record was built (past its 20 GB cap, or after 24 hours of failed uploads), it adds the flag to the record before uploading it; nothing else in the record changes |
+| `cpu_capped` | `runner.json` `caps` is not empty: `campaign.sh --cap` limited one or more services' CPUs for the falsification check ([DESIGN.md §9](DESIGN.md#9-calibration-and-ceilings)). The record's series is then `calibration`, so the run never lights a gate, and the publish Action rejects the flag in any other series |
 
 A reviewed PR to `data/overrides.json` citing an issue can reclassify a run. Records are never edited.
 
@@ -262,4 +264,4 @@ The publish Action recomputes both fingerprints and rejects a record whose store
 
 ## Fixtures
 
-`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, and a run whose run directory belongs to another run, which ends in the minimal record. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.
+`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, a run whose run directory belongs to another run, which ends in the minimal record, and a valid run with CPU caps, which the builder records as series `calibration` with `cpu_capped`. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.
