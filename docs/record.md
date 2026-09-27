@@ -28,7 +28,7 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `reasons[]`, `restarted_services[]` | what the runner found itself: a failed or timed-out step, an infrastructure failure, a changed image, low disk, a dirty start, an interrupt it caused |
 | `watchdog_fired` | the drill's `timeout` fired |
 | `nic` | `allowance_exceeded` deltas, `egress_bytes_per_s_median` and `seconds_above_baseline` from `ethtool -S` and the one-second interface samples |
-| `raw_missing` | the raw tarball could not be built, was dropped from the outbox, or failed to upload for 24 hours |
+| `raw_missing` | the run left no raw tarball: collection failed, a credential appeared in the collected files, or piri's key was never read to check against |
 
 `scripts/host/record.py` is the builder:
 
@@ -181,7 +181,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 | `go_module_fetch_failed` | `no_data` | infrastructure: the drill build could not download a module |
 | `step_timeout` | `no_data` | a step outran its `timeout` |
 | `watchdog_timeout` | `no_data` | the drill step's `timeout` fired (`runner.json` `watchdog_fired`), whatever the exit status. It is the drill step's overrun, the counterpart of `step_timeout` for every other step |
-| `drill_interrupted` | `no_data` | `suite.drill_exit` is 2 and the evidence exists, so the drill ran and recorded the interrupt; or the runner interrupted the drill itself, on a stop request or when recovery found the run cut off by a reboot, and wrote the reason to `runner.json`. Exit 2 without evidence is a usage or configuration error (`runner_error`) |
+| `drill_interrupted` | `no_data` | `suite.drill_exit` is 2 and the evidence exists, so the drill ran and recorded the interrupt; or the runner interrupted the run itself, on a stop request (during the drill or before it) or when recovery found the run cut off by a reboot, and wrote the reason to `runner.json`. Exit 2 without evidence is a usage or configuration error (`runner_error`) |
 | `no_evidence` | `no_data` | the drill exited 0 or 1 without writing evidence |
 | `wrote_nothing` | `no_data` | failure code `wrote_nothing` |
 | `record_build_failed` | `no_data` | the builder failed |
@@ -230,7 +230,7 @@ Flags never change the class.
 | `nic_allowance_exceeded` | any `network.allowance_exceeded` counter above 0 |
 | `offered_rate_near_median` | the ingest median is at least 90% of `rate_target_bytes_per_s`, so the setting capped the number |
 | `superseded` | `runner.json` `superseded` above 0: the run covers several coalesced sets |
-| `raw_missing` | `runner.json` `raw_missing`: the private raw tarball is missing. When the tarball is dropped or its upload gives up after the record was built, the runner sets the flag in `runner.json` and rebuilds the record before uploading it; `time.run_finished_at` keeps its first value |
+| `raw_missing` | `runner.json` `raw_missing`: the private raw tarball is missing. When the outbox drops the tarball after the record was built (past its 20 GB cap, or after 24 hours of failed uploads), it adds the flag to the record before uploading it; nothing else in the record changes |
 
 A reviewed PR to `data/overrides.json` citing an issue can reclassify a run. Records are never edited.
 

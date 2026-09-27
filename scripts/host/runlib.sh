@@ -47,6 +47,26 @@ take_run_lock() {
   export FORGE_PERF_LOCK_HELD=1
 }
 
+# write_durable FILE < content: replace FILE through a temporary file, with
+# the file and its directory synced, so a reboot leaves the old or the new
+# content (current.json).
+write_durable() {
+  python3 -c '
+import os, sys
+dest = sys.argv[1]
+tmp = dest + ".tmp"
+with open(tmp, "wb") as f:
+    f.write(sys.stdin.buffer.read())
+    f.flush()
+    os.fsync(f.fileno())
+os.replace(tmp, dest)
+fd = os.open(os.path.dirname(os.path.abspath(dest)), os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)' "$1"
+}
+
 stack_containers() {
   if host_ops_skipped; then
     {

@@ -484,3 +484,33 @@ echo '{"run_id": "main-20261001t200000z", "reasons": []}' >"$work/box/state/reco
 "$host/recover.sh" >/dev/null 2>&1
 [ ! -e "$work/box/state/recover-runner.json" ] || fail "recovery without current.json kept recover-runner.json"
 echo "ok: a stale recover-runner.json is dropped, and SSM names follow FORGE_PERF_SSM_PATH"
+
+# --- the outbox cap and the 24-hour give-up ----------------------------------------
+setup
+ob="$work/box/outbox"
+for r in main-20261001t100000z main-20261001t110000z; do
+  jq --arg id "$r" '.run_id = $id' "$host/fixtures/valid/expected.json" >"$ob/$r.json"
+  head -c 4000 /dev/zero >"$ob/$r.raw.tar.zst"
+done
+touch -t 202609200000 "$ob/main-20261001t100000z.raw.tar.zst"
+touch "$D/s3-down"
+total="$(cat "$ob"/* | wc -c | tr -d ' ')"
+if FORGE_PERF_OUTBOX_CAP_BYTES=$((total - 1000)) "$host/outbox.sh" flush >"$work/out" 2>&1; then fail "flush passed with S3 down"; fi
+has "$work/out" "dropped raw main-20261001t100000z"
+[ ! -e "$ob/main-20261001t100000z.raw.tar.zst" ] && [ -e "$ob/main-20261001t110000z.raw.tar.zst" ] ||
+  fail "the cap did not drop only the oldest tarball"
+[ -e "$ob/main-20261001t100000z.json" ] || fail "the cap dropped a record"
+jq -e '.outcome.flags == ["few_windows", "raw_missing"]' "$ob/main-20261001t100000z.json" >/dev/null || fail "flags"
+python3 "$host/schemacheck.py" "$repo/schema/run-record.v1.json" "$ob/main-20261001t100000z.json" >/dev/null ||
+  fail "the flagged record fails the schema"
+jq -e '.outcome.flags == ["few_windows"]' "$ob/main-20261001t110000z.json" >/dev/null || fail "a kept tarball's record flagged"
+echo "ok: over the cap the oldest raw tarball goes and its record is flagged raw_missing"
+
+touch -t 202609210000 "$ob/main-20261001t110000z.raw.tar.zst"
+if "$host/outbox.sh" flush >"$work/out" 2>&1; then fail "flush passed with S3 down"; fi
+has "$work/out" "dropped raw main-20261001t110000z (uploads failed for 24 hours)"
+jq -e '.outcome.flags == ["few_windows", "raw_missing"]' "$ob/main-20261001t110000z.json" >/dev/null || fail "flags"
+rm "$D/s3-down"
+"$host/outbox.sh" flush >"$work/out" 2>&1 || { cat "$work/out"; fail "flush failed"; }
+[ -z "$(ls -A "$ob")" ] || fail "outbox not empty"
+echo "ok: a raw tarball failing for 24 hours is dropped, and its record goes up with raw_missing"

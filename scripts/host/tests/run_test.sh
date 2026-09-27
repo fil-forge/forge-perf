@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Behavior of run.sh from preflight to setup, against stubbed docker, aws,
-# make, go and instance metadata, with real git. Each case runs in a scratch
+# Behavior of run.sh from preflight to the wipe, against stubbed docker, aws,
+# make, go, netem.sh, smelt's perf-drill.sh and instance metadata, with real
+# git. The stubbed drill writes the record fixtures' valid run. Each case runs in a scratch
 # commit of this repository (so `git status` is clean and a hand edit can be
 # tested) against local smelt and harness repositories whose history the
 # mirrors fetch. The harness commit is reachable only through a pull request
@@ -14,7 +15,7 @@ repo="$(cd "$host/../.." && pwd -P)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/run-test.XXXXXX")"
 # KEEP_WORK=1 keeps the scratch directory for inspection.
 trap '[ -n "${KEEP_WORK:-}" ] || rm -rf "$work"' EXIT
-export D="$work/d"
+export D="$work/d" FIXTURES="$host/fixtures"
 mkdir -p "$work/bin" "$D"
 unset INVOCATION_ID FORGE_PERF_HOST_OPS FORGE_PERF_LOCK_HELD AWS_ENDPOINT_URL AWS_PROFILE
 export PYTHONDONTWRITEBYTECODE=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -59,6 +60,10 @@ case "$*" in
       + if $old == "" then {} else {"piri-minio": {image: env.POSTGRES_IMAGE}} end)}' ;;
   "compose ps -q ingot") echo cid-ingot ;;
   "inspect -f"*) echo 172.30.0.5 ;;
+  "inspect --format"*) echo "/smelt-${!#}-1" ;;
+  "logs --timestamps"*)
+    printf '%s\n' "2026-10-01T12:00:00Z started" "2026-10-01T12:00:01Z access_key_id: AKIAFAKEKEYID"
+    [ -z "${LEAK:-}" ] || echo "2026-10-01T12:00:02Z s3 {fake-secret-value}" ;;
   *) echo "docker stub: unexpected $*" >&2; exit 1 ;;
 esac
 STUB
@@ -72,8 +77,15 @@ case " $* " in
     case "$*" in
       *piri-s3-access-key-id*) echo AKIAFAKEKEYID ;;
       *piri-s3-secret-access-key*) echo fake-secret-value ;;
+      *denylist*) echo zz-no-such-term-zz ;;
       *) exit 254 ;;
     esac ;;
+  *" s3 cp "*) [ ! -e "$D/results-down" ] && cp "$3" "$D/raw.tar.zst" ;;
+  *" put-object "*)
+    [ ! -e "$D/results-down" ] || exit 1
+    [ ! -e "$D/record.json" ] || { echo "An error occurred (PreconditionFailed)" >&2; exit 254; }
+    while [ "$1" != --body ]; do shift; done
+    cp "$2" "$D/record.json" ;;
   *) echo "aws stub: unexpected $*" >&2; exit 1 ;;
 esac
 STUB
@@ -97,13 +109,27 @@ echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
   env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE)=' |
     sort >"$D/up.env"
+  [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
   exit "${UP_EXIT:-0}"
 fi
 STUB
 printf '#!/usr/bin/env bash\necho "go $*" >>"$D/go.log"\n' >"$work/bin/go"
 printf '#!/usr/bin/env bash\necho "${NTP:-yes}"\n' >"$work/bin/timedatectl"
 printf '#!/usr/bin/env bash\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n' >"$work/bin/id"
-for tool in flock modprobe; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+for tool in flock modprobe sync sysctl journalctl; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+printf '#!/usr/bin/env bash\necho "1.1.1.1 via 10.0.0.1 dev ens5 src 10.0.0.9 uid 0"\n' >"$work/bin/ip"
+# Each call reads one more of every allowance counter, so the drill's delta is 1.
+cat >"$work/bin/ethtool" <<'STUB'
+#!/usr/bin/env bash
+echo "ethtool $*" >>"$D/ethtool.log"
+n="$(grep -c . "$D/ethtool.log")"
+for c in bw_in bw_out pps conntrack linklocal; do echo "     ${c}_allowance_exceeded: $n"; done
+STUB
+cat >"$work/bin/df" <<'STUB'
+#!/usr/bin/env bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/nvme1n1 462000000 1000 ${DF_FREE_KB:-400000000} 1% /mnt/forge-perf/nvme"
+STUB
 # One instance-store NVMe beside the root EBS volume. NO_NVME: none is found.
 cat >"$work/bin/lsblk" <<'STUB'
 #!/usr/bin/env bash
@@ -123,11 +149,46 @@ export PATH="$work/bin:$PATH"
 # The smelt and harness repositories the mirrors fetch.
 git init -q "$work/smelt-src"
 mkdir -p "$work/smelt-src/scripts" "$work/smelt-src/systems/piri"
+# `run` writes a run directory as smelt's does, from the valid fixture, with
+# the command line built from the variables run.sh passes. DRILL=no-evidence:
+# exit 1 before any evidence. DRILL=hang: run until SIGINT, then record exit 2.
 cat >"$work/smelt-src/scripts/perf-drill.sh" <<'STUB'
 #!/usr/bin/env bash
 # KEEP_OBJECTS DISK_FACTOR PERF_EXTRA_METADATA
 echo "$1 INGOT_URL=${INGOT_URL:-unset} AWS_REGION=${AWS_REGION:-unset}" >>"$D/drill.log"
-exit "${SETUP_EXIT:-0}"
+[ "$1" = run ] || exit "${SETUP_EXIT:-0}"
+env | grep -E '^(STOP_INGEST_AT|DURATION|WORKERS|LABEL|CONFIG_NOTE|DISK_FACTOR)=' | sort >"$D/drill.env"
+runs="$(cd "$(dirname "$0")/.." && pwd)/generated/perf-runs/drill"
+dir="$runs/20261001T120455Z-$LABEL"
+mkdir -p "$dir/drill" "$dir/logs" "$runs/provider"
+echo "SQ_SECRET_KEY=drill-secret-value" >"$runs/provider/.env"
+ln -s ../../provider/.env "$dir/drill/.env"
+cp "$FIXTURES/valid/run/logs/piri-0.log" "$dir/logs/"
+argv=(bin/drill --provider "$dir/drill" --profile "$PROFILE" --stop-ingest-at "$STOP_INGEST_AT" --ramp "$RAMP"
+  --window "$WINDOW" --verify-lag-min "$VERIFY_LAG_MIN" --verify-lag-max "$VERIFY_LAG_MAX" --workers "$WORKERS"
+  --duration "$DURATION" --rate-target "$RATE_TARGET" "--enforce-floor=$ENFORCE_FLOOR" --progress "$PROGRESS"
+  --accounts "$ACCOUNTS" --restore-scale "$RESTORE_SCALE" --config-note "$CONFIG_NOTE")
+[ "$KEEP_OBJECTS" != 1 ] || argv+=(--keep-objects)
+meta() {
+  jq --argjson extra "$PERF_EXTRA_METADATA" --argjson code "$1" \
+    --argjson argv "$(printf '%s\0' "${argv[@]}" | jq -Rsc 'split("\u0000")[:-1]')" \
+    '.extra = $extra | .images = [] | .suite.argv = $argv | .suite.drill_exit = $code' \
+    "$FIXTURES/valid/run/metadata.json" >"$dir/metadata.json"
+}
+evidence() {
+  mkdir -p "$dir/drill/evidence"
+  jq --arg sha "$(git -C "$STORAGE_QUALIFICATION_DIR" rev-parse HEAD)" '.provenance.harness_revision = $sha' \
+    "$FIXTURES"/valid/run/drill/evidence/drill-*.json >"$dir/drill/evidence/drill-1.json"
+}
+case "${DRILL:-valid}" in
+  valid) meta 0 && evidence ;;
+  no-evidence) meta 1 && exit 1 ;;
+  hang)
+    meta null
+    trap 'meta 2; evidence; exit 1' INT
+    touch "$D/drill-running"
+    while :; do sleep 0.2; done ;;
+esac
 STUB
 chmod +x "$work/smelt-src/scripts/perf-drill.sh"
 echo 'PIRI_INDEXER=${PIRI_INDEXER:-on}' >"$work/smelt-src/systems/piri/entrypoint.sh"
@@ -154,6 +215,8 @@ mkdir -p "$work/root/proc"
 printf 'processor\t: 0\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32\nCPU implementer\t: 0x41\nCPU part\t: 0xd4f\n' \
   >"$work/root/proc/cpuinfo"
 printf 'MemTotal:       32450648 kB\n' >"$work/root/proc/meminfo"
+mkdir -p "$work/root/sys/class/net/ens5/statistics"
+echo 1000 >"$work/root/sys/class/net/ens5/statistics/tx_bytes"
 
 images_json="$(sed 's/#.*//' "$repo/config/images.tracked" | awk 'NF == 2 { print $2 }' |
   jq -Rn '[inputs | {(.): ("sha256:" + ("0" * 63) + (input_line_number | tostring | .[-1:]))}] | add')"
@@ -173,8 +236,28 @@ setup() {
   (cd "$repo" && git ls-files -z --cached --others --exclude-standard | xargs -0 tar cf - 2>/dev/null) |
     tar xf - -C "$work/checkout"
   # The wipe itself is tested in wipe_test.sh; here it clears the stubs' state.
-  printf '#!/usr/bin/env bash\necho wipe >>"$D/wipe.log"\nrm -f "$D/containers" "$D/volumes" "$D/network" "$D/objects"\n' \
-    >"$work/checkout/scripts/host/wipe.sh"
+  cat >"$work/checkout/scripts/host/wipe.sh" <<'STUB'
+#!/usr/bin/env bash
+echo wipe >>"$D/wipe.log"
+cp "$FORGE_PERF_STATE_DIR/current.json" "$D/current-at-wipe.json" 2>/dev/null || true
+rm -f "$D/containers" "$D/volumes" "$D/network" "$D/objects"
+STUB
+  # netem.sh is tested in netem_test.sh. Here both passes report the valid
+  # fixture's numbers; NETEM_POST adds a failed check line to the post pass.
+  cat >"$work/checkout/scripts/host/netem.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "netem $*" >>"$D/netem.log"
+echo "${NETEM_LOCAL:-} ${RTT_TOLERANCE_PCT:-}" >"$D/netem.env"
+mkdir -p "$NETEM_DIR"
+f="$FIXTURES/valid/netem/latency.json"
+case "$1 ${2:-}" in
+  "verify pre") jq '.post = null' "$f" >"$NETEM_DIR/latency.json" ;;
+  "verify post")
+    jq --arg r "${NETEM_POST:-}" 'if $r == "" then . else .post.ok = false | .post.reasons = [$r] end' "$f" \
+      >"$NETEM_DIR/latency.json"
+    [ -z "${NETEM_POST:-}" ] || exit 1 ;;
+esac
+STUB
   git -C "$work/checkout" init -q
   git -C "$work/checkout" add -A
   git -C "$work/checkout" commit -qm checkout
@@ -184,22 +267,31 @@ setup() {
     '{smelt: $smelt, harness: {sha: $sq, pinned: true, main: null}, images: $images}' >"$work/set.json"
 }
 
-# run EXPECTED-STATUS [VAR=value...] -- [run.sh args...]
-run() {
-  local want="$1" got=0 envs=()
-  shift
+# launch [VAR=value...] -- [run.sh args...]: run.sh in this process, output in $work/out.
+launch() {
+  local envs=()
   while [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift
-  env FORGE_PERF_HARNESS_AUTH=none ${envs[@]+"${envs[@]}"} FORGE_PERF_BOX_CONF="$work/box/box.conf" \
-    FORGE_PERF_STATE_DIR="$work/box/state" FORGE_PERF_NVME_MOUNT="$work/box/nvme" FORGE_PERF_RUNTIME="$work/box/run" \
-    FORGE_PERF_OUTBOX="$work/box/outbox" FORGE_PERF_MIRRORS="$work/box/mirror" FORGE_PERF_GO_CACHE= \
-    FORGE_PERF_HOST_ROOT="$work/root" FORGE_PERF_IMDS_URL=http://imds.test FORGE_PERF_SMELT_URL="$work/smelt-src" \
+  exec env FORGE_PERF_HARNESS_AUTH=none ${envs[@]+"${envs[@]}"} FORGE_PERF_BOX_CONF="$work/box/box.conf" FORGE_PERF_STATE_DIR="$work/box/state" \
+    FORGE_PERF_NVME_MOUNT="$work/box/nvme" FORGE_PERF_RUNTIME="$work/box/run" FORGE_PERF_OUTBOX="$work/box/outbox" \
+    FORGE_PERF_MIRRORS="$work/box/mirror" FORGE_PERF_GO_CACHE= FORGE_PERF_HOST_ROOT="$work/root" \
+    FORGE_PERF_IMDS_URL=http://imds.test FORGE_PERF_SMELT_URL="$work/smelt-src" \
     FORGE_PERF_HARNESS_URL="$work/sq-src" \
-    bash "$work/checkout/scripts/host/run.sh" "$@" >"$work/out" 2>&1 || got=$?
+    bash "$work/checkout/scripts/host/run.sh" "$@" >"$work/out" 2>&1
+}
+
+# run EXPECTED-STATUS [VAR=value...] -- [run.sh args...]
+run() {
+  local want="$1" got=0
+  shift
+  (launch "$@") || got=$?
   [ "$got" = "$want" ] || fail "expected exit $want, got $got"
 }
 
 runner() { jq -r "$1" "$work/box/state/runner.json"; }
+outcome() { jq -r '.outcome | "\(.class) \(.reasons | join(","))"' "${1:-$D/record.json}"; }
+has() { grep -qF -- "$2" "$1" || fail "$1 lacks: $2"; }
+lacks() { ! grep -qF -- "$2" "$1" 2>/dev/null || fail "$1 has: $2"; }
 
 # WORKERS is empty in m9gd.2xlarge.env.
 setup
@@ -253,6 +345,45 @@ jq -e '.piri_s3.PIRI_S3_BUCKET_PREFIX == "forge-perf-piri-main-1-piri-0-" and (.
   "$work/box/nvme/work/run/compose-images.json" >/dev/null || fail "compose-images.json"
 echo "ok: piri's key stays off the disk"
 
+# The same run went on through latency, the drill and the post-check, then
+# collected, recorded, uploaded and wiped.
+rec="$D/record.json"
+[ -s "$rec" ] || fail "no record uploaded"
+python3 "$repo/scripts/host/schemacheck.py" "$repo/schema/run-record.v1.json" "$rec" >/dev/null || fail "schema"
+[ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$rec")"
+jq -e '.drill.settings.workers == 16 and .drill.results.sustained_windows == 6 and .latency.before.ok and
+  .latency.after.ok and .network.allowance_exceeded.bw_in == 1 and .time.drill_finished_at != null' "$rec" >/dev/null ||
+  fail "record fields $(jq -c '[.drill.results, .latency.before, .network]' "$rec")"
+[ "$(tr '\n' ' ' <"$D/netem.log")" = "netem apply netem verify pre netem verify post " ] || fail "netem calls"
+id="$(runner .run_id)"
+[ "$(tr '\n' ' ' <"$D/drill.env")" = "CONFIG_NOTE=forge-perf/$id DISK_FACTOR=1.25 DURATION=1h LABEL=$id \
+STOP_INGEST_AT=100GB WORKERS=16 " ] || fail "drill env $(cat "$D/drill.env")"
+[ "$(grep -n 's3 cp' "$D/aws.log" | cut -d: -f1)" -lt "$(grep -n put-object "$D/aws.log" | cut -d: -f1)" ] ||
+  fail "record went up before raw"
+[ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox not empty"
+zstd -dc "$D/raw.tar.zst" | tar -tf - >"$work/list"
+has "$work/list" "./run/netem/latency.json"
+has "$work/list" "./perf-runs/drill/20261001T120455Z-$id/metadata.json"
+has "$work/list" "./logs/smelt-cid-ingot-1.log"
+lacks "$work/list" "provider"
+lacks "$work/list" ".env"
+zstd -dc "$D/raw.tar.zst" | tar -xOf - >"$work/raw-content"
+for secret in AKIAFAKEKEYID fake-secret-value drill-secret-value; do lacks "$work/raw-content" "$secret"; done
+[ "$(grep -c . "$D/wipe.log")" = 1 ] && [ "$(jq -r .phase "$D/current-at-wipe.json")" = wiping ] || fail "wipe"
+echo "ok: a full run measures, uploads raw then a valid record with no credential in the tarball, and wipes"
+
+# The same record uploaded twice: S3 answers 412, and the outbox clears.
+flush() {
+  env FORGE_PERF_BOX_CONF="$work/box/box.conf" FORGE_PERF_STATE_DIR="$work/box/state" \
+    FORGE_PERF_NVME_MOUNT="$work/box/nvme" FORGE_PERF_RUNTIME="$work/box/run" FORGE_PERF_OUTBOX="$work/box/outbox" \
+    FORGE_PERF_HOST_ROOT="$work/root" bash "$work/checkout/scripts/host/outbox.sh" flush >"$work/out" 2>&1
+}
+cp "$rec" "$work/box/outbox/$id.json"
+flush || fail "second upload"
+has "$work/out" "record $id was already uploaded"
+[ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox not empty after the second upload"
+echo "ok: uploading the same record twice clears the outbox both times"
+
 # The runner.json of a clean run is enough for the minimal record, once the
 # record step stamps run_finished_at as it does before any build.
 echo 'zz-no-such-term-zz' >"$work/deny"
@@ -299,6 +430,7 @@ echo "ok: the default harness credential is the GitHub App key in SSM"
 setup
 run 0 -- --set "$work/set.json" --workers 16 --until images
 [ ! -e "$D/make.log" ] || ! grep -q " up$" "$D/make.log" || fail "--until images booted the stack"
+[ ! -e "$D/record.json" ] && [ ! -e "$D/wipe.log" ] || fail "--until recorded or wiped"
 echo "ok: --until images stops before boot"
 
 setup
@@ -316,7 +448,8 @@ echo "# edited" >>"$work/checkout/config/latency.env"
 run 1 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = instrument_modified ] || fail "reasons $(runner .reasons)"
 [ ! -d "$work/box/mirror" ] || fail "fetched after a failed preflight"
-echo "ok: a hand edit in the checkout stops preflight"
+[ "$(outcome)" = "no_data instrument_modified" ] || fail "record $(outcome)"
+echo "ok: a hand edit in the checkout stops preflight, and the run is still recorded"
 
 setup
 run 1 NTP=no -- --set "$work/set.json" --workers 16
@@ -365,6 +498,9 @@ setup
 run 1 UP_EXIT=2 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = stack_boot_failed ] || fail "reasons $(runner .reasons)"
 [ "$(runner .time.stack_up_at)" = null ] || fail "stack_up_at set on a failed boot"
+[ "$(outcome)" = "no_data stack_boot_failed" ] || fail "record $(outcome)"
+grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "a failed boot was not wiped"
+lacks "$D/netem.log" "netem"
 setup
 run 1 UP_EXIT=124 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = step_timeout ] || fail "reasons $(runner .reasons)"
@@ -399,7 +535,66 @@ echo "ok: a pending run that cannot start is moved aside"
 # Skip mode on a laptop: config/settings/local.env, host checks logged.
 setup
 run 0 IMDS_DOWN=1 FORGE_PERF_HOST_OPS=skip NTP=no -- --set "$work/set.json" --until preflight
-[ "$(runner '"\(.box.instance_type) \(.settings.workers) \(.settings.stop_ingest_at_bytes)"')" = "local 4 2000000000" ] ||
+[ "$(runner '"\(.box.instance_type) \(.settings.workers) \(.settings.stop_ingest_at_bytes)"')" = \
+  "local.large 4 2000000000" ] ||
   fail "local settings $(runner .settings)"
 grep -q "host-check skipped: sh -c" "$work/out" || fail "clock check not logged as skipped"
-echo "ok: skip mode uses the local settings and skips the host checks"
+jq '.time.run_finished_at = "2026-10-01T12:00:00Z"' "$work/box/state/runner.json" >"$work/runner-done.json"
+python3 "$work/checkout/scripts/host/record.py" minimal --runner "$work/runner-done.json" \
+  --denylist "$work/deny" --out "$work/record.json" >/dev/null 2>&1 || fail "a skip-mode runner.json cannot be recorded"
+echo "ok: skip mode uses the local settings, skips the host checks, and can still be recorded"
+
+# ingot killed mid-run: the drill fails before its evidence, the post-check
+# finds the container gone.
+setup
+run 0 DRILL=no-evidence "NETEM_POST=ingot: container cid-ingot is gone" -- --set "$work/set.json" --workers 16
+[ "$(outcome)" = "no_data no_evidence,container_restarted" ] || fail "record $(outcome)"
+[ "$(jq -r '.outcome.restarted_services | join(",")' "$D/record.json")" = ingot ] || fail "restarted services"
+grep -qx wipe "$D/wipe.log" || fail "no wipe"
+echo "ok: ingot killed mid-run yields no_data and a wipe"
+
+setup
+run 0 DF_FREE_KB=1000 -- --set "$work/set.json" --workers 16
+[ "$(outcome)" = "invalid disk_low" ] || fail "record $(outcome)"
+echo "ok: free NVMe space under 2 GB makes the run invalid"
+
+setup
+run 0 LEAK=1 -- --set "$work/set.json" --workers 16
+has "$work/out" "a credential is still in the collected files"
+lacks "$D/aws.log" " s3 cp "
+jq -e '.outcome.flags | index("raw_missing")' "$D/record.json" >/dev/null || fail "record lacks raw_missing"
+echo "ok: piri's secret in a log refuses the raw tarball, and the record says raw_missing"
+
+setup
+touch "$D/results-down"
+run 0 -- --set "$work/set.json" --workers 16
+[ "$(find "$work/box/outbox" -type f | wc -l | tr -d ' ')" = 2 ] || fail "outbox should hold raw and record"
+[ ! -e "$work/box/state/current.json" ] && grep -qx wipe "$D/wipe.log" || fail "not wiped with S3 down"
+rm "$D/results-down"
+flush || fail "flush after S3 came back"
+[ -z "$(ls -A "$work/box/outbox")" ] && [ -s "$D/record.json" ] || fail "outbox not flushed"
+echo "ok: with S3 down the run wipes and the outbox keeps its files for the next flush"
+
+# A stop request mid-drill: the drill is interrupted and writes its evidence,
+# the run is recorded and wiped, and the upload waits for the next poll.
+setup
+(launch DRILL=hang -- --set "$work/set.json" --workers 16) &
+pid=$!
+for _ in $(seq 150); do [ ! -e "$D/drill-running" ] || break; sleep 0.2; done
+[ -e "$D/drill-running" ] || fail "the drill never started"
+kill -TERM "$pid"
+got=0
+wait "$pid" || got=$?
+[ "$got" = 143 ] || fail "expected exit 143 after a stop, got $got"
+rec="$(find "$work/box/outbox" -name '*.json')"
+[ -n "$rec" ] || fail "no record in the outbox"
+[ "$(outcome "$rec")" = "no_data drill_interrupted" ] || fail "record $(outcome "$rec")"
+[ "$(jq .outcome.drill_exit "$rec")" = 2 ] || fail "drill exit"
+lacks "$D/aws.log" "put-object"
+grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "not wiped after a stop"
+echo "ok: a stop mid-drill interrupts the drill, records drill_interrupted and wipes"
+
+setup
+run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 -- --set "$work/set.json" --workers 16
+[ "$(cat "$D/netem.env")" = "1 40" ] || fail "netem.sh saw $(cat "$D/netem.env")"
+echo "ok: a local netem tolerance reaches netem.sh"

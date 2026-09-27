@@ -168,41 +168,21 @@ if [ "$needs_record" = true ]; then
   fi
 fi
 
-# Collect into $stage and write $raw. It runs as an `if` condition, where bash
-# ignores set -e, so every step is checked; a failure costs only the tarball.
-collect() {
-  rm -rf "$stage" && mkdir -p "$stage/run" "$stage/logs" || return 1
-  if [ -d "$run_dir" ]; then
-    tar -C "$run_dir" --exclude '*.env' --exclude provider -cf - . | tar -C "$stage/run" -xf - || return 1
-  fi
-  for id in $ids; do
-    name="$(docker inspect --format '{{.Name}}' "$id")" || name="$id"
-    docker logs --timestamps "$id" >"$stage/logs/${name#/}.log" 2>&1 || true
-  done
-  while IFS= read -r -d '' f; do
-    LC_ALL=C grep -a -viE 'access_key_id|secret_access_key' "$f" >"$f.scrub"
-    [ "$?" -le 1 ] && mv "$f.scrub" "$f" || return 1
-  done < <(find "$stage" -type f -print0)
-  if [ "$have_forbid" != true ]; then
-    echo "recover: without the credentials to check against, no raw tarball" >&2
-    raw_missing=1
-  elif LC_ALL=C grep -rqaF -f "$forbid" "$stage"; then
-    echo "recover: a credential is still in the collected files; no raw tarball" >&2
-    raw_missing=1
-  else
-    tar -C "$stage" -cf - . | zstd -q -f -o "$raw.tmp" && mv "$raw.tmp" "$raw"
-  fi
-}
-
 raw_missing=0
 if [ "$needs_record" = true ] && [ ! -e "$raw" ]; then
   step "collect the raw tarball"
-  stage="$FORGE_PERF_WORK/recover-raw"
-  if ! collect; then
-    echo "recover: collecting the raw tarball failed; the record carries raw_missing" >&2
-    raw_missing=1
-  fi
-  rm -rf "$stage" "$raw.tmp"
+  [ "$have_forbid" = true ] || forbid=/dev/null
+  status=0
+  "$here/collect.sh" "$raw" "$forbid" "run=$run_dir" "perf-runs=$FORGE_PERF_WORK/smelt/generated/perf-runs" ||
+    status=$?
+  case "$status" in
+    0) ;;
+    3) raw_missing=1 ;;
+    *)
+      echo "recover: collecting the raw tarball failed; the record carries raw_missing" >&2
+      raw_missing=1
+      ;;
+  esac
 fi
 
 if [ "$needs_record" = true ] && [ ! -e "$record" ]; then
