@@ -1,0 +1,8 @@
+# Third-party images, pinned by digest. These are part of the instrument: a
+# bump is a forge-perf change, so it shows as a new forge-perf SHA in every
+# record that follows. One image per line, name:tag@sha256:digest; the digest
+# is the multi-platform index, so the same line serves arm64 and amd64 boxes.
+
+# The sidecar scripts/host/netem.sh runs in a container's network namespace to
+# install the qdiscs, probe round trips and run iperf3.
+nicolaka/netshoot:v0.16@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
