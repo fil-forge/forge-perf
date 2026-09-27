@@ -346,7 +346,14 @@ The poller runs the same way. In skip mode it flushes the outbox in its own proc
 ```sh
 scripts/host/poll.sh                # resolves the set from GHCR, writes local/state/pending.json and a heartbeat
 scripts/host/status.sh
-PATH="$PWD/local/bin:$PATH" scripts/host/run.sh
+NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" scripts/host/run.sh
+```
+
+`poll.sh` takes each image's current digest, so the run pulls whatever `main` holds now. To run a pinned set as a per-trigger run instead, write `pending.json` from it and start `run.sh` the same way:
+
+```sh
+jq -n --slurpfile set calibration/sets/shakedown.json \
+  '{kind: "trigger", set: $set[0], superseded: 0}' >local/state/pending.json
 ```
 
 Instance metadata reports the type as `local` in skip mode, which selects `config/settings/local.env` (4 workers, 2 GB per run). At a laptop's rate that cap fills one to four 10-second windows, so a local run carries the `few_windows` flag, and its p5 and median can differ several-fold between two runs of the same set. A local run checks the pipeline end to end; it does not measure the rate. Its `DISK_FACTOR=1.25` is the box's value, and smelt's disk check counts only ingot's side. The local MinIO keeps piri's blobs on the same disk, so a laptop needs about twice the cap free. The host checks (clock, CPU, `sch_netem`) log `host-check skipped` and pass. A checkout with uncommitted changes stops preflight as on the box; `FORGE_PERF_ALLOW_MODIFIED=1` lets it through in skip mode only. `FORGE_PERF_CLIENT_PATH=published` sends the drill to ingot's published port through Docker's proxy, so a local run measures that path too. smelt's stack uses compose project `smelt`, `forge-network` and host ports 15000 to 15141, so it cannot run beside another smelt stack.
