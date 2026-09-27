@@ -337,7 +337,7 @@ grep -qx "INGOT_IMAGE=ghcr.io/fil-forge/ingot@$(jq -r '.images["ghcr.io/fil-forg
   "$D/up.env" || fail "INGOT_IMAGE not pinned"
 grep -q '^AWS_REGION=' "$D/up.env" && fail "smelt saw the host's AWS_REGION"
 grep -q "AWS_CONFIG_FILE=$work/box/run/aws/config" "$D/up.env" || fail "AWS config not on the runtime dir"
-grep -qx "setup INGOT_URL=http://172.30.0.5:80 AWS_REGION=unset" "$D/drill.log" || fail "setup env"
+grep -qx "setup INGOT_URL=http://172.30.0.5 AWS_REGION=unset" "$D/drill.log" || fail "setup env"
 grep -q "endpoint: s3.us-east-2.amazonaws.com" "$work/box/nvme/work/run/smelt-manifest.yml" &&
   grep -q "bucket_prefix: forge-perf-piri-main-1-$" "$work/box/nvme/work/run/smelt-manifest.yml" || fail "manifest"
 grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
