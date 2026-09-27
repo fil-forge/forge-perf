@@ -4,8 +4,9 @@
 # model and features, memory, the instance-store device and model, the pinned
 # tools' versions, the unpinned archive packages' versions,
 # Docker's configuration, timers, clock state and the kernel settings the
-# ingest path depends on. A change in any of them marks the run as an
-# instrument change.
+# ingest path depends on. run.sh writes it into each run's directory, so the
+# raw tarball carries it; only the subset in runner.json's `box` enters the
+# record and the box fingerprint.
 #
 # Read-only. A fact the host cannot give (a laptop in local mode, a tool not
 # installed) is null rather than an error, so the record says what is missing.

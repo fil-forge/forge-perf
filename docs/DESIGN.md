@@ -89,7 +89,7 @@ Every five minutes a poll resolves a set: the smelt SHA, the harness SHA and the
 | postgres, openbao, dynamodb-local, redis, smtp4dev, storetheindex, filecoin-localdev, minio, netshoot | digests in `config/images.lock` | no; a bump is an instrument change |
 | forge-perf | `update.sh` between runs | no |
 
-Until storage-qualification main accepts `--stop-ingest-at`, which smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`), `config/harness.conf` pins the harness at `5cfeaf3` and harness main does not trigger runs.
+Runs follow storage-qualification main, which accepts the `--stop-ingest-at` flag smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`). Setting `SQ_PIN` in `config/harness.conf` holds the harness at one commit instead, and harness main then does not trigger runs.
 
 `/var/lib/forge-perf/state/` holds `pending.json`, `current.json` (with the run's phase), `last-started.json`, and a `hold` file that survives reboots. A set that ended `failed`, or `no_data` for a Forge-side reason, waits for the nightly. A set stopped by an infrastructure failure (image pull, SSM, S3, mirror fetch) is retried up to three times, 15 minutes apart. Each poll writes `published/<box>/heartbeat.json` and retries the outbox, a directory on root that holds uploads until S3 accepts them.
 
@@ -97,7 +97,8 @@ Until storage-qualification main accepts `--stop-ingest-at`, which smelt's wrapp
 
 | Step | What happens | On failure |
 |---|---|---|
-| Preflight | no containers, volumes or `forge-network`; empty piri buckets; synchronized clock; clean checkout; settings file present; secrets from SSM to tmpfs | `no_data` |
+| Before preflight | a settings file for the instance type, with `WORKERS` set; otherwise the run stops before it starts, with no record | none |
+| Preflight | no containers, volumes or `forge-network`; empty piri buckets; synchronized clock; clean checkout; secrets from SSM to tmpfs | `no_data` |
 | Checkout | smelt and the harness from the mirrors at the set's SHAs; build the drill | `no_data` |
 | Images | set each image variable in `config/images.tracked` to `<repo>@sha256:<digest>`; pull what is missing; `docker compose config --images` lists only pinned digests | `no_data` |
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP>:80 perf-drill.sh setup` | `no_data` |
@@ -276,7 +277,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 | Secret | Where | Rotation |
 |---|---|---|
 | piri's S3 key (IAM user `forge-perf-piri`, usable only through the forge-perf S3 gateway endpoint) | SSM `/forge-perf/piri-s3-*` | 90 days, two keys overlapping; made by hand so it never enters state |
-| read-only access to fil-one/storage-qualification: a GitHub App with Contents: read, installed on that repository only | SSM `/forge-perf/harness-app` | yearly, and when someone with access leaves |
+| read-only access to fil-one/storage-qualification: a dedicated GitHub App (Contents: read, installed on that repository alone) | SSM `/forge-perf/harness-app` | the App key yearly, and when someone with access leaves |
 | denylist pattern | SSM `/forge-perf/denylist`; secret `PUBLIC_DENYLIST_REGEX` | on change |
 | `SLACK_BOT_TOKEN` | repository secret | with the Slack app |
 

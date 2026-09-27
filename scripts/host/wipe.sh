@@ -56,8 +56,9 @@ empty_bucket() {
 }
 
 # Digests to keep: config/images.lock and the run's pinned set, which run.sh
-# writes to $FORGE_PERF_STATE_DIR/images.pinned. In skip mode only images
-# from those repositories are candidates for removal.
+# writes to $FORGE_PERF_STATE_DIR/images.pinned. In skip mode only images from
+# the pinned ghcr.io/fil-forge/ repositories are candidates for removal, since
+# a laptop's other projects share third-party images such as postgres.
 prune_images() {
   local pinned id refs keep ref repos
   pinned="$({
@@ -65,7 +66,7 @@ prune_images() {
     cat "$FORGE_PERF_STATE_DIR/images.pinned" 2>/dev/null || true
   } | sed 's/#.*//')"
   repos="$(tr -s '[:blank:]' '\n' <<<"$pinned" | grep -E '[:/]' | grep -v '^sha256:' |
-    sed -E 's/@.*//; s/:[^/:]*$//' | sort -u || true)"
+    sed -E 's/@.*//; s/:[^/:]*$//' | grep '^ghcr\.io/fil-forge/' | sort -u || true)"
   for id in $(docker image ls -q --no-trunc | sort -u); do
     refs="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$id")"
     keep=false

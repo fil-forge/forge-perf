@@ -1,0 +1,16 @@
+# The fil-forge images under test, polled at their floating tag. One per line:
+# the smelt variable that selects the image, then repo:tag. A run's set gives
+# each its multi-platform index digest, and run.sh exports VARIABLE as
+# repo@digest, so every compose call of the run sees the same image. Where
+# each tag comes from in smelt is noted beside it.
+
+INGOT_IMAGE      ghcr.io/fil-forge/ingot:main                  # systems/ingot/compose.yml
+PIRI_IMAGE       ghcr.io/fil-forge/piri:main                   # pkg/generate/compose.go
+UPLOAD_IMAGE     ghcr.io/fil-forge/sprue:main                  # systems/upload/compose.yml
+HILT_IMAGE       ghcr.io/fil-forge/hilt:main                   # systems/hilt/compose.yml
+SWARF_IMAGE      ghcr.io/fil-forge/swarf:main                  # systems/swarf/compose.yml
+DELEGATOR_IMAGE  ghcr.io/fil-forge/delegator:main              # systems/delegator/compose.yml
+SIGNER_IMAGE     ghcr.io/fil-forge/piri-signing-service:main   # systems/signing-service/compose.yml
+PLC_IMAGE        ghcr.io/fil-forge/did-method-plc:main         # systems/plc/compose.yml
+INDEXER_IMAGE    ghcr.io/fil-forge/indexing-service:main       # systems/indexing/indexer/compose.yml
+GUPPY_IMAGE      ghcr.io/fil-forge/guppy:main-dev              # systems/guppy/compose.yml

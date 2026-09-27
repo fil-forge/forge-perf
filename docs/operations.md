@@ -162,22 +162,38 @@ rm -f "$tmp"; unset key
 
 AWS allows two keys per user, which lets a new key overlap the old one until both boxes have restarted piri. When replacing a key, add `--overwrite` to both `put-parameter` calls, then delete the old one with `aws iam delete-access-key --user-name forge-perf-piri --access-key-id <old id>`.
 
-### The harness credential
+### The harness credential through a GitHub App
 
-The box clones fil-one/storage-qualification over SSH with a read-only deploy key. A deploy key is scoped to one repository, tied to no person and does not expire. Adding one needs admin on that repository and deploy keys allowed for it in the fil-one organization's settings.
+The box reads fil-one/storage-qualification with a GitHub App's installation token. `SQ_AUTH=app` in `config/harness.conf` selects it. Each run, `scripts/host/harness-token.sh` signs a request with the App's private key and asks for a token scoped to that one repository and `contents: read`; the token lasts an hour and goes with the wipe.
 
-The private half is written to a RAM-backed directory where the system has one (`$XDG_RUNTIME_DIR` on most Linux desktops) and deleted as soon as it is stored:
+The box role reads every parameter under `/forge-perf`, so code merged to forge-perf, smelt or the harness can read the App's private key, and the key can mint tokens for everything the App's installations grant. The App therefore does one job:
+
+- Create a dedicated App under fil-one's Settings, Developer settings, GitHub Apps. Do not reuse an existing organization App. Turn the webhook off, and allow installation only on this account.
+- Under Repository permissions, set Contents to Read-only and leave every other permission at No access. GitHub adds Metadata: Read-only to every App.
+- Install it on fil-one with "Only select repositories" and pick fil-one/storage-qualification alone. The installation's settings page URL ends in the installation ID.
+- On the App's settings page, note the App ID and generate a private key. The browser downloads it as a `.pem` file.
+
+Store the three values as one SecureString. As with piri's key, the value goes through a temporary file readable only by you, never a command-line argument, and the downloaded file is deleted once stored. The private key never needs to be printed or pasted anywhere:
 
 ```sh
-dir=$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/sq.XXXXXX")
-ssh-keygen -t ed25519 -N '' -C forge-perf-box -f "$dir/sq"
-aws ssm put-parameter --name /forge-perf/harness-deploy-key \
-  --type SecureString --value "file://$dir/sq"
-cat "$dir/sq.pub"
-rm -rf "$dir"
+tmp=$(mktemp)   # created mode 600
+jq -njc --arg app <app id> --arg inst <installation id> --rawfile key <downloaded>.pem \
+  '{app_id: $app, installation_id: $inst, private_key: $key}' >"$tmp"
+aws ssm put-parameter --name /forge-perf/harness-app --type SecureString --value "file://$tmp"
+rm -f "$tmp" <downloaded>.pem
 ```
 
-Add the printed public key under the repository's Settings, Deploy keys, with write access left off.
+A 2048-bit key keeps the value under the standard tier's 4 KB limit. Check the parameter's type and fields without printing the key:
+
+```sh
+aws ssm get-parameters-by-path --path /forge-perf --query 'Parameters[].[Name,Type]' --output text
+aws ssm get-parameter --with-decryption --name /forge-perf/harness-app \
+  --query Parameter.Value --output text | jq -c 'keys'
+```
+
+The first line lists `/forge-perf/harness-app SecureString`; the second prints `["app_id","installation_id","private_key"]`. The next run's checkout step fetches the harness with a minted token, or ends `secrets_unavailable` with "cannot mint a harness token from the GitHub App key in SSM".
+
+The App key is rotated yearly, and when someone with access to it leaves. An App can hold several keys at once: generate a new one, store it as above with `--overwrite` added to `put-parameter`, and delete the old key on the App's settings page after the next run fetches the harness. `SQ_AUTH=deploy-key` with a read-only deploy key in `/forge-perf/harness-deploy-key` remains in the code for an organization that allows deploy keys; fil-one does not.
 
 ### The denylist pattern
 

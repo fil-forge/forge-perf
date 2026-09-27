@@ -1,0 +1,15 @@
+# smelt manifest for a forge-perf run: one piri node, Postgres for its
+# database, its blobs in an S3 store outside the stack. run.sh fills the three
+# values from config/piri-s3.env and box.conf and passes the result as
+# SMELT_MANIFEST. piri uses buckets <bucket_prefix>piri-0-<store>, which exist
+# before the run.
+version: 1
+piri:
+  nodes:
+    - storage:
+        db: postgres
+        blob: s3
+        s3:
+          endpoint: @ENDPOINT@
+          bucket_prefix: @BUCKET_PREFIX@
+          insecure: @INSECURE@

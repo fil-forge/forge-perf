@@ -50,7 +50,7 @@ if [ "${NETEM_LOCAL:-}" = 1 ]; then
 fi
 # shellcheck source=../../config/groups.conf
 . "$config/groups.conf"
-netshoot="$(awk '$1 ~ /^nicolaka\/netshoot:/ { print $1; exit }' "$config/images.lock")"
+netshoot="$(awk '$1 == "NETSHOOT_IMAGE" { sub(/:[^:\/]*$/, "", $2); print $2 "@" $3; exit }' "$config/images.lock")"
 
 INTRA_MAX_MS=1
 THROUGHPUT_BYTES=1G
@@ -109,7 +109,7 @@ facts() {
 # in exactly one group.
 discover() {
   mkdir -p "$state"
-  [ -n "$netshoot" ] || harness "no nicolaka/netshoot line in $config/images.lock"
+  [ -n "$netshoot" ] || harness "no NETSHOOT_IMAGE line in $config/images.lock"
   docker ps -a --no-trunc --filter "label=com.docker.compose.project=$project" \
     --format '{{.Label "com.docker.compose.service"}} {{.ID}}' | sort >"$state/discovered" ||
     harness "docker ps failed"
