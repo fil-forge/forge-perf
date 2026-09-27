@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fil-forge.github.io/forge-perf/schema/run-record.v1.json",
+  "title": "forge-perf run record v1",
+  "description": "One run on one box. docs/record.md gives the source of every field and the classification rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "series", "pairing_id", "trigger", "box", "time", "outcome",
+               "drill", "latency", "network", "provenance", "instrument", "trace"],
+  "properties": {
+    "schema": {"const": "forge-perf.run/v1"},
+    "run_id": {"$ref": "#/$defs/run_id"},
+    "series": {"enum": ["per-trigger", "nightly", "campaign", "calibration"]},
+    "pairing_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^pair-[0-9]{8}-[a-z0-9]{1,12}$"}]},
+    "trigger": {
+      "type": "object", "additionalProperties": false, "required": ["reason", "changed"],
+      "properties": {
+        "reason": {"enum": ["image", "smelt", "harness", "nightly", "campaign", "pairing", "manual"]},
+        "changed": {"type": "array", "maxItems": 40, "uniqueItems": true, "items": {"$ref": "#/$defs/component"}}
+      }
+    },
+    "box": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "tier", "instance_type", "arch", "region", "availability_zone", "ami_id",
+                   "kernel", "docker_server", "docker_compose", "cpu", "mem_total_bytes", "nvme"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]{2,12}$"},
+        "tier": {"enum": [1, 2, 3]},
+        "instance_type": {"type": "string", "pattern": "^[a-z][a-z0-9]{1,8}\\.[0-9]{0,2}x?large$"},
+        "arch": {"enum": ["arm64", "x86_64"]},
+        "region": {"const": "us-east-2"},
+        "availability_zone": {"type": "string", "pattern": "^us-east-2[a-c]$"},
+        "ami_id": {"type": "string", "pattern": "^ami-[0-9a-f]{8,17}$"},
+        "kernel": {"$ref": "#/$defs/version_string"},
+        "docker_server": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/version_string"}]},
+        "docker_compose": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/version_string"}]},
+        "cpu": {
+          "type": "object", "additionalProperties": false,
+          "required": ["implementer", "part", "cores", "features"],
+          "properties": {
+            "implementer": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^0x[0-9a-f]{2}$"}]},
+            "part": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^0x[0-9a-f]{3}$"}]},
+            "cores": {"type": "integer", "minimum": 1, "maximum": 512},
+            "features": {"type": "array", "maxItems": 256, "uniqueItems": true,
+                         "items": {"type": "string", "pattern": "^[a-z0-9_]{1,24}$"}}
+          }
+        },
+        "mem_total_bytes": {"$ref": "#/$defs/count"},
+        "nvme": {
+          "type": "object", "additionalProperties": false,
+          "required": ["model", "size_bytes", "filesystem"],
+          "properties": {
+            "model": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[A-Za-z0-9 ._-]{1,64}$"}]},
+            "size_bytes": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
+            "filesystem": {"enum": ["ext4", "xfs", null]}
+          }
+        }
+      }
+    },
+    "time": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_started_at", "stack_up_at", "drill_started_at", "drill_finished_at", "run_finished_at"],
+      "properties": {
+        "run_started_at": {"$ref": "#/$defs/utc"},
+        "stack_up_at": {"$ref": "#/$defs/utc_or_null"},
+        "drill_started_at": {"$ref": "#/$defs/utc_or_null"},
+        "drill_finished_at": {"$ref": "#/$defs/utc_or_null"},
+        "run_finished_at": {"$ref": "#/$defs/utc"}
+      }
+    },
+    "outcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["class", "reasons", "restarted_services", "flags", "drill_exit", "failure_codes"],
+      "properties": {
+        "class": {"enum": ["valid", "availability_warning", "invalid", "failed", "no_data"]},
+        "reasons": {"type": "array", "uniqueItems": true, "items": {"enum": [
+          "runner_error", "preflight_failed", "stack_boot_failed", "setup_failed", "harness_build_failed",
+          "smelt_unreachable", "harness_unreachable", "image_pull_failed", "secrets_unavailable",
+          "s3_unreachable", "mirror_fetch_failed", "go_module_fetch_failed", "step_timeout",
+          "watchdog_timeout", "drill_interrupted", "no_evidence", "wrote_nothing", "record_build_failed",
+          "integrity_failure", "drill_failure",
+          "rtt_out_of_band", "central_ip_changed", "netem_missing", "container_restarted",
+          "image_changed", "harness_mismatch", "read_back_incomplete",
+          "ingest_cutoff_before_measurement", "no_steady_windows", "disk_low", "instrument_modified",
+          "dirty_start", "box_type_mismatch",
+          "availability_errors"]}},
+        "restarted_services": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/service"}},
+        "flags": {"type": "array", "uniqueItems": true, "items": {"enum": [
+          "few_windows", "cap_not_reached", "nic_allowance_exceeded", "offered_rate_near_median",
+          "superseded", "raw_missing"]}},
+        "drill_exit": {"enum": [0, 1, 2, null]},
+        "failure_codes": {"type": "array", "uniqueItems": true, "items": {"enum": [
+          "config_error", "interrupted", "unexpected_error", "transport_error", "timeout",
+          "access_denied", "not_found", "conflict", "bucket_create_failed", "bucket_offline",
+          "bucket_remove_failed", "put_failed", "get_failed", "head_failed", "delete_failed",
+          "list_failed", "bytes_mismatch", "size_mismatch", "range_mismatch", "range_ignored",
+          "range_not_satisfiable", "missing_object", "unexpected_object", "exists_wrong",
+          "delete_missing_failed", "not_exist_not_mapped", "listing_incomplete",
+          "listing_inconsistent", "pagination_broken", "incomplete_upload_left",
+          "multipart_failed", "versioning_enabled", "versioning_unknown",
+          "signing_mode_unknown", "tls_handshake_failed", "concurrency_error",
+          "integrity_failure", "availability_error", "rate_below_floor", "wrote_nothing",
+          "journal_invalid", "sweep_failed", "ingest_cutoff_before_measurement",
+          "read_back_incomplete"]}}
+      }
+    },
+    "drill": {
+      "type": "object", "additionalProperties": false,
+      "required": ["settings", "results", "requests"],
+      "properties": {
+        "settings": {"oneOf": [{"type": "null"}, {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile", "manifest", "window_s", "ramp_s", "workers", "duration_s",
+                       "rate_target_bytes_per_s", "stop_ingest_at_bytes", "verify_lag_min_s",
+                       "verify_lag_max_s", "accounts", "restore_scale_permille", "enforce_floor",
+                       "progress_s", "keep_objects"],
+          "properties": {
+            "profile": {"const": "import"},
+            "manifest": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"},
+            "window_s": {"type": "integer", "minimum": 1},
+            "ramp_s": {"type": "integer", "minimum": 0},
+            "workers": {"type": "integer", "minimum": 1, "maximum": 4096},
+            "duration_s": {"type": "integer", "minimum": 1},
+            "rate_target_bytes_per_s": {"$ref": "#/$defs/count"},
+            "stop_ingest_at_bytes": {"$ref": "#/$defs/count"},
+            "verify_lag_min_s": {"type": "integer", "minimum": 0},
+            "verify_lag_max_s": {"type": "integer", "minimum": 0},
+            "accounts": {"type": "integer", "minimum": 1, "maximum": 100000},
+            "restore_scale_permille": {"type": "integer", "minimum": 0, "maximum": 1000000},
+            "enforce_floor": {"type": "boolean"},
+            "progress_s": {"type": "integer", "minimum": 0},
+            "keep_objects": {"type": "boolean"}
+          }
+        }]},
+        "results": {"oneOf": [{"type": "null"}, {
+          "type": "object", "additionalProperties": false,
+          "required": ["sustained_windows", "total_windows", "ingest_p5_bytes_per_s",
+                       "ingest_median_bytes_per_s", "writes_median_per_s", "window_ingest_bytes_per_s",
+                       "cache_served", "ingest_sent_bytes", "bytes_ingested", "bytes_read_back",
+                       "bytes_restored", "blobs_written", "cap_reached", "ingest_cutoff_s"],
+          "properties": {
+            "sustained_windows": {"$ref": "#/$defs/count"},
+            "total_windows": {"$ref": "#/$defs/count"},
+            "ingest_p5_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
+            "ingest_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
+            "writes_median_per_s": {"$ref": "#/$defs/rate_or_null"},
+            "window_ingest_bytes_per_s": {"type": "array", "maxItems": 5000,
+                                          "items": {"type": "number", "minimum": 0}},
+            "cache_served": {
+              "type": "object", "additionalProperties": false,
+              "required": ["read_back_median_bytes_per_s", "restore_median_bytes_per_s"],
+              "properties": {
+                "read_back_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
+                "restore_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"}
+              }
+            },
+            "ingest_sent_bytes": {"$ref": "#/$defs/count"},
+            "bytes_ingested": {"$ref": "#/$defs/count"},
+            "bytes_read_back": {"$ref": "#/$defs/count"},
+            "bytes_restored": {"$ref": "#/$defs/count"},
+            "blobs_written": {"$ref": "#/$defs/count"},
+            "cap_reached": {"type": "boolean"},
+            "ingest_cutoff_s": {"$ref": "#/$defs/seconds_or_null"}
+          }
+        }]},
+        "requests": {"oneOf": [{"type": "null"}, {
+          "type": "object", "additionalProperties": false,
+          "required": ["total", "transport_errors", "status_408", "status_429", "status_5xx",
+                       "integrity_failures", "backend_s3_errors"],
+          "properties": {
+            "total": {"$ref": "#/$defs/count"},
+            "transport_errors": {"$ref": "#/$defs/count"},
+            "status_408": {"$ref": "#/$defs/count"},
+            "status_429": {"$ref": "#/$defs/count"},
+            "status_5xx": {"$ref": "#/$defs/count"},
+            "integrity_failures": {"$ref": "#/$defs/count"},
+            "backend_s3_errors": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]}
+          }
+        }]}
+      }
+    },
+    "latency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target_rtt_ms", "tolerance_pct", "jitter_ms", "pairs", "before", "after",
+                   "max_drift_pct", "central_ips_stable"],
+      "properties": {
+        "target_rtt_ms": {"type": "number", "minimum": 0},
+        "tolerance_pct": {"type": "number", "minimum": 0},
+        "jitter_ms": {"const": 0},
+        "pairs": {"$ref": "#/$defs/count"},
+        "before": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/rtt"}]},
+        "after": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/rtt"}]},
+        "max_drift_pct": {"$ref": "#/$defs/pct_or_null"},
+        "central_ips_stable": {"type": ["boolean", "null"]}
+      }
+    },
+    "network": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowance_exceeded", "egress_bytes_per_s_median", "seconds_above_baseline"],
+      "properties": {
+        "allowance_exceeded": {"oneOf": [{"type": "null"}, {
+          "type": "object", "additionalProperties": false,
+          "required": ["bw_in", "bw_out", "pps", "conntrack", "linklocal"],
+          "properties": {
+            "bw_in": {"$ref": "#/$defs/count"},
+            "bw_out": {"$ref": "#/$defs/count"},
+            "pps": {"$ref": "#/$defs/count"},
+            "conntrack": {"$ref": "#/$defs/count"},
+            "linklocal": {"$ref": "#/$defs/count"}
+          }
+        }]},
+        "egress_bytes_per_s_median": {"$ref": "#/$defs/rate_or_null"},
+        "seconds_above_baseline": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["forge_perf", "smelt", "harness", "images"],
+      "properties": {
+        "forge_perf": {
+          "type": "object", "additionalProperties": false, "required": ["sha", "instrument_tree"],
+          "properties": {"sha": {"$ref": "#/$defs/sha1"}, "instrument_tree": {"$ref": "#/$defs/sha256"}}
+        },
+        "smelt": {
+          "type": "object", "additionalProperties": false, "required": ["sha"],
+          "properties": {"sha": {"$ref": "#/$defs/sha1"}}
+        },
+        "harness": {
+          "type": "object", "additionalProperties": false,
+          "required": ["sha", "modified", "go_version", "binary_sha256"],
+          "properties": {
+            "sha": {"$ref": "#/$defs/sha1"},
+            "modified": {"type": ["boolean", "null"]},
+            "go_version": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^go[0-9]+\\.[0-9]+(\\.[0-9]+)?$"}]},
+            "binary_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+          }
+        },
+        "images": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["repo", "ref", "digest", "revision", "source", "role", "services"],
+            "properties": {
+              "repo": {"type": "string", "pattern": "^[a-z0-9]+([._/-][a-z0-9]+)*$", "maxLength": 128},
+              "ref": {"type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"},
+              "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+              "revision": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha1"}]},
+              "source": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^https://github\\.com/fil-forge/[A-Za-z0-9._-]+$"}]},
+              "role": {"enum": ["under_test", "instrument"]},
+              "services": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/component"}}
+            }
+          }
+        }
+      }
+    },
+    "instrument": {
+      "type": "object", "additionalProperties": false, "required": ["fingerprint", "box_fingerprint"],
+      "properties": {
+        "fingerprint": {"$ref": "#/$defs/sha256"},
+        "box_fingerprint": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "trace": {"const": null}
+  },
+  "$defs": {
+    "run_id": {"type": "string", "pattern": "^[a-z0-9]{2,12}-[0-9]{8}t[0-9]{6}z$"},
+    "component": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"},
+    "service": {"enum": [
+      "ingot", "ingot-postgres", "ingot-openbao", "piri-0", "piri-postgres",
+      "upload", "postgres", "hilt", "hilt-postgres", "hilt-vault", "swarf", "swarf-postgres", "plc",
+      "plc-postgres", "delegator", "signing-service", "dynamodb-local", "minio",
+      "blockchain", "email", "guppy", "indexer", "redis", "ipni", "piri-minio"]},
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"},
+    "utc_or_null": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/utc"}]},
+    "version_string": {"type": "string", "pattern": "^v?[0-9][0-9A-Za-z.+_-]{0,63}$"},
+    "count": {"type": "integer", "minimum": 0},
+    "rate_or_null": {"type": ["number", "null"], "minimum": 0},
+    "ms_or_null": {"type": ["number", "null"], "minimum": 0},
+    "seconds_or_null": {"type": ["number", "null"], "minimum": 0},
+    "pct_or_null": {"type": ["number", "null"], "minimum": 0},
+    "rtt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ok", "node_to_central_median_ms", "central_to_node_median_ms", "intra_group_max_ms",
+                   "host_to_ingot_ms", "connect_median_max_ms"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "node_to_central_median_ms": {"$ref": "#/$defs/ms_or_null"},
+        "central_to_node_median_ms": {"$ref": "#/$defs/ms_or_null"},
+        "intra_group_max_ms": {"$ref": "#/$defs/ms_or_null"},
+        "host_to_ingot_ms": {"$ref": "#/$defs/ms_or_null"},
+        "connect_median_max_ms": {"$ref": "#/$defs/ms_or_null"}
+      }
+    }
+  }
+}

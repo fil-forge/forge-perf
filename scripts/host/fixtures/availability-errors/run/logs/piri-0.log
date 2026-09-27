@@ -1,0 +1,4 @@
+piri-0  | 2026-10-01T12:05:12.101Z 2026-10-01T12:05:12.100Z	INFO	store	object stored
+piri-0  | 2026-10-01T12:05:40.311Z 2026-10-01T12:05:40.310Z	INFO	store	object stored
+piri-0  | 2026-10-01T13:05:21.200Z 2026-10-01T13:05:21.199Z	ERROR	store	failed to put object	{"error": "FIXTURE-FREE-TEXT"}
+piri-0  | 2026-10-01T13:05:33.200Z 2026-10-01T13:05:33.199Z	ERROR	store	failed to put object	{"error": "FIXTURE-FREE-TEXT"}
