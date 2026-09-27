@@ -21,3 +21,12 @@ check:
 	  echo "==> $$script"; \
 	  bash "$$script"; \
 	done
+
+# Builds the page against fixture scenarios (no runs, calibration only, a lit
+# gate, every outcome class, an instrument change, a box change) and serves
+# them at http://127.0.0.1:8000/. PORT=<n> picks another port.
+PORT ?= 8000
+
+.PHONY: site-preview
+site-preview:
+	python3 scripts/publish/preview.py --port $(PORT)

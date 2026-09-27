@@ -1,0 +1,14 @@
+{
+  "schema": "forge-perf.gates/v1",
+  "gates": [
+    {"gate": 1, "instance_type": "m9gd.2xlarge", "nic_reference_gbps": 4.25,
+     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
+     "measured_at": null, "forge_perf_sha": null, "method": null},
+    {"gate": 2, "instance_type": "m9gd.8xlarge", "nic_reference_gbps": 17,
+     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
+     "measured_at": null, "forge_perf_sha": null, "method": null},
+    {"gate": 3, "instance_type": "m9gd.16xlarge", "nic_reference_gbps": 34,
+     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
+     "measured_at": null, "forge_perf_sha": null, "method": null}
+  ]
+}
