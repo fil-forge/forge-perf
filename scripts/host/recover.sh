@@ -57,10 +57,6 @@ flush() {
   "$here/outbox.sh" flush || echo "recover: the outbox keeps files for the next poll" >&2
 }
 
-ssm_value() {
-  aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text
-}
-
 if [ ! -e "$current" ]; then
   step "no interrupted run"
   rm -f "$attempts" "$amended"

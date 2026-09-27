@@ -1,0 +1,10 @@
+[Unit]
+Description=forge-perf nightly run at 03:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+# A night the box was off runs once at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

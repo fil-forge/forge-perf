@@ -115,3 +115,57 @@ piri_aws() {
     *) die "FORGE_PERF_PIRI_S3_HOST_AUTH must be role or key" ;;
   esac
 }
+
+ssm_value() {
+  aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text
+}
+
+# harness_git DIR: how git reaches the harness repository, in HARNESS_GIT (a
+# command prefix) and HARNESS_URL, with the credential written under DIR.
+# SQ_AUTH in config/harness.conf, or FORGE_PERF_HARNESS_AUTH for a local run:
+# deploy-key (an SSH key in SSM), app (a GitHub App installation token minted
+# from the App's key in SSM) or none (the caller's own git credentials).
+# Returns 1 when the credential cannot be read, 2 for an unknown SQ_AUTH. The
+# caller defines `limited`, which bounds one call.
+harness_git() {
+  local dir="$1" auth="${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-app}}" ssm="${FORGE_PERF_SSM_PATH:-/forge-perf}"
+  case "$auth" in
+    deploy-key)
+      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-git@github.com:$SQ_REPO.git}"
+      (umask 077 && ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-$ssm/harness-deploy-key}" \
+        >"$dir/harness-key") || return 1
+      HARNESS_GIT=(env "GIT_SSH_COMMAND=ssh -i $dir/harness-key -o IdentitiesOnly=yes \
+-o StrictHostKeyChecking=yes -o UserKnownHostsFile=$FORGE_PERF_CHECKOUT/config/github-known-hosts" git)
+      ;;
+    app)
+      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://x-access-token@github.com/$SQ_REPO.git}"
+      limited "$FORGE_PERF_CHECKOUT/scripts/host/harness-token.sh" \
+        "${FORGE_PERF_HARNESS_APP_PARAM:-$ssm/harness-app}" "$dir" "$SQ_REPO" || return 1
+      local helper="!f() { [ \"\$1\" = get ] && printf 'username=x-access-token\npassword=%s\n' \"\$(cat '$dir/harness-token')\"; }; f"
+      HARNESS_GIT=(git -c credential.helper= -c "credential.helper=$helper")
+      ;;
+    none)
+      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://github.com/$SQ_REPO.git}"
+      HARNESS_GIT=(git)
+      ;;
+    *) return 2 ;;
+  esac
+}
+
+# run_active: a run holds the run lock, or forge-perf-run.service is starting,
+# running or stopping. The unit is Type=oneshot, so `systemctl is-active`
+# reports it inactive while it starts, and its ExecStopPost wipe runs after
+# run.sh has let the lock go.
+run_active() {
+  if command -v flock >/dev/null; then
+    mkdir -p "$FORGE_PERF_RUNTIME"
+    flock -n "$FORGE_PERF_RUNTIME/run.lock" true || return 0
+  elif host_ops_skipped; then
+    # A laptop without flock: a run in progress has current.json.
+    [ ! -e "$FORGE_PERF_STATE_DIR/current.json" ] || return 0
+  fi
+  case "$(host_read systemctl show -p ActiveState --value forge-perf-run.service)" in
+    active | activating | deactivating | reloading) return 0 ;;
+  esac
+  return 1
+}

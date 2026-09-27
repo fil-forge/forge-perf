@@ -39,7 +39,8 @@ from_pending=""
 refuse() {
   echo "run.sh: $*" >&2
   if [ -n "$from_pending" ] && [ -e "$state/pending.json" ]; then
-    mv -f "$state/pending.json" "$state/pending.json.rejected"
+    write_durable "$state/pending.json.rejected" <"$state/pending.json"
+    rm -f "$state/pending.json"
     echo "run.sh: moved pending.json to pending.json.rejected" >&2
   fi
   exit 2
@@ -97,11 +98,20 @@ settings="$cfg/settings/$instance_type.env"
 
 # --- the set, the series and the drill settings -------------------------------
 
-kind=manual superseded=0 pairing=null
+kind=manual superseded=0 pairing=null attempt=0
 if [ -n "$set_file" ]; then
   set_json="$(jq -ce 'objects' "$set_file")" || refuse "$set_file is not a JSON object"
 else
+  # The poller writes pending.json under poll.lock. Holding it from here
+  # until pending.json is taken keeps a poll from writing a newer set that
+  # this run would then remove unrun.
+  exec 8>"$FORGE_PERF_RUNTIME/poll.lock"
+  if command -v flock >/dev/null; then
+    flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
+  fi
   [ -e "$state/pending.json" ] || { echo "run.sh: nothing pending"; exit 0; }
+  # A hold set while a poll pass was deciding to start this run.
+  [ ! -e "$state/hold" ] || { echo "run.sh: the box is held; the pending run waits"; exit 0; }
   from_pending=1
   pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" ||
     refuse "pending.json is not a JSON object with a set"
@@ -109,6 +119,7 @@ else
   kind="$(jq -r '.kind // "trigger"' <<<"$pending")"
   superseded="$(jq '.superseded // 0' <<<"$pending")"
   pairing="$(jq -c '.pairing_id // null' <<<"$pending")"
+  attempt="$(jq '.attempt // 0' <<<"$pending")"
   # A campaign's own workers, size and duration, unless the command line says.
   for v in workers size duration; do
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
@@ -309,8 +320,18 @@ finish() {
     exit "$status"
   fi
   close_out || [ "$status" -ne 0 ] || status=1
+  [ -z "$from_pending" ] || last_run
   echo "run $run_id: ${record_class:-no record ($(jq -r '.reasons | join(" ")' "$state/runner.json"))}"
   exit "$status"
+}
+
+# last_run: what the poller needs to know about a run it dispatched, to
+# retry a set an infrastructure failure stopped (docs/runner.md, "Polling").
+last_run() {
+  jq -n --arg id "$run_id" --arg kind "$kind" --argjson set "$set_json" --argjson superseded "$superseded" \
+    --argjson attempt "$attempt" --argjson previous "$last" --slurpfile runner "$state/runner.json" \
+    '{run_id: $id, kind: $kind, set: $set, superseded: $superseded, attempt: $attempt,
+      previous_started: $previous, reasons: $runner[0].reasons}' | write_durable "$state/last-run.json"
 }
 
 # within SECONDS REASON COMMAND...: run COMMAND under timeout. An overrun
@@ -336,10 +357,6 @@ host_require() {
     return 0
   fi
   "$@" >/dev/null 2>&1 || stop "$reason" "$message"
-}
-
-ssm_value() {
-  aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text
 }
 
 # --- steps ------------------------------------------------------------------------
@@ -377,6 +394,13 @@ step_preflight() {
     else
       stop instrument_modified "the forge-perf checkout differs from its commit: $(tr '\n' ' ' <<<"$modified")"
     fi
+  fi
+  # update.sh records HEAD in updated-rev as its last step. A record for
+  # another commit means the checkout moved and provisioning or the unit sync
+  # did not finish, so the host may still run the previous pins.
+  if [ "${FORGE_PERF_MODE:-persistent}" = persistent ] && [ -s "$state/updated-rev" ] &&
+    [ "$(cat "$state/updated-rev")" != "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" ]; then
+    stop preflight_failed "update.sh has not completed for this checkout"
   fi
   [[ "$FORGE_PERF_PIRI_BUCKET_PREFIX" = "${smelt_prefix}piri-0-" ]] ||
     stop runner_error "FORGE_PERF_PIRI_BUCKET_PREFIX must be the smelt bucket prefix followed by piri-0-"
@@ -442,36 +466,6 @@ get_denylist() {
     mv "$DENYLIST.tmp" "$DENYLIST"
 }
 
-# harness_git: how git reaches the harness repository, in HARNESS_GIT (a
-# command prefix) and HARNESS_URL. SQ_AUTH in config/harness.conf, or
-# FORGE_PERF_HARNESS_AUTH for a local run: deploy-key (an SSH key in SSM), app
-# (a GitHub App installation token minted from the App's key in SSM) or none
-# (the caller's own git credentials).
-harness_git() {
-  local auth="${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-app}}"
-  case "$auth" in
-    deploy-key)
-      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-git@github.com:$SQ_REPO.git}"
-      (umask 077 && ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-$SSM/harness-deploy-key}" \
-        >"$SECRETS/harness-key") || stop secrets_unavailable "cannot read the harness deploy key from SSM"
-      HARNESS_GIT=(env "GIT_SSH_COMMAND=ssh -i $SECRETS/harness-key -o IdentitiesOnly=yes \
--o StrictHostKeyChecking=yes -o UserKnownHostsFile=$cfg/github-known-hosts" git)
-      ;;
-    app)
-      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://x-access-token@github.com/$SQ_REPO.git}"
-      limited "$here/harness-token.sh" "${FORGE_PERF_HARNESS_APP_PARAM:-$SSM/harness-app}" "$SECRETS" "$SQ_REPO" ||
-        stop secrets_unavailable "cannot mint a harness token from the GitHub App key in SSM"
-      local helper="!f() { [ \"\$1\" = get ] && printf 'username=x-access-token\npassword=%s\n' \"\$(cat '$SECRETS/harness-token')\"; }; f"
-      HARNESS_GIT=(git -c credential.helper= -c "credential.helper=$helper")
-      ;;
-    none)
-      HARNESS_URL="${FORGE_PERF_HARNESS_URL:-https://github.com/$SQ_REPO.git}"
-      HARNESS_GIT=(git)
-      ;;
-    *) stop runner_error "the harness credential (SQ_AUTH) must be deploy-key, app or none" ;;
-  esac
-}
-
 # mirror NAME URL SHA REASON EXTRA GIT...: fetch every branch into the bare
 # mirror, then require SHA. EXTRA is the ref namespace that keeps a pinned
 # commit reachable after its branch is gone: `pull` (pull request heads, for
@@ -506,7 +500,13 @@ step_checkout() {
   local knob
   step "checkout"
   mkdir -p "$MIRRORS"
-  harness_git
+  harness_git "$SECRETS" || case $? in
+    2) stop runner_error "the harness credential (SQ_AUTH) must be deploy-key, app or none" ;;
+    *) case "${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-app}}" in
+         app) stop secrets_unavailable "cannot mint a harness token from the GitHub App key in SSM" ;;
+         *) stop secrets_unavailable "cannot read the harness deploy key from SSM" ;;
+       esac ;;
+  esac
   mirror smelt "${FORGE_PERF_SMELT_URL:-https://github.com/$SMELT_REPO.git}" "$smelt_sha" smelt_unreachable tags git
   mirror storage-qualification "$HARNESS_URL" "$harness_sha" harness_unreachable pull "${HARNESS_GIT[@]}"
   git clone -q --no-checkout "$MIRRORS/smelt.git" "$SMELT" &&
@@ -844,8 +844,10 @@ trap finish EXIT
 trap 'on_stop 143' TERM
 trap 'on_stop 130' INT
 set_phase preflight
-jq . <<<"$set_json" >"$state/last-started.json"
-rm -f "$state/pending.json"
+jq . <<<"$set_json" | write_durable "$state/last-started.json"
+# A manual run leaves the poller's pending run and retry state alone.
+[ -z "$from_pending" ] || rm -f "$state/pending.json" "$state/last-run.json"
+exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 
 for s in $STEPS; do

@@ -10,7 +10,9 @@
 # provision.sh runs when the checkout's host/ or provisioning scripts differ
 # from the commit provisioning last succeeded at, recorded in the state
 # directory, or when there is no such record. A failed provision leaves the
-# record alone, so the next pass tries again.
+# record alone, so the next pass tries again. The last step records HEAD in
+# updated-rev; poll.sh starts update.sh again, and starts no run, until that
+# record matches the checkout.
 #
 # Run between runs by poll.sh, and by an operator through
 # scripts/operator/box-update.sh. It refuses on a campaign box, which stays at
@@ -44,6 +46,7 @@ mode="${FORGE_PERF_MODE:-persistent}"
 ref="${FORGE_PERF_REF:-main}"
 git=(git -C "$FORGE_PERF_CHECKOUT")
 provisioned_rev="$FORGE_PERF_STATE_DIR/provisioned-rev"
+updated_rev="$FORGE_PERF_STATE_DIR/updated-rev"
 
 if [ "$local_only" -eq 0 ]; then
   [ "$mode" != campaign ] || die "a campaign box stays at its bootstrap commit"
@@ -102,4 +105,5 @@ fi
 step "systemd units"
 sync_systemd_units
 enable_mode_units "$mode"
+printf '%s\n' "$head" | host_file 0644 "$updated_rev" || true
 step "updated"

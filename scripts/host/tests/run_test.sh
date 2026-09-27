@@ -452,6 +452,15 @@ run 1 -- --set "$work/set.json" --workers 16
 echo "ok: a hand edit in the checkout stops preflight, and the run is still recorded"
 
 setup
+printf '%040d\n' 7 >"$work/box/state/updated-rev"
+run 1 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = preflight_failed ] || fail "reasons $(runner .reasons)"
+grep -q "update.sh has not completed for this checkout" "$work/out" || fail "no update.sh message"
+git -C "$work/checkout" rev-parse HEAD >"$work/box/state/updated-rev"
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+echo "ok: preflight stops while update.sh has not completed for the checkout's HEAD"
+
+setup
 run 1 NTP=no -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = preflight_failed ] || fail "reasons $(runner .reasons)"
 echo "ok: an unsynchronized clock stops preflight"
@@ -519,6 +528,34 @@ run 0 -- --workers 16 --until preflight
   "calibration image ingot 2" ] || fail "trigger $(runner '[.series, .trigger, .superseded]')"
 [ ! -e "$work/box/state/pending.json" ] || fail "pending.json left"
 echo "ok: a pending trigger runs, names what changed, and publishes as calibration"
+
+# A run the poller dispatched leaves last-run.json, from which the poller
+# retries a set an infrastructure failure stopped.
+setup
+jq '.images["ghcr.io/fil-forge/ingot:main"] = "sha256:" + ("9" * 64)' "$work/set.json" >"$work/box/state/last-started.json"
+jq '{kind: "nightly", set: ., superseded: 1, attempt: 2}' "$work/set.json" >"$work/box/state/pending.json"
+run 1 UP_EXIT=2 -- --workers 16
+jq -e --slurpfile set "$work/set.json" '.kind == "nightly" and .attempt == 2 and .superseded == 1
+  and .set.images == $set[0].images and .reasons == ["stack_boot_failed"]
+  and .previous_started.images["ghcr.io/fil-forge/ingot:main"] == "sha256:" + ("9" * 64)' \
+  "$work/box/state/last-run.json" >/dev/null || fail "last-run $(cat "$work/box/state/last-run.json")"
+echo "ok: a dispatched run leaves its set, attempt and reasons for the poller"
+
+setup
+jq '{kind: "trigger", set: ., superseded: 0}' "$work/set.json" >"$work/box/state/pending.json"
+echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+run 0 -- --workers 16
+grep -q "the box is held" "$work/out" || fail "no hold message"
+[ -e "$work/box/state/pending.json" ] && [ ! -e "$work/box/state/runner.json" ] || fail "a held box started the run"
+echo "ok: a pending run that meets the hold waits"
+
+setup
+jq '{kind: "nightly", set: ., superseded: 1}' "$work/set.json" >"$work/box/state/pending.json"
+echo '{"run_id": "main-1"}' >"$work/box/state/last-run.json"
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+[ "$(jq -r .kind "$work/box/state/pending.json")" = nightly ] && [ -e "$work/box/state/last-run.json" ] ||
+  fail "a manual run removed the poller's state"
+echo "ok: a manual run leaves pending.json and last-run.json"
 
 setup
 echo '{"kind": "trigger"}' >"$work/box/state/pending.json"

@@ -94,6 +94,7 @@ run() {
   [ "$got" -eq "$want" ] || { fail "$what: exit $got, want $want"; return 1; }
 }
 units="$work/root/etc/systemd/system"
+updated="$work/root/var/lib/forge-perf/state/updated-rev"
 called() { grep -qxF "$1" "$LOG"; }
 
 if run 0 "first boot" --local; then
@@ -106,6 +107,8 @@ if run 0 "first boot" --local; then
   called "systemctl daemon-reload" && called provision.sh &&
     [ "$(cat "$work/root/var/lib/forge-perf/state/provisioned-rev")" = "$(git -C "$checkout" rev-parse HEAD)" ] &&
     echo "ok: first boot reloads systemd, provisions and records the commit" || fail "first boot: reload or provision"
+  [ "$(cat "$updated")" = "$(git -C "$checkout" rev-parse HEAD)" ] &&
+    echo "ok: first boot records the commit it finished at" || fail "first boot: updated-rev"
 fi
 
 if run 0 "a pass with nothing new"; then
@@ -127,9 +130,12 @@ push "pins again" sh -c 'echo PIN=3 >host/versions.env'
 touch "$work/provision-fails"
 run 1 "a failed provision" && called provision.sh &&
   echo "ok: a failed provision fails the pass" || fail "failed provision: pass succeeded"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(g rev-parse HEAD)" ] && [ "$(cat "$updated")" != "$(g rev-parse HEAD)" ] &&
+  echo "ok: after a failed provision updated-rev stays behind the reset checkout" || fail "failed provision: updated-rev moved"
 rm "$work/provision-fails"
 run 0 "the pass after a failed provision" && called provision.sh &&
-  echo "ok: the next pass retries provisioning" || fail "retry: provision.sh did not run"
+  [ "$(cat "$updated")" = "$(g rev-parse HEAD)" ] &&
+  echo "ok: the next pass retries provisioning and records the commit" || fail "retry: provision.sh or updated-rev"
 run 0 "the pass after the retry" && ! called provision.sh &&
   echo "ok: a successful provision is not repeated" || fail "after retry: provision.sh ran again"
 

@@ -48,7 +48,7 @@ Skip mode leaves out everything that depends on the box itself: the instance-sto
 | `wipe.sh` | last step of every run; `ExecStopPost=wipe.sh --if-dirty` of the run unit; from `recover.sh` | returns the box to the state a run starts from |
 | `recover.sh` | `forge-perf-recover.service`, every boot, before the poll timers and the run unit | closes out a run that a reboot interrupted, then flushes the outbox |
 | `collect.sh` | from `run.sh` and `recover.sh` | builds a run's raw tarball |
-| `outbox.sh flush` | from `run.sh`, `recover.sh`, and between runs | uploads raw tarballs, then records |
+| `outbox.sh flush` | from `run.sh`, `recover.sh`, and from `poll.sh` between runs | uploads raw tarballs, then records |
 
 ### The wipe
 
@@ -104,6 +104,84 @@ The outbox holds at most 20 GB (`FORGE_PERF_OUTBOX_CAP_BYTES`). Past that, each 
 | `FORGE_PERF_PIRI_S3_HOST_AUTH` | `role` | `role`: the host's own credentials (the instance role on the box); `key`: the credentials file |
 | `FORGE_PERF_PIRI_S3_CREDENTIALS` | `/run/forge-perf/secrets/piri-s3.env` | `FORGE_PERF_PIRI_S3_KEY_ID` and `FORGE_PERF_PIRI_S3_SECRET` |
 
+## Polling
+
+`forge-perf-poll.timer` runs `poll.sh` two minutes after boot and then every five minutes; `forge-perf-nightly.timer` runs `poll.sh --nightly` at 03:00 UTC, and once at the next boot for a night the box was off. Both units have `Requires=` and `After=` on `forge-perf-recover.service`. A pass holds `/run/forge-perf/poll.lock`: a timer pass that finds the previous one still going exits, and the nightly pass waits up to 200 seconds for it. Each network call gets 60 seconds, and the poll unit's `TimeoutStartSec` is 240.
+
+### The set
+
+A pass resolves the set a run would test:
+
+| Input | Resolved by |
+|---|---|
+| each image in `config/images.tracked` | an anonymous GHCR token, then `HEAD /v2/<repo>/manifests/<tag>`; the `Docker-Content-Digest` header is the multi-platform index digest |
+| smelt | `SMELT_REF` from `config/smelt.conf` while it is set; otherwise `git ls-remote` of smelt's `refs/heads/main` |
+| the harness | `SQ_PIN` from `config/harness.conf` while it is set, with `pinned: true` and `main: null`; otherwise `git ls-remote` of `refs/heads/main` with the harness credential, which the pass reads into its own directory under `/run/forge-perf` and deletes after the call |
+
+The trigger key is `{smelt, harness.sha, images}` in canonical form. Third-party pins, forge-perf's own commit and the box facts are recorded per run and are outside the key, so they never start a run. A failed resolution writes nothing pending, adds one to `state/poll-failures`, and makes the pass exit 1; the next successful pass resets the count.
+
+### State files
+
+`/var/lib/forge-perf/state/` is on the root volume. Every file below is replaced through a synced temporary file.
+
+| File | Written by | Holds |
+|---|---|---|
+| `pending.json` | `poll.sh` under `poll.lock`; taken by `run.sh` under the same lock | `{kind, set, first_seen_at, superseded}`, plus `attempt` and `not_before` (Unix seconds) for a retry |
+| `last-started.json` | `run.sh` as a run starts, a manual `--set` run included | the set of that run, whatever its outcome; after a manual run on another set, the next pass makes main's set pending again, since it was not the last to run on the box |
+| `current.json` | `run.sh` | the run in progress and its phase ([A run](#record-upload-and-wipe)) |
+| `last-run.json` | `run.sh` as a run it took from `pending.json` ends; a manual run leaves it and `pending.json` alone | `{run_id, kind, set, superseded, attempt, previous_started, reasons}` |
+| `pending.json.rejected` | `run.sh` | a pending run that could not start |
+| `hold` | `status.sh hold` | `{at}`; the box starts no run while it exists |
+| `poll-failures` | `poll.sh` | failed resolutions in a row |
+
+### The decision
+
+Latest wins, and at most one run is pending. With the set resolved, a pass writes `pending.json` by the first row that matches:
+
+| Case | `pending.json` |
+|---|---|
+| `--nightly` | `kind: nightly` with the new set, whatever changed; a pending trigger becomes the nightly, and its `superseded` grows by one when the set differs |
+| the set's key equals `last-started.json`'s | unchanged: the set already ran, or is running now |
+| the set's key equals the pending set's or `pending.json.rejected`'s | unchanged |
+| a run is pending with another set | the new set replaces it, `superseded` grows by one, `kind` stays (a pending nightly stays nightly), and a retry's `attempt` and `not_before` go |
+| nothing is pending | `{kind: trigger, set, superseded: 0}` |
+
+`superseded` counts the sets a run covers beyond its own, and the record carries it. A set that ended `failed`, or `no_data` for a Forge-side reason, stays in `last-started.json`, so the key matches and the set waits for the nightly run. A nightly pass whose resolution fails still makes a nightly run pending, on the pending set or else the last one started.
+
+**Infrastructure retries.** Before resolving, a pass between runs reads `last-run.json`. When its reasons include `image_pull_failed`, `secrets_unavailable`, `s3_unreachable`, `mirror_fetch_failed` or `go_module_fetch_failed` and its `attempt` is under 3, the pass puts `previous_started` back as `last-started.json` and makes the set pending again with `attempt + 1` and `not_before` 15 minutes on, keeping its kind. When a newer set is already pending, that set covers the failed one, and its `superseded` grows by one. After the third retry the set stays in `last-started.json` and waits for the nightly run. The pass then removes `last-run.json`.
+
+### Between runs
+
+A run is going while `run.lock` is held or `forge-perf-run.service` is activating, active or deactivating (its `ExecStopPost` wipe runs after `run.sh` lets the lock go). During a run a pass only resolves, updates `pending.json` and writes the heartbeat. Between runs, in order:
+
+1. **Held:** with `state/hold` present, the pass flushes the outbox and starts nothing, not even an update.
+2. **Update:** when `git ls-remote origin` shows `FORGE_PERF_REF` (default `main`) ahead of the checkout's `HEAD`, the pass starts `update.sh` as the transient unit `forge-perf-update` and starts no run. `update.sh` resets the checkout, provisions, syncs the units, and as its last step writes `HEAD` to `state/updated-rev`. Until `updated-rev` matches `HEAD`, no run starts: a pass that finds `forge-perf-update` still going waits, and a pass that finds it stopped counts an update failure, exits 1 and starts `update.sh` again. The count adds to the heartbeat's `poll_failures`, so a provision that keeps failing raises the same alert as a set that cannot be resolved, and it clears once `updated-rev` matches. A campaign box (`FORGE_PERF_MODE=campaign`) and skip mode never update.
+3. **Dispatch:** `systemctl start --no-block forge-perf-run.service` when a run is pending, its `not_before` has passed, and `WORKERS` is set in the instance type's settings file (or the pending run names its own). With no settings file for the instance type, the run waits and the pass says so. While a `forge-perf-outbox` flush is still uploading, the run waits for the next pass, so no upload shares the NIC with a drill; the run's own upload flushes whatever the outbox still holds. Starting an active oneshot is a no-op. `run.sh` takes `poll.lock` while it reads and removes `pending.json`, so no pass writes a set that the run then discards.
+4. **Flush:** when nothing can start, `outbox.sh flush` as the transient unit `forge-perf-outbox`, if the outbox holds anything. Transient units (`RuntimeMaxSec` 45 minutes) keep a 15-minute upload or a provision clear of the poll unit's 240 seconds.
+
+### Heartbeat
+
+Every pass ends by writing `s3://$FORGE_PERF_RESULTS_BUCKET/published/<box>/heartbeat.json`:
+
+```json
+{"box": "main", "at": "2026-09-26T06:00:09Z", "forge_perf_sha": "<40-hex>", "state": "running",
+ "run_id": "main-20260926t055512z", "run_started_at": "2026-09-26T05:55:12Z",
+ "pending_kind": "trigger", "poll_failures": 0}
+```
+
+`state` is `running` during a run, else `held` while the hold exists, else `idle`. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
+
+### Holds and status
+
+```
+scripts/host/status.sh                      # the hold, the run, the state files, poll failures, the timers
+scripts/host/status.sh hold [--wait-idle]   # no run starts; --wait-idle returns once no run is going
+scripts/host/status.sh release
+scripts/operator/hold.sh <box> on|off       # the same over SSM; `on` waits for idle, up to 7 hours
+```
+
+The hold is a file on the root volume, so it survives a reboot. It stops dispatch and updates; a run already going finishes, and pending sets keep coalescing, so the newest one starts after `release`. A pass reads the hold after it resolves the set, just before it would dispatch, and `run.sh` reads it again under `poll.lock` before it takes `pending.json`, leaving the file in place when the box is held. `hold --wait-idle` waits for `poll.lock` once before it checks for a run, so a pass that decided to start a run before the hold has either started it, which then counts as going, or finished.
+
 ## A run
 
 `run.sh` runs the stack once against one set, measures it, records the result and wipes. Every run takes `/run/forge-perf/run.lock` with `flock -n`; a second instance exits 0 at once. `forge-perf-run.service` runs it on the box.
@@ -112,7 +190,7 @@ The outbox holds at most 20 GB (`FORGE_PERF_OUTBOX_CAP_BYTES`). Past that, each 
 run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, pairing_id}`, plus `workers`, `size` and `duration` for a campaign) and removes that file. With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
+Without `--set` it takes the run the poller left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `workers`, `size` and `duration` for a campaign) and removes that file, holding `poll.lock` while it does. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
 
 A set is the JSON the poller resolves:
 
@@ -135,7 +213,7 @@ Each step runs its slow commands under `timeout` with the budget below, and ever
 
 | Step | What it does | Budget | Reasons |
 |---|---|---|---|
-| preflight | clock synchronized (`timedatectl show -p NTPSynchronized --value` prints `yes`); CPU with `sha2`; `modprobe sch_netem`; Docker 25 or newer; every box fact the record schema requires was read (instance metadata, Docker and Compose versions, cores, memory, the instance-store model, size and filesystem); `git status --porcelain` of the forge-perf checkout empty; no container, volume, `forge-network` or object in piri's six buckets, or else one wipe and a second look; piri's S3 key from SSM to `/run/forge-perf/secrets/piri-s3.env` | wipe 30 min | `preflight_failed`, `instrument_modified`, `dirty_start` (the run goes on), `s3_unreachable`, `secrets_unavailable` |
+| preflight | clock synchronized (`timedatectl show -p NTPSynchronized --value` prints `yes`); CPU with `sha2`; `modprobe sch_netem`; Docker 25 or newer; every box fact the record schema requires was read (instance metadata, Docker and Compose versions, cores, memory, the instance-store model, size and filesystem); `git status --porcelain` of the forge-perf checkout empty; on a persistent box, `state/updated-rev`, when present, equal to the checkout's `HEAD`; no container, volume, `forge-network` or object in piri's six buckets, or else one wipe and a second look; piri's S3 key from SSM to `/run/forge-perf/secrets/piri-s3.env` | wipe 30 min | `preflight_failed`, `instrument_modified`, `dirty_start` (the run goes on), `s3_unreachable`, `secrets_unavailable` |
 | checkout | fetch both mirrors; require both SHAs with `git cat-file -e <sha>^{commit}`; check out smelt and the harness in the work tree; check that smelt has the settings a run needs; build the drill (`GOWORK=off go build -o bin/drill ./cmd/drill`, after `go mod download`) | fetch 10 min each, modules 15 min, build 15 min | `mirror_fetch_failed`, `smelt_unreachable`, `harness_unreachable`, `go_module_fetch_failed`, `harness_build_failed` |
 | images | render `config/smelt-manifest.yml.tmpl`; `make generate`; `docker compose config --images` must list only pinned references; piri-0 must get `FORGE_PERF_PIRI_S3_ENDPOINT` and `FORGE_PERF_PIRI_BUCKET_PREFIX`, with no `piri-minio` service, since a smelt that predates the manifest's `storage.s3` ignores it; pull each pinned image that `docker image inspect` does not find, four at a time; copy each image's `org.opencontainers.image.revision` and `org.opencontainers.image.source` labels into `runner.json`, null where a label is absent; map each image to its compose services in `compose-images.json`, which holds only each service's image and piri's S3 target, since the interpolated model carries piri's key | generate 10 min, pull 20 min | `image_pull_failed`, `runner_error` |
 | boot | `current.json` phase `boot`; `docker network create --subnet $NET_SUBNET forge-network` (`config/latency.env`); `make up`, which waits up to 600 s for health | 15 min | `stack_boot_failed` |
@@ -261,6 +339,24 @@ Without `--until`, the same command runs the whole run: netem, the drill, the po
 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" \
   scripts/host/run.sh --set calibration/sets/shakedown.json
 aws s3 ls --recursive s3://local-results/
+```
+
+The poller runs the same way. In skip mode it flushes the outbox in its own process, never updates the checkout, and logs the dispatch as `host-op skipped: systemctl start --no-block forge-perf-run.service`; start the pending run by hand with `run.sh`, which takes `local/state/pending.json`. Without `flock` (macOS) a run counts as going while `local/state/current.json` exists.
+
+A pass makes a set pending only when its key differs from `local/state/last-started.json`'s ([The decision](#the-decision)), and prints nothing when it does not. Every earlier run leaves that file, the `--until setup` run above included, and while `main` still carries the shakedown set's digests the pass then writes no `pending.json`. Remove the file first to poll from a clean state:
+
+```sh
+rm -f local/state/last-started.json
+scripts/host/poll.sh                # resolves the set from GHCR, writes local/state/pending.json and a heartbeat
+scripts/host/status.sh
+NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" scripts/host/run.sh
+```
+
+`poll.sh` takes each image's current digest, so the run pulls whatever `main` holds now. To run a pinned set as a per-trigger run instead, write `pending.json` from it and start `run.sh` the same way:
+
+```sh
+jq -n --slurpfile set calibration/sets/shakedown.json \
+  '{kind: "trigger", set: $set[0], superseded: 0}' >local/state/pending.json
 ```
 
 Instance metadata reports the type as `local` in skip mode, which selects `config/settings/local.env` (4 workers, 2 GB per run). At a laptop's rate that cap fills one to four 10-second windows, so a local run carries the `few_windows` flag, and its p5 and median can differ several-fold between two runs of the same set. A local run checks the pipeline end to end; it does not measure the rate. Its `DISK_FACTOR=1.25` is the box's value, and smelt's disk check counts only ingot's side. The local MinIO keeps piri's blobs on the same disk, so a laptop needs about twice the cap free. The host checks (clock, CPU, `sch_netem`) log `host-check skipped` and pass. A checkout with uncommitted changes stops preflight as on the box; `FORGE_PERF_ALLOW_MODIFIED=1` lets it through in skip mode only. `FORGE_PERF_CLIENT_PATH=published` sends the drill to ingot's published port through Docker's proxy, so a local run measures that path too. smelt's stack uses compose project `smelt`, `forge-network` and host ports 15000 to 15141, so it cannot run beside another smelt stack.

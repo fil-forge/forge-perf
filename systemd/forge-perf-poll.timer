@@ -1,0 +1,12 @@
+[Unit]
+Description=forge-perf poll every five minutes
+
+[Timer]
+# Two minutes after boot, then five minutes after each pass started. The
+# heartbeat's age alerts at 30 minutes.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
