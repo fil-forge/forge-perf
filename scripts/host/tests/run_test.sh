@@ -4,7 +4,8 @@
 # commit of this repository (so `git status` is clean and a hand edit can be
 # tested) against local smelt and harness repositories whose history the
 # mirrors fetch. The harness commit is reachable only through a pull request
-# head, as the pinned one is once its branch is deleted.
+# head, as the pinned one is once its branch is deleted; the smelt commit only
+# through a tag, as a pinned one is once its branch is rebuilt.
 # shellcheck disable=SC2016,SC2015 # stubs expand their own variables; fail exits
 set -euo pipefail
 
@@ -127,7 +128,15 @@ STUB
 chmod +x "$work/smelt-src/scripts/perf-drill.sh"
 echo 'PIRI_INDEXER=${PIRI_INDEXER:-on}' >"$work/smelt-src/systems/piri/entrypoint.sh"
 git -C "$work/smelt-src" add -A && git -C "$work/smelt-src" commit -qm smelt
+git -C "$work/smelt-src" checkout -q -b shakedown
+git -C "$work/smelt-src" commit -q --allow-empty -m pinned
 smelt_sha="$(git -C "$work/smelt-src" rev-parse HEAD)"
+git -C "$work/smelt-src" tag "forge-perf/20261001-${smelt_sha:0:12}"
+# A stranger's pull request head, which the smelt mirror must not take.
+git -C "$work/smelt-src" commit -q --allow-empty -m stranger
+git -C "$work/smelt-src" update-ref refs/pull/7/head HEAD
+git -C "$work/smelt-src" checkout -q -
+git -C "$work/smelt-src" branch -q -D shakedown
 git init -q "$work/sq-src"
 git -C "$work/sq-src" commit -q --allow-empty -m main
 git -C "$work/sq-src" checkout -q -b feature
@@ -177,11 +186,11 @@ run() {
   shift
   while [ "$1" != -- ]; do envs+=("$1"); shift; done
   shift
-  env ${envs[@]+"${envs[@]}"} FORGE_PERF_BOX_CONF="$work/box/box.conf" FORGE_PERF_STATE_DIR="$work/box/state" \
-    FORGE_PERF_NVME_MOUNT="$work/box/nvme" FORGE_PERF_RUNTIME="$work/box/run" FORGE_PERF_OUTBOX="$work/box/outbox" \
-    FORGE_PERF_MIRRORS="$work/box/mirror" FORGE_PERF_GO_CACHE= FORGE_PERF_HOST_ROOT="$work/root" \
-    FORGE_PERF_IMDS_URL=http://imds.test FORGE_PERF_SMELT_URL="$work/smelt-src" \
-    FORGE_PERF_HARNESS_AUTH=none FORGE_PERF_HARNESS_URL="$work/sq-src" \
+  env FORGE_PERF_HARNESS_AUTH=none ${envs[@]+"${envs[@]}"} FORGE_PERF_BOX_CONF="$work/box/box.conf" \
+    FORGE_PERF_STATE_DIR="$work/box/state" FORGE_PERF_NVME_MOUNT="$work/box/nvme" FORGE_PERF_RUNTIME="$work/box/run" \
+    FORGE_PERF_OUTBOX="$work/box/outbox" FORGE_PERF_MIRRORS="$work/box/mirror" FORGE_PERF_GO_CACHE= \
+    FORGE_PERF_HOST_ROOT="$work/root" FORGE_PERF_IMDS_URL=http://imds.test FORGE_PERF_SMELT_URL="$work/smelt-src" \
+    FORGE_PERF_HARNESS_URL="$work/sq-src" \
     bash "$work/checkout/scripts/host/run.sh" "$@" >"$work/out" 2>&1 || got=$?
   [ "$got" = "$want" ] || fail "expected exit $want, got $got"
 }
@@ -252,6 +261,36 @@ jq -e '.provenance.images[] | select(.services == ["ingot"]) |
   .revision == "b4ec1bb63c5f0eba032262ae1ccb8e673f585c99" and .source == "https://github.com/fil-forge/ingot"' \
   "$work/record.json" >/dev/null || fail "image labels missing from the minimal record"
 echo "ok: a clean run's runner.json makes a minimal record that passes the schema"
+
+refs() { git -C "$work/box/mirror/$1.git" for-each-ref --format='%(refname)' "$2"; }
+[ "$(refs smelt refs/tags)" = "refs/tags/forge-perf/20261001-${smelt_sha:0:12}" ] || fail "smelt tags: $(refs smelt refs/tags)"
+[ -z "$(refs smelt refs/pull)" ] || fail "the smelt mirror took pull request heads: $(refs smelt refs/pull)"
+[ "$(refs storage-qualification refs/pull)" = refs/pull/5/head ] || fail "harness pull refs"
+jq -e '.box_id == "main" and (.kernel | type == "string") and (.versions | has("docker"))' \
+  "$work/box/nvme/work/run/box-facts.json" >/dev/null || fail "box-facts.json in the run directory"
+echo "ok: the smelt pin comes through a tag, smelt's pull heads stay out, and the run keeps box-facts.json"
+
+# A smelt mirror an earlier version filled with pull request heads loses them.
+setup
+mkdir -p "$work/box/mirror"
+git init -q --bare "$work/box/mirror/smelt.git"
+git -C "$work/box/mirror/smelt.git" fetch -q "$work/smelt-src" '+refs/pull/*/head:refs/pull/*/head'
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+[ -n "$(refs smelt refs/pull)" ] || fail "preflight touched the mirror"
+run 0 -- --set "$work/set.json" --workers 16 --until images
+[ -z "$(refs smelt refs/pull)" ] || fail "old pull request heads kept: $(refs smelt refs/pull)"
+[ "$(git -C "$work/box/mirror/smelt.git" config --get-all remote.origin.fetch | tr '\n' ' ')" = \
+  "+refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* " ] || fail "smelt refspecs"
+echo "ok: an existing smelt mirror drops the pull request heads it held"
+
+# Without an override the box uses the GitHub App, whose key is read from SSM.
+setup
+run 1 FORGE_PERF_HARNESS_AUTH= -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = secrets_unavailable ] || fail "reasons $(runner .reasons)"
+grep -q "cannot mint a harness token from the GitHub App key" "$work/out" || fail "no App message"
+grep -q "ssm get-parameter --with-decryption --name /forge-perf/harness-app " "$D/aws.log" || fail "App key not read"
+! grep -q harness-deploy-key "$D/aws.log" || fail "read the deploy key"
+echo "ok: the default harness credential is the GitHub App key in SSM"
 
 setup
 run 0 -- --set "$work/set.json" --workers 16 --until images

@@ -69,6 +69,9 @@ case "$args" in
       *harness-deploy-key*)
         [ -e "$D/harness" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
         cat "$D/harness" ;;
+      *harness-app*)
+        [ -e "$D/harness-app" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+        cat "$D/harness-app" ;;
       *denylist*) echo FORBIDDEN-WORD ;;
     esac ;;
   *" put-object "*)
@@ -313,8 +316,9 @@ wiped "the last attempt"
 [ -z "$(ls -A "$work/box/outbox")" ] || fail "outbox written without credentials or denylist"
 echo "ok: the last attempt wipes without the inputs SSM could not supply"
 
-# A credential in a form the line filter misses, with /run empty as after a reboot.
-for leak in piri harness; do
+# A credential in a form the line filter misses, with /run empty as after a
+# reboot (except for the App's installation token, which is read from /run).
+for leak in piri harness app token; do
   setup
   cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
   echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
@@ -323,6 +327,15 @@ for leak in piri harness; do
   case "$leak" in
     piri) echo "S3 {id: AKIAFAKE, key: fake-secret}" >>"$work/box/nvme/work/run/drill.out" ;;
     harness) echo "loaded aGFybmVzcy1rZXktYm9keQ" >>"$work/box/nvme/work/run/drill.out" ;;
+    app)
+      jq -n '{app_id: "12", installation_id: "34", private_key: "-----BEGIN RSA PRIVATE KEY-----\nYXBwLWtleS1ib2R5LWxpbmU\n-----END RSA PRIVATE KEY-----\n"}' \
+        >"$D/harness-app"
+      echo "key YXBwLWtleS1ib2R5LWxpbmU" >>"$work/box/nvme/work/run/drill.out"
+      ;;
+    token)
+      echo ghs_installationTokenValue1 >"$work/box/run/secrets/harness-token"
+      echo "url https://x-access-token:ghs_installationTokenValue1@github.com" >>"$work/box/nvme/work/run/drill.out"
+      ;;
   esac
   touch "$D/s3-down"
   recover_ok "$leak credential in the tree"
@@ -333,8 +346,9 @@ import json, sys
 assert "raw_missing" in json.dumps(json.load(open(sys.argv[1])))
 PY
   count "$D/containers" 0
+  rm -f "$D/harness-app"
 done
-echo "ok: a piri or harness credential in the collected files refuses the tarball and flags raw_missing"
+echo "ok: a piri key, harness deploy key, App key or App token in the collected files refuses the tarball"
 
 # One piri read failing while the harness parameter answers must not pass.
 for param in piri-s3-access-key-id piri-s3-secret-access-key; do

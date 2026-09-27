@@ -106,7 +106,14 @@ read_credentials() (
     # The harness credential's parameter may not exist yet; any other error fails.
     ssm_value "${FORGE_PERF_HARNESS_CREDENTIAL_PARAM:-$ssm_path/harness-deploy-key}" >>"$1.all" 2>"$1.err" ||
       grep -q ParameterNotFound "$1.err" || exit 1
+    # The GitHub App's private key, from its JSON parameter.
+    app="$(ssm_value "${FORGE_PERF_HARNESS_APP_PARAM:-$ssm_path/harness-app}" 2>"$1.err")" ||
+      grep -q ParameterNotFound "$1.err" || exit 1
+    [ -z "$app" ] || jq -r '.private_key // empty' <<<"$app" >>"$1.all" || exit 1
   fi
+  # The installation token the run minted, while /run still holds it.
+  token="$FORGE_PERF_RUNTIME/secrets/harness-token"
+  [ ! -r "$token" ] || cat "$token" >>"$1.all" || exit 1
   # Keep strings of 8 or more characters, so no blank line matches everything.
   awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' "$1.all" >"$1" || exit 1
   rm -f "$1.all" "$1.err"

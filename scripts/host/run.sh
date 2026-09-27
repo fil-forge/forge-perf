@@ -379,6 +379,15 @@ step_preflight() {
   find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
   mkdir -p "$RUN"
   cp "$state/runner.json" "$RUN/runner.json"
+  # The fuller facts (Docker's configuration, timers, clock, kernel settings,
+  # unpinned package versions) go into the raw tarball; only the subset in
+  # runner.json's box enters the record and its fingerprint.
+  if ! timeout --kill-after=10 "${FORGE_PERF_CALL_TIMEOUT:-60}" "$here/box-facts.sh" \
+    >"$RUN/box-facts.json" 2>"$RUN/box-facts.err"; then
+    echo "box-facts.sh failed; the raw tarball has no box-facts.json: $(tail -c 300 "$RUN/box-facts.err")" >&2
+    rm -f "$RUN/box-facts.json"
+  fi
+  rm -f "$RUN/box-facts.err"
 
   install -d -m 0700 "$SECRETS" "$FORGE_PERF_RUNTIME/aws"
   if [ "${FORGE_PERF_SECRETS:-ssm}" = ssm ]; then
@@ -404,7 +413,7 @@ step_preflight() {
 # (a GitHub App installation token minted from the App's key in SSM) or none
 # (the caller's own git credentials).
 harness_git() {
-  local auth="${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-deploy-key}}"
+  local auth="${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-app}}"
   case "$auth" in
     deploy-key)
       HARNESS_URL="${FORGE_PERF_HARNESS_URL:-git@github.com:$SQ_REPO.git}"
@@ -428,17 +437,28 @@ harness_git() {
   esac
 }
 
-# mirror NAME URL SHA REASON GIT...: fetch every branch and pull request head
-# into the bare mirror, so a commit stays reachable after its branch is
-# deleted on merge, then require SHA. A failed fetch only stops the run when
-# the commit is not already there.
+# mirror NAME URL SHA REASON EXTRA GIT...: fetch every branch into the bare
+# mirror, then require SHA. EXTRA is the ref namespace that keeps a pinned
+# commit reachable after its branch is gone: `pull` (pull request heads, for
+# the private harness, whose pinned commit heads an open pull request) or
+# `tags` (for public smelt, where anyone can open a pull request and its head
+# would land on the root volume; forge-perf tags each smelt commit it pins). A
+# mirror without `pull` drops any pull request refs an earlier fetch left. A
+# failed fetch only stops the run when the commit is not already there.
 mirror() {
-  local name="$1" url="$2" sha="$3" reason="$4" dir="$MIRRORS/$1.git"
-  shift 4
+  local name="$1" url="$2" sha="$3" reason="$4" extra="$5" dir="$MIRRORS/$1.git"
+  shift 5
   [ -d "$dir" ] || git init -q --bare "$dir"
   git -C "$dir" config remote.origin.url "$url"
   git -C "$dir" config --replace-all remote.origin.fetch '+refs/heads/*:refs/heads/*'
-  git -C "$dir" config --add remote.origin.fetch '+refs/pull/*/head:refs/pull/*/head'
+  case "$extra" in
+    pull) git -C "$dir" config --add remote.origin.fetch '+refs/pull/*/head:refs/pull/*/head' ;;
+    tags)
+      git -C "$dir" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+      git -C "$dir" for-each-ref --format='delete %(refname)' refs/pull | git -C "$dir" update-ref --stdin
+      ;;
+    *) stop runner_error "mirror $name: unknown ref namespace $extra" ;;
+  esac
   if ! timeout --kill-after=60 600 "$@" -C "$dir" fetch --prune --quiet origin; then
     git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null ||
       stop mirror_fetch_failed "cannot fetch $name from $url"
@@ -452,8 +472,8 @@ step_checkout() {
   step "checkout"
   mkdir -p "$MIRRORS"
   harness_git
-  mirror smelt "${FORGE_PERF_SMELT_URL:-https://github.com/$SMELT_REPO.git}" "$smelt_sha" smelt_unreachable git
-  mirror storage-qualification "$HARNESS_URL" "$harness_sha" harness_unreachable "${HARNESS_GIT[@]}"
+  mirror smelt "${FORGE_PERF_SMELT_URL:-https://github.com/$SMELT_REPO.git}" "$smelt_sha" smelt_unreachable tags git
+  mirror storage-qualification "$HARNESS_URL" "$harness_sha" harness_unreachable pull "${HARNESS_GIT[@]}"
   git clone -q --no-checkout "$MIRRORS/smelt.git" "$SMELT" &&
     git -C "$SMELT" checkout -q --detach "$smelt_sha" || stop runner_error "cannot check out smelt $smelt_sha"
   git clone -q --no-checkout "$MIRRORS/storage-qualification.git" "$SQ" &&
