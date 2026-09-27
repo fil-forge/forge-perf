@@ -343,7 +343,10 @@ aws s3 ls --recursive s3://local-results/
 
 The poller runs the same way. In skip mode it flushes the outbox in its own process, never updates the checkout, and logs the dispatch as `host-op skipped: systemctl start --no-block forge-perf-run.service`; start the pending run by hand with `run.sh`, which takes `local/state/pending.json`. Without `flock` (macOS) a run counts as going while `local/state/current.json` exists.
 
+A pass makes a set pending only when its key differs from `local/state/last-started.json`'s ([The decision](#the-decision)), and prints nothing when it does not. Every earlier run leaves that file, the `--until setup` run above included, and while `main` still carries the shakedown set's digests the pass then writes no `pending.json`. Remove the file first to poll from a clean state:
+
 ```sh
+rm -f local/state/last-started.json
 scripts/host/poll.sh                # resolves the set from GHCR, writes local/state/pending.json and a heartbeat
 scripts/host/status.sh
 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 PATH="$PWD/local/bin:$PATH" scripts/host/run.sh
