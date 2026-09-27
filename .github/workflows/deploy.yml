@@ -1,0 +1,139 @@
+# Plans the CI-applied OpenTofu roots on every pull request and applies them
+# on every push to main.
+#
+# `make check` lives in check.yml, a required check. That check ran on the pull
+# request's merge ref, and a squash merge onto a main that moved since then can
+# produce a tree it never saw, so the apply job validates and tests its root
+# again before applying.
+#
+# The bootstrap root is never planned or applied here: it creates the roles
+# this workflow assumes (docs/operations.md, "The bootstrap root").
+
+name: deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Serializes whole runs per ref. Two merges to main must not apply at once:
+# they would contend for the state lock and one would fail halfway. A
+# force-push to a pull request should not leave two plans racing either.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Pinned rather than latest: what deploys must not change because a release
+  # landed between two merges.
+  TOFU_VERSION: 1.12.5
+  AWS_REGION: us-east-2
+  # The plan role describes infrastructure and reads state, nothing else,
+  # because a pull request chooses what the plan jobs run.
+  PLAN_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-plan
+  APPLY_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-apply
+  # See check.yml: providers come from GitHub Releases, which throttles the
+  # shared runner addresses, so they are cached between runs. An absolute path,
+  # since tofu does not expand `~` here.
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tofu-plugin-cache
+
+jobs:
+  # A fork's pull request gets no OIDC token and cannot assume the plan role,
+  # so the job is skipped there.
+  plan:
+    # Flat names, so a ruleset can require `plan-network` literally.
+    name: plan-${{ matrix.name }}
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      # A reviewer wants every root's plan, not the first failure.
+      fail-fast: false
+      matrix:
+        include:
+          - name: network
+            root: network
+    defaults:
+      run:
+        working-directory: terraform/envs/${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.PLAN_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-plan-${{ github.run_id }}
+
+      # Keyed on this root's own lock file: actions/cache saves only on a miss,
+      # so a key shared by every root would stay frozen with whichever root
+      # saved first.
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles(format('terraform/envs/{0}/.terraform.lock.hcl', matrix.root)) }}
+
+      - run: tofu init -input=false -lockfile=readonly
+
+      # A state lock left by a killed run is worth waiting on briefly before a
+      # person gets involved.
+      - run: tofu plan -input=false -lock-timeout=5m
+
+  # Runs on every push, with no path filter: a filter has to name every module
+  # the root uses, and one added without a matching filter silently stops being
+  # deployed. An empty plan costs about a minute.
+  apply-network:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform/envs/network
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/network/.terraform.lock.hcl') }}
+
+      - run: tofu init -input=false -lockfile=readonly
+
+      # Neither needs credentials; tofu test plans against placeholder ones.
+      - run: tofu validate
+      - run: tofu test
+
+      # -auto-approve, and the log is the audit trail: apply prints the whole
+      # plan before it changes anything.
+      - run: tofu apply -auto-approve -input=false -lock-timeout=5m

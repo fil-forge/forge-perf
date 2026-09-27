@@ -43,3 +43,8 @@ output "ami_id" {
   description = "Canonical's Ubuntu 24.04 arm64 server image, release 20260904, gp3, in us-east-2. Pinned where infra-nodes looks its image up at create time: the kernel is part of the instrument, so a new image is a deliberate change with its own pull request, and a campaign box boots the same image as the persistent one."
   value       = "ami-03e774c3214166a53"
 }
+
+output "s3_endpoint_name" {
+  description = "Name tag of the S3 gateway endpoint serving the forge-perf subnet. The network root creates it and the bootstrap root finds it by this tag to bind piri's key to it."
+  value       = "forge-perf-s3"
+}

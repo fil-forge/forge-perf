@@ -234,10 +234,39 @@ resource "aws_iam_user" "piri" {
   name = "forge-perf-piri"
 }
 
-# The source condition makes the key usable only from inside the default VPC,
-# where S3 traffic from the forge-perf subnet goes through the gateway
-# endpoint. Once the network root has created that endpoint, this narrows to
-# aws:SourceVpce, which also excludes infra-nodes' dev node in the same VPC.
+# The source condition makes the key usable only through the forge-perf S3
+# gateway endpoint, which only the forge-perf subnet's route table reaches.
+# aws:SourceVpc would also admit infra-nodes' dev node, which shares the
+# default VPC.
+#
+# The endpoint belongs to the network root, which CI applies with roles this
+# root creates, so on a new account the first apply here comes before the
+# endpoint exists. That apply sets piri_key_via_s3_endpoint = false and binds
+# the key to the default VPC; the next apply, once the network root is up,
+# binds it to the endpoint (docs/operations.md, "The network root").
+variable "piri_key_via_s3_endpoint" {
+  description = "Bind piri's key to the forge-perf S3 gateway endpoint (true) or to the default VPC (false, only before the network root exists)."
+  type        = bool
+  default     = true
+}
+
+data "aws_vpc_endpoint" "s3" {
+  count = var.piri_key_via_s3_endpoint ? 1 : 0
+
+  vpc_id       = data.aws_vpc.default.id
+  service_name = "com.amazonaws.${module.constants.region}.s3"
+  tags = {
+    Name = module.constants.s3_endpoint_name
+  }
+}
+
+locals {
+  piri_source = (var.piri_key_via_s3_endpoint
+    ? { key = "aws:SourceVpce", value = one(data.aws_vpc_endpoint.s3[*].id) }
+    : { key = "aws:SourceVpc", value = data.aws_vpc.default.id }
+  )
+}
+
 data "aws_iam_policy_document" "piri" {
   statement {
     sid       = "PiriBuckets"
@@ -246,8 +275,8 @@ data "aws_iam_policy_document" "piri" {
 
     condition {
       test     = "StringEquals"
-      variable = "aws:SourceVpc"
-      values   = [data.aws_vpc.default.id]
+      variable = local.piri_source.key
+      values   = [local.piri_source.value]
     }
   }
 
@@ -264,8 +293,8 @@ data "aws_iam_policy_document" "piri" {
 
     condition {
       test     = "StringEquals"
-      variable = "aws:SourceVpc"
-      values   = [data.aws_vpc.default.id]
+      variable = local.piri_source.key
+      values   = [local.piri_source.value]
     }
   }
 }

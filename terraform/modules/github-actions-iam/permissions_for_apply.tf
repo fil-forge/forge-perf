@@ -101,6 +101,18 @@ data "aws_iam_policy_document" "apply" {
     ]
   }
 
+  # Replacing a VPC's main route table association names no subnet, so the tag
+  # rule above would let this role make forge-perf's route table the main one
+  # and move every default subnet, the dev node's included, onto it. The
+  # network root never calls this; a changed association is a taint of
+  # aws_route_table_association.perf instead.
+  statement {
+    sid       = "KeepTheMainRouteTable"
+    effect    = "Deny"
+    actions   = ["ec2:ReplaceRouteTableAssociation"]
+    resources = ["*"]
+  }
+
   # Boxes boot from Canonical's images, so the role cannot launch another
   # project's private AMI or a volume from its snapshot. Whether RunInstances
   # also evaluates the AMI's own backing snapshot, which Canonical owns, is
