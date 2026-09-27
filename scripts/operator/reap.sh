@@ -4,11 +4,16 @@
 # Every forge-perf instance other than the persistent box (Box=main) that is
 # pending, running, stopping or stopped is reaped when it has no ExpiresAt
 # tag, is stopped and past ExpiresAt, has been stopped for more than an hour,
-# or is still up an hour after ExpiresAt. The hour lets a box that powers
-# itself off at ExpiresAt finish the run in progress, record and upload it.
-# Every reaped instance is terminated here. A campaign box is also left to
-# `tofu destroy` of its root, which removes its buckets and role, and which
-# cannot remove an instance its state does not hold.
+# or is still up an hour after ExpiresAt. A box powers itself off at
+# ExpiresAt; the hour covers one whose own poweroff failed. Every reaped
+# instance is terminated here.
+#
+# Whether the campaign root is destroyed is decided from its state, every
+# hour: CAMPAIGN_INSTANCE is the instance ID `tofu output` read from it (empty
+# when the state holds no box). The root is destroyed when that instance is
+# reaped now, or is already shutting down, terminated or gone, so a destroy
+# that failed is tried again the next hour. A newer box that the state holds
+# is never destroyed for an older one reaped here.
 #
 # The persistent box is never touched, but an instance type that differs from
 # terraform/envs/box/main/terraform.tfvars is reported: a resize that never
@@ -17,7 +22,7 @@
 # holds the difference until its apply is approved.
 #
 # Prints one line per finding, and with GITHUB_OUTPUT set writes `campaign`
-# (true when the campaign root must be destroyed) and `alerts` (the lines, for
+# (the instance ID when the campaign root must be destroyed, else false) and `alerts` (the lines, for
 # Slack). NOW (Unix seconds) replaces the clock in tests.
 set -euo pipefail
 
@@ -51,17 +56,41 @@ reap="$(jq -r --argjson now "$now" '
      else empty end) as $why
   | "\(.id) \($tags.Box // "none") \($why)"' <<<"$instances")"
 
+held="${CAMPAIGN_INSTANCE:-}"
+[[ -z "$held" || "$held" =~ ^i-[0-9a-f]{8,17}$ ]] || die "CAMPAIGN_INSTANCE '$held' is not an instance ID"
 alerts=() campaign=false terminate=()
 while read -r id box why; do
   [ -n "$id" ] || continue
   terminate+=("$id")
-  if [ "$box" = campaign ]; then
-    campaign=true
+  if [ "$id" = "$held" ]; then
+    campaign="$held"
     alerts+=("forge-perf: terminating and destroying the campaign box $id: $why")
   else
     alerts+=("forge-perf: terminating the $box box $id: $why")
   fi
 done <<<"$reap"
+
+# The state's instance, when this pass did not reap it: gone already means an
+# earlier destroy failed or never ran.
+if [ -n "$held" ] && [ "$campaign" = false ]; then
+  err="$(mktemp)"
+  if held_state="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$held" \
+    --query 'Reservations[].Instances[].State.Name' --output text 2>"$err")"; then
+    rm -f "$err"
+  elif grep -q InvalidInstanceID.NotFound "$err"; then
+    rm -f "$err"
+    held_state=gone
+  else
+    cat "$err" >&2
+    rm -f "$err"
+    die "cannot read the state of the campaign box $held"
+  fi
+  case "$held_state" in
+    shutting-down | terminated | gone | "")
+      campaign="$held"
+      alerts+=("forge-perf: destroying the campaign root; its box $held is ${held_state:-gone}") ;;
+  esac
+fi
 
 # shellcheck disable=SC2016 # a jq program
 main_type="$(jq -r '[.[] | select(any(.tags[]?; .Key == "Box" and .Value == "main")) | .type] | unique | join(" ")' \
