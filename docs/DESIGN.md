@@ -215,7 +215,7 @@ One fingerprint hashes the box facts and one the rest of the instrument, minus f
 | `availability_warning` | only `availability_error`; the import client does not retry, so one 5xx fails a capped run | shown, numbers kept | no |
 | `valid` | drill exit 0, every check passed | yes | one message saying the box recovered |
 
-Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
+Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`, `cpu_capped`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
 
 `publish.yml` posts to `#filone-alerts` with `SLACK_BOT_TOKEN`, as `infra-nodes/.github/workflows/smoke.yml:205-238` does, once per box and class until that box records `valid` or `availability_warning`. It also alerts once when the persistent box's heartbeat is 30 minutes old, six polls in a row fail, one run has held the box for 7 hours, or no record has arrived in 26 hours. GitHub disables scheduled workflows in a public repository after 60 days without activity, so the page shows when it was last published.
 
@@ -256,7 +256,7 @@ For each type, `campaign.yml` with `mode=calibration` starts a box and `scripts/
 
 1. Workers sweep: 16, 32 and 64, two 100 GB runs each, in the order 16, 32, 64, 64, 32, 16. The smallest value within 5% of the best mean p5 and median wins; an availability error disqualifies a value.
 2. Repeat runs: five at 100 GB and three at 350 GB give each series its noise band, the range an unchanged stack falls in (`calibration/noise/main-<series>.json`). The drill draws a new blob-size seed every run, so the band includes that variation. Above 10% coefficient of variation the series stays unpublished. If the first steady window is consistently the lowest, `RAMP` goes to 30s.
-3. Falsification: an older digest for one service, from a merged performance PR, must land below the per-trigger band in three runs of three, and so must a run with ingot capped at one CPU (`docker update --cpus 1.0`).
+3. Falsification: an older digest for one service, from a merged performance PR, must land below the per-trigger band in three runs of three, and so must a run with ingot capped at one CPU (`docker update --cpus 1.0`). That check runs on a held persistent box as `campaign.sh --cap ingot=1.0,piri-0=1.0`, which caps piri-0 as well and publishes every run as series `calibration` with the flag `cpu_capped`.
 
 A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350 GB gives 22 and 500 GB gives 31; at 2.1 GB/s, 500 GB gives 7. Any valid run can light a gate, and one under 20 windows carries `few_windows`. Tier 3 campaigns run 2 TB, which gives 22 windows at 3 GB/s.
 

@@ -15,6 +15,8 @@
     {"name": "key under another box", "key": "published/other/main-20261001t120000z.json", "reject": "key"},
     {"name": "p5 above the median", "set": {"drill.results.ingest_p5_bytes_per_s": 30000000.0}, "reject": "p5_above_median"},
     {"name": "valid with drill exit 1", "set": {"outcome.drill_exit": 1}, "reject": "valid_inconsistent"},
+    {"name": "CPU-capped check run in series calibration", "set": {"series": "calibration", "outcome.flags": ["few_windows", "cpu_capped"]}, "reject": null},
+    {"name": "CPU-capped run outside series calibration", "set": {"outcome.flags": ["few_windows", "cpu_capped"]}, "reject": "capped_not_calibration"},
     {"name": "instrument fingerprint does not recompute", "set": {"drill.settings.workers": 8}, "reject": "fingerprint"},
     {"name": "box fingerprint does not recompute", "set": {"box.kernel": "6.14.0-1016-aws"}, "reject": "fingerprint"}
   ]

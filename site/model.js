@@ -195,7 +195,11 @@ export function changesText(run) {
 
 // Flags the runs table and details view name beside the outcome; they leave
 // the class alone.
-const FLAG_TEXT = { cap_not_reached: "stopped at its time limit before its size", few_windows: "under 20 steady windows" };
+const FLAG_TEXT = {
+  cap_not_reached: "stopped at its time limit before its size",
+  few_windows: "under 20 steady windows",
+  cpu_capped: "CPU capped (check run)",
+};
 export function flagText(run) {
   return (run.flags || []).filter((f) => FLAG_TEXT[f]).map((f) => FLAG_TEXT[f]).join(", ");
 }

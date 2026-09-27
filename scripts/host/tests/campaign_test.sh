@@ -177,4 +177,28 @@ grep -q poweroff "$D/systemctl.log" && fail "a persistent box powered off"
 [ -e "$state/hold" ] || fail "the hold went"
 echo "ok: on a held persistent box, --set runs N paired runs on the settings file's values"
 
+# --cap on a held persistent box: every run carries the caps and is calibration.
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 2 --cap ingot=1.0,piri-0=0.5
+[ "$(runs '"\(.series)/\(.caps | tojson)"')" = \
+  'calibration/{"ingot":"1.0","piri-0":"0.5"} calibration/{"ingot":"1.0","piri-0":"0.5"}' ] || fail "capped $(cat "$D/runs.log")"
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 1
+[ "$(runs '"\(.series)/\(has("caps"))"')" = campaign/false ] || fail "an uncapped run $(cat "$D/runs.log")"
+for bad in ingot ingot=0 ingot=0.0 ingot=-1 ingot=1.5x ingot=.5 nosuch=1 ingot=1,ingot=2 INGOT=1 "ingot=1,"; do
+  campaign 1 --set "$work/set.json" --runs 1 --cap "$bad"
+  grep -q -- "--cap" "$work/out" || fail "--cap $bad refused without naming --cap"
+done
+echo "ok: --cap puts validated caps in every run and makes it calibration; malformed caps are refused"
+
+setup campaign
+conf '.caps = {"ingot": "1.0"}'
+campaign 1
+grep -q "campaign.json takes no caps" "$work/out" || fail "campaign.json with caps"
+[ ! -e "$D/runs.log" ] || fail "campaign.json with caps ran"
+cp "$repo/calibration/sets/shakedown.json" "$work/set.json"
+campaign 1 --set "$work/set.json" --runs 1 --cap ingot=1.0
+grep -q "runs only on a held persistent box" "$work/out" || fail "--cap on a campaign box"
+echo "ok: a campaign box takes no caps, from campaign.json or the command line"
+
 echo "campaign: all tests passed"

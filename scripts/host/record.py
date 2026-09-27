@@ -239,7 +239,8 @@ def base_record(runner, env):
     return {
         "schema": "forge-perf.run/v1",
         "run_id": runner["run_id"],
-        "series": runner["series"],
+        # A CPU-capped run is the falsification check, never a live measurement.
+        "series": "calibration" if runner.get("caps") else runner["series"],
         "pairing_id": runner["pairing_id"],
         "trigger": {"reason": runner["trigger"]["reason"], "changed": sorted(runner["trigger"]["changed"])},
         "box": {**{k: box[k] for k in ("id", "tier", "instance_type", "arch")}, "region": "us-east-2",
@@ -305,6 +306,8 @@ def runner_flags(runner):
         flags.add("superseded")
     if runner["raw_missing"]:
         flags.add("raw_missing")
+    if runner.get("caps"):
+        flags.add("cpu_capped")  # only the flag: service names and CPUs stay in the raw bundle
     return flags
 
 

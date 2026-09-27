@@ -103,7 +103,7 @@ class FixtureRecords(unittest.TestCase):
         names = {p.name for p in FIXTURES}
         self.assertEqual(names, {"valid", "availability-errors", "integrity-failure", "wrote-nothing",
                                  "read-back-incomplete", "container-restart", "exit1-no-evidence", "exit2",
-                                 "stack-boot-failed", "record-build-failed"})
+                                 "stack-boot-failed", "record-build-failed", "cpu-capped"})
         classes = {expected(p)["outcome"]["class"] for p in FIXTURES}
         self.assertEqual(classes, set(CLASS_ORDER) | {"valid"})
 

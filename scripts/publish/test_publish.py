@@ -248,12 +248,12 @@ class Publish(unittest.TestCase):
 
     def test_every_host_fixture_is_committed(self):
         cases = sorted(p.name for p in HOST_FIXTURES.iterdir() if (p / "expected.json").exists())
-        self.assertEqual(len(cases), 10)
+        self.assertEqual(len(cases), 11)
         for hour, case in enumerate(cases):
             self.record(fixture_record(case, hour))
         got = self.ingest()
         self.assertEqual(got["rejected"], "0")
-        self.assertEqual(len(list((self.results / "runs").rglob("*.json"))), 10)
+        self.assertEqual(len(list((self.results / "runs").rglob("*.json"))), 11)
 
     def test_a_record_that_wrote_nothing_posts_no_data(self):
         self.record(fixture_record("wrote-nothing", 12))
@@ -330,7 +330,7 @@ class Publish(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(HERE / "ingest.py"), "--self-test"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("16 of 16 cases as expected", proc.stdout)
+        self.assertIn("18 of 18 cases as expected", proc.stdout)
 
 
 class BuildSite(unittest.TestCase):

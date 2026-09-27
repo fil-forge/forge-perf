@@ -465,6 +465,31 @@ class Classification(unittest.TestCase):
         self.assertEqual(outcome["flags"], ["few_windows", "nic_allowance_exceeded", "superseded", "raw_missing"])
         self.assertEqual(outcome["class"], "valid")
 
+    def test_a_capped_run_is_flagged_and_forced_to_calibration(self):
+        for command in ("build", "minimal"):
+            with self.subTest(command=command):
+                case = Case(self, "cpu-capped")
+                case.edit("runner.json", lambda d: d.update(series="nightly"))
+                result = case.cli(command=command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rec = load(case.out)
+                self.assertEqual(rec["series"], "calibration")
+                self.assertIn("cpu_capped", rec["outcome"]["flags"])
+                # Neither the service names nor the CPUs reach the record.
+                text = case.out.read_text(encoding="utf-8")
+                self.assertNotIn("piri-0\": \"1.0", text)
+                self.assertNotIn("caps", text)
+
+    def test_an_uncapped_run_keeps_its_series(self):
+        for caps in (None, {}):
+            with self.subTest(caps=caps):
+                case = Case(self, "valid")
+                case.edit("runner.json", lambda d: d.update(caps=caps))
+                result = case.cli()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rec = load(case.out)
+                self.assertEqual((rec["series"], rec["outcome"]["flags"]), ("per-trigger", ["few_windows"]))
+
 
 class NetemLines(unittest.TestCase):
     KNOWN = record.services()

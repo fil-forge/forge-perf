@@ -130,6 +130,13 @@ test("flags that leave the class alone are named beside the outcome", () => {
   assert.equal(M.mercury(d.runs, NOW).run.run_id, r.run_id);
 });
 
+test("a CPU-capped check run is named beside the outcome and never moves the mercury", () => {
+  const capped = run({ series: "calibration", flags: ["few_windows", "cpu_capped"], p5_bytes_per_s: 9e9 });
+  assert.equal(M.flagText(capped), "under 20 steady windows, CPU capped (check run)");
+  const d = index([capped]);
+  assert.equal(M.mercury(d.runs, NOW), null);
+});
+
 test("the paired offset is the ratio of each type's median run median", () => {
   const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
   const pair = "pair-20261010-tier2";
