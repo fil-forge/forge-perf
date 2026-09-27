@@ -70,20 +70,19 @@ The last command should print `["main","active"]`. `integration_id` 15368 is Git
 
 piri reads S3 with a static key pair belonging to the IAM user `forge-perf-piri`. The key is made by hand so the secret never enters OpenTofu state, which the plan role can read from a pull request. The user's policy admits requests only from inside the default VPC. A later change to the bootstrap root, applied after the network root, narrows it to the forge-perf S3 endpoint.
 
-The secret travels through a pipe, never a command-line argument, so other users on the machine cannot read it from the process list:
+The secret goes to SSM through a temporary file readable only by you, never a command-line argument, so other users on the machine cannot read it from the process list. (AWS CLI v2 on macOS reads nothing from `file:///dev/stdin`, so a pipe into `--cli-input-json` does not work.)
 
 ```sh
 key=$(aws iam create-access-key --user-name forge-perf-piri --output json)
-printf '%s' "$key" \
-  | jq '{Name: "/forge-perf/piri-s3-access-key-id", Type: "String", Value: .AccessKey.AccessKeyId}' \
-  | aws ssm put-parameter --cli-input-json file:///dev/stdin
-printf '%s' "$key" \
-  | jq '{Name: "/forge-perf/piri-s3-secret-access-key", Type: "SecureString", Value: .AccessKey.SecretAccessKey}' \
-  | aws ssm put-parameter --cli-input-json file:///dev/stdin
-unset key
+tmp=$(mktemp)   # created mode 600
+printf '%s' "$key" | jq -j .AccessKey.AccessKeyId >"$tmp"
+aws ssm put-parameter --name /forge-perf/piri-s3-access-key-id --type String --value "file://$tmp"
+printf '%s' "$key" | jq -j .AccessKey.SecretAccessKey >"$tmp"
+aws ssm put-parameter --name /forge-perf/piri-s3-secret-access-key --type SecureString --value "file://$tmp"
+rm -f "$tmp"; unset key
 ```
 
-AWS allows two keys per user, which lets a new key overlap the old one until both boxes have restarted piri. When replacing a key, add `Overwrite: true` to both `jq` objects, then delete the old one with `aws iam delete-access-key --user-name forge-perf-piri --access-key-id <old id>`.
+AWS allows two keys per user, which lets a new key overlap the old one until both boxes have restarted piri. When replacing a key, add `--overwrite` to both `put-parameter` calls, then delete the old one with `aws iam delete-access-key --user-name forge-perf-piri --access-key-id <old id>`.
 
 ### The harness credential
 
