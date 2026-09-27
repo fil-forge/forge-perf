@@ -93,6 +93,12 @@ export function gbps(bytes) {
   return v >= 0.1 || v === 0 ? v.toFixed(2) : v.toPrecision(2);
 }
 
+// A per-second count such as writes/s, to three significant figures, so a
+// float sum such as 0.15000000000000002 shows as 0.15.
+export function perSecond(v) {
+  return v == null ? "–" : String(Number(v.toPrecision(3)));
+}
+
 export function ago(ms) {
   const min = Math.floor(ms / 60000);
   if (min < 1) return "under a minute";

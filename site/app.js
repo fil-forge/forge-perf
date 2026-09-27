@@ -93,7 +93,7 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
     const r = merc.run;
     box.append(
       h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`),
-      h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${r.writes_median_per_s ?? "–"} writes/s`
+      h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${M.perSecond(r.writes_median_per_s)} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
       h("p", { class: "secondary" }, "Run ", h("a", { href: `#run=${r.run_id}` }, r.run_id),
         ` on ${r.box.instance_type}, ${utc(r.run_started_at)}, ${gb(r.size_bytes)}`),
@@ -217,7 +217,7 @@ function table() {
     const cells = [
       h("a", { href: `#run=${r.run_id}` }, utc(r.run_started_at).replace(" UTC", "")), r.series,
       `${r.box.id} · ${r.box.instance_type}`, outcome(r), M.gbps(r.p5_bytes_per_s), M.gbps(r.median_bytes_per_s),
-      r.writes_median_per_s ?? "–", r.sustained_windows ?? "–", r.rtt_median_ms ?? "–", M.changesText(r) || "–",
+      M.perSecond(r.writes_median_per_s), r.sustained_windows ?? "–", r.rtt_median_ms ?? "–", M.changesText(r) || "–",
     ];
     body.append(h("tr", { onclick: (e) => { if (e.target.tagName !== "A") location.hash = `run=${r.run_id}`; } },
       cells.map((c, i) => h("td", { "data-label": head[i] }, c))));
@@ -267,7 +267,7 @@ async function details(id) {
       finished: utc(t.run_finished_at), duration: `${dur} min`,
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
     kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
-      writes_per_s: res.writes_median_per_s, steady_windows: res.sustained_windows, total_windows: res.total_windows,
+      writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s), steady_windows: res.sustained_windows, total_windows: res.total_windows,
       cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested, ingest_sent_bytes: res.ingest_sent_bytes,
       bytes_read_back: res.bytes_read_back, bytes_restored: res.bytes_restored, blobs_written: res.blobs_written,
       window_rates: res.window_ingest_bytes_per_s && h("details", {}, h("summary", {}, `${res.window_ingest_bytes_per_s.length} windows, GB/s`),

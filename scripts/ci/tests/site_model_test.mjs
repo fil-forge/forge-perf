@@ -111,6 +111,10 @@ test("changes text, compare links and the previous run", () => {
   assert.equal(M.compare("https://x", "a", undefined), null);
   assert.equal(M.gbps(25360000), "0.025");
   assert.equal(M.gbps(2.05e9), "2.05");
+  assert.equal(M.perSecond(0.15000000000000002), "0.15");
+  assert.equal(M.perSecond(12.3456), "12.3");
+  assert.equal(M.perSecond(0), "0");
+  assert.equal(M.perSecond(null), "–");
 });
 
 test("with every gate unmeasured, the scale covers the mercury's median", () => {
