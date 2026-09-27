@@ -197,6 +197,43 @@ class Publish(unittest.TestCase):
         self.assertEqual(self.ingest(now="2026-10-02T15:00:00Z")["alerts"],
                          ["forge-perf main: no record in 26 hours. https://fil-forge.github.io/forge-perf/"])
 
+    def test_no_record_waits_for_a_run_in_progress(self):
+        self.record(fixture_record("valid", 12))
+        self.assertEqual(self.ingest()["alerts"], [])
+        # A quiet day: the next nightly has run for three hours past the 26.
+        self.heartbeat("2026-10-02T14:55:00Z", state="running", run_started_at="2026-10-02T12:00:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T15:00:00Z")["alerts"], [])
+        # A stale heartbeat that last said running does not hold it off.
+        self.heartbeat("2026-10-02T14:00:00Z", state="running", run_started_at="2026-10-02T12:00:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T15:00:00Z")["alerts"],
+                         ["forge-perf main: no heartbeat for 60 minutes. https://fil-forge.github.io/forge-perf/",
+                          "forge-perf main: no record in 26 hours. https://fil-forge.github.io/forge-perf/"])
+        # Once raised, it holds through the next run without posting again.
+        self.heartbeat("2026-10-02T15:55:00Z", state="running", run_started_at="2026-10-02T15:30:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T16:00:00Z")["alerts"], [])
+        status = json.loads((self.results / "status/main.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["conditions"], ["no_record"])
+
+    def test_a_run_that_ends_without_a_record_raises_no_record(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-02T14:55:00Z", state="running", run_started_at="2026-10-02T12:00:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T15:00:00Z")["alerts"], [])
+        self.heartbeat("2026-10-02T15:55:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T16:00:00Z")["alerts"],
+                         ["forge-perf main: no record in 26 hours. https://fil-forge.github.io/forge-perf/"])
+
+    def test_box_and_instrument_faults_alert_invalid(self):
+        hour = 1
+        for reason in ("disk_low", "dirty_start", "image_changed", "instrument_modified", "box_type_mismatch"):
+            with self.subTest(reason=reason):
+                self.record(fixture_record("container-restart", hour, reasons=[reason]))
+                alerts = self.ingest()["alerts"]
+                self.assertEqual(len(alerts), 1)
+                self.assertIn(f"ended invalid (reasons {reason};", alerts[0])
+                self.record(fixture_record("valid", hour + 1))
+                self.assertIn("recovered from invalid", self.ingest()["alerts"][0])
+                hour += 2
+
     def test_a_rejection_alerts_once_and_the_rest_are_committed(self):
         bad = fixture_record("valid", 12)
         bad["note"] = 1
@@ -332,6 +369,33 @@ class Data(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         boxes = json.loads((ROOT / "data/boxes.json").read_text(encoding="utf-8"))
         self.assertTrue(boxes and all(re.fullmatch(r"[a-z0-9]{2,12}", b) for b in boxes))
+
+
+class Workflow(unittest.TestCase):
+    """publish.yml's ordering, read as text: the standard library has no YAML."""
+
+    def setUp(self):
+        self.text = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+        self.ingest, self.deploy = self.text.split("\n  deploy:\n")
+
+    def test_deploy_follows_only_an_ingest_that_reached_its_commit(self):
+        commit = self.ingest.index("name: commit to results")
+        marker = self.ingest.index("id: ingested")
+        self.assertLess(commit, marker)
+        self.assertLess(marker, self.ingest.index("id: rejected"))
+        self.assertIn("ingested: ${{ steps.ingested.outputs.ingested }}", self.ingest)
+        condition = re.search(r"^    if: (.*)$", self.deploy, re.M).group(1)
+        self.assertIn("needs.ingest.outputs.ingested == 'true'", condition)
+        self.assertIn("!cancelled()", condition)
+
+    def test_a_failed_ingest_posts_unless_it_already_posted(self):
+        steps = self.ingest.split("\n      - ")
+        last = steps[-1]
+        self.assertIn("if: failure() && steps.slack.outcome != 'failure' && steps.rejected.outcome != 'failure'",
+                      last)
+        self.assertIn("publish failed", last)
+        self.assertIn("errors: true", last)
+        self.assertIn("id: slack", self.ingest)
 
 
 if __name__ == "__main__":

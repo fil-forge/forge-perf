@@ -46,6 +46,9 @@ FUTURE = dt.timedelta(minutes=10)
 INFRASTRUCTURE = {"image_pull_failed", "secrets_unavailable", "s3_unreachable",
                   "mirror_fetch_failed", "go_module_fetch_failed"}
 LATENCY_OR_RESTART = {"rtt_out_of_band", "central_ip_changed", "netem_missing", "container_restarted"}
+# Invalid for a fault on the box or in the instrument, not in Forge. Each needs
+# an operator, and most would repeat on every run until one acts.
+BOX_OR_INSTRUMENT = {"disk_low", "dirty_start", "image_changed", "instrument_modified", "box_type_mismatch"}
 HEARTBEAT_STALE = dt.timedelta(minutes=30)
 POLL_FAILURES = 6
 LONG_RUN = dt.timedelta(hours=7)
@@ -292,7 +295,7 @@ def record_alerts(record, previous, status):
     elif cls == "failed":
         alerts = "integrity_failure" in reasons
     else:
-        alerts = bool(reasons & LATENCY_OR_RESTART)
+        alerts = bool(reasons & (LATENCY_OR_RESTART | BOX_OR_INSTRUMENT))
     if not alerts or cls in alerted:
         return []
     alerted.append(cls)
@@ -337,9 +340,15 @@ def heartbeat_alerts(box, hb, latest_run, now, status):
     if hb and hb["state"] == "running" and hb["run_started_at"] and \
             now - utc(hb["run_started_at"]) > LONG_RUN:
         conditions["long_run"] = f"one run has held the box since {hb['run_started_at']}"
-    if latest_run is None or now - run_id_time(latest_run) > NO_RECORD:
-        conditions["no_record"] = "no record in 26 hours" if latest_run else "no record yet"
     before = set(status.get("conditions", []))
+    # While a fresh heartbeat says a run is in progress, that run has not
+    # written its record yet, so the 26 hours are judged when it ends;
+    # long_run covers a run that never does. A condition already raised holds
+    # without posting again.
+    running = latest_run is not None and "heartbeat_stale" not in conditions and hb["state"] == "running"
+    if latest_run is None or now - run_id_time(latest_run) > NO_RECORD:
+        if not running or "no_record" in before:
+            conditions["no_record"] = "no record in 26 hours" if latest_run else "no record yet"
     status["conditions"] = sorted(conditions)
     return [f"forge-perf {box}: {text}. {PAGE}" for name, text in sorted(conditions.items())
             if name not in before]

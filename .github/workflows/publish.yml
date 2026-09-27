@@ -47,6 +47,7 @@ jobs:
       id-token: write
     outputs:
       heartbeats: ${{ steps.ingest.outputs.heartbeats }}
+      ingested: ${{ steps.ingested.outputs.ingested }}
     steps:
       # Full history, so a record's forge-perf SHA can be checked against main
       # and its schema read from that commit.
@@ -81,7 +82,8 @@ jobs:
       # nothing is committed and the next run posts again, so an alert can
       # repeat but is never lost. While Slack refuses posts, new records wait
       # in the bucket. The text is built from public record fields only.
-      - if: steps.ingest.outputs.alerts != ''
+      - id: slack
+        if: steps.ingest.outputs.alerts != ''
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           errors: true
@@ -108,18 +110,41 @@ jobs:
             commit -q -m "Add ${added// /} run record(s)" -m "Publish run ${GITHUB_RUN_ID}."
           git push -q origin HEAD:results
 
+      # The page's publish time moves only when ingest got this far, so a
+      # broken ingest shows on the page as an ageing "Last published".
+      - id: ingested
+        run: echo ingested=true >>"$GITHUB_OUTPUT"
+
       # After the commit, so the records that passed are published.
-      - if: steps.ingest.outputs.rejected != '0'
+      - id: rejected
+        if: steps.ingest.outputs.rejected != '0'
         run: |
           echo "::error::$REJECTED record(s) rejected; see the ingest step"
           exit 1
         env:
           REJECTED: ${{ steps.ingest.outputs.rejected }}
 
+      # Any failure but a rejection, which has posted already, or the alert
+      # post, which this post would repeat with the same token: the role, S3,
+      # an exception or the commit. The page's "Last published" then ages
+      # because deploy does not run.
+      - if: failure() && steps.slack.outcome != 'failure' && steps.rejected.outcome != 'failure'
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
+        with:
+          errors: true
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "filone-alerts",
+              "text": "forge-perf: publish failed; check SLACK_BOT_TOKEN, the results role's trust and PUBLIC_DENYLIST_REGEX. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
+
   deploy:
     needs: ingest
-    # Also after a rejection, so the page carries the records that passed.
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    # Also after a rejection, so the page carries the records that passed,
+    # but never after an ingest that stopped before its commit.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.ingest.outputs.ingested == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

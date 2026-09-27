@@ -62,7 +62,7 @@ The workflow posts to `#filone-alerts` with `SLACK_BOT_TOKEN`. The text comes fr
 |---|---|
 | `no_data` | always, except when every reason is an infrastructure reason (`image_pull_failed`, `secrets_unavailable`, `s3_unreachable`, `mirror_fetch_failed`, `go_module_fetch_failed`): then only on the third such record in a row |
 | `failed` | a reason is `integrity_failure` |
-| `invalid` | a reason is `rtt_out_of_band`, `central_ip_changed`, `netem_missing` or `container_restarted` |
+| `invalid` | a reason is `rtt_out_of_band`, `central_ip_changed`, `netem_missing` or `container_restarted`, or a box or instrument fault an operator has to clear: `disk_low`, `dirty_start`, `image_changed`, `instrument_modified` or `box_type_mismatch` |
 | `availability_warning`, `valid` | never, except one line saying the box recovered when a class had alerted |
 
 Each class posts once per box and is added to `alerted_classes`. A `valid` or `availability_warning` record clears the list with the recovery line, and the classes can post again.
@@ -74,9 +74,11 @@ Each class posts once per box and is added to `alerted_classes`. A `valid` or `a
 | `heartbeat_stale` | no heartbeat, or its `at` is more than 30 minutes old |
 | `poll_failures` | `poll_failures` is 6 or more |
 | `long_run` | `state` is `running` and `run_started_at` is more than 7 hours old |
-| `no_record` | the box's newest committed run started more than 26 hours ago, or it has none |
+| `no_record` | the box's newest committed run started more than 26 hours ago, or it has none. While a heartbeat under 30 minutes old says `running`, a box with records is judged when that run ends, and a `no_record` already raised holds without posting again |
 
-The Slack post comes before the commit to `results`, and a failed post fails the job. Nothing is committed and the next run posts again, so an alert can repeat but is never lost. While Slack refuses posts, for example with the token unset or the app not in the channel, no new record is committed: records wait in the bucket and the page keeps deploying the ones already on `results`.
+The Slack post comes before the commit to `results`, and a failed post fails the job. Nothing is committed and the next run posts again, so an alert can repeat but is never lost. While Slack refuses posts, for example with the token unset or the app not in the channel, no new record is committed and records wait in the bucket.
+
+**Publish failures.** Any other failure of the ingest job (the role, S3, an exception or the commit) posts `forge-perf: publish failed` with a link to the workflow run. The deploy job runs only when ingest reached its commit, including after a rejection, so while ingest fails the page keeps its last build and its "Last published" time ages.
 
 ## The site build
 
@@ -84,12 +86,39 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 
 | Field | Holds |
 |---|---|
-| `published_at` | the build's UTC time, so the page can show when it was last published. GitHub disables a public repository's scheduled workflows after 60 days without activity |
+| `published_at` | the build's UTC time, so the page can show when it was last published. A build follows only an ingest that reached its commit, so the time ages while ingest fails or the schedule is disabled. GitHub disables a public repository's scheduled workflows after 60 days without activity |
 | `runs` | one row per run in start order: run ID, series, box id, tier and type, start time, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
 `instrument_changes` lists what differs from the previous run of the same series on the same box: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip) and `box` (the box fingerprint). It is null for a series' first run.
+
+### Publishing a local run
+
+A local run ([runner.md](runner.md#local-run)) uploads its record to the `local-results` bucket of the local MinIO. With the same `AWS_ENDPOINT_URL` and key exported, the workflow's two steps run against it from a forge-perf checkout, with a scratch directory standing in for the `results` branch:
+
+```sh
+mkdir -p local/results
+DENYLIST_FILE=/path/to/denylist.regex \
+  python3 scripts/publish/ingest.py --bucket local-results --results local/results
+python3 scripts/publish/build-site.py --site site --data data --results local/results \
+  --out local/_site --heartbeats '{"main":null}'
+python3 -m http.server 8000 --bind 127.0.0.1 -d local/_site
+```
+
+Ingest applies every check and writes `runs/` and `status/` as in the workflow, and prints the alerts it would post instead of posting them. `data/boxes.json` lists only `main`, so it also prints the missing-heartbeat and no-record alerts for that box. The records are series `calibration`, since every local run is, so the page lists them without counting them.
+
+## Responding to publish alerts
+
+| Alert or sign | Cause and response |
+|---|---|
+| `forge-perf: publish failed` | Read the linked run's log. The usual causes are a revoked or missing `SLACK_BOT_TOKEN`, a changed trust on `forge-perf-ci-results`, and an unset `PUBLIC_DENYLIST_REGEX` (ingest exits 2). The next scheduled run retries once the cause is fixed. |
+| "Last published" hours old and no alert | The alert post itself failed, which points at `SLACK_BOT_TOKEN` first, or the schedule is disabled. `gh workflow list --all` shows `disabled_inactivity` after 60 days without activity in the repository; `gh workflow enable publish.yml` turns it back on. |
+| `invalid` with `disk_low` | ingot's spool outgrew the NVMe. Every run of that size repeats it until the size or the box changes. |
+| `invalid` with `dirty_start` | The previous wipe left containers, volumes or piri objects. Run `scripts/host/wipe.sh` on the box, and read the previous run's journal for why its wipe did not finish. |
+| `invalid` with `image_changed` | A container ran an image other than its pinned digest. Check `config/images.tracked` and what pulled or retagged the image. |
+| `invalid` with `instrument_modified` | The box's forge-perf checkout has local edits. Read `git status` there and restore the checkout. |
+| `invalid` with `box_type_mismatch` | The instance type differs from the tier's configured type. Compare `config/settings/<instance type>.env` and the box's configuration with the running instance. |
 
 ## Overrides
 
