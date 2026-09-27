@@ -106,7 +106,7 @@ python3 scripts/publish/build-site.py --site site --data data --results local/re
 python3 -m http.server 8000 --bind 127.0.0.1 -d local/_site
 ```
 
-Ingest applies every check and writes `runs/` and `status/` as in the workflow, and prints the alerts it would post instead of posting them. `data/boxes.json` lists only `main`, so it also prints the missing-heartbeat and no-record alerts for that box. The records are series `calibration`, since every local run is, so the page lists them without counting them.
+Ingest applies every check and writes `runs/` and `status/` as in the workflow, and prints the alerts it would post instead of posting them. `data/boxes.json` lists only `main`, so it also prints the missing-heartbeat and no-record alerts for that box. The records are series `calibration`, as every run is while `config/launch.conf` has `SERIES_LIVE=0` and as a manual `--set` run is by default, so the page lists them without counting them.
 
 ## Responding to publish alerts
 
