@@ -15,12 +15,13 @@
 #      replaces what is pending, and --nightly writes a nightly run whatever
 #      changed;
 #   4. between runs, and unless the box is held: starts update.sh when
-#      origin moved, otherwise starts the pending run, or flushes the outbox
-#      when nothing can start;
+#      origin moved or the last update.sh did not finish for this checkout,
+#      otherwise starts the pending run, or flushes the outbox when nothing
+#      can start;
 #   5. writes the heartbeat to published/<box>/heartbeat.json.
 #
-# Exit status 1 when the set could not be resolved or the heartbeat did not
-# go up; the pass still does everything else.
+# Exit status 1 when the set could not be resolved, update.sh failed, or the
+# heartbeat did not go up; the pass still does everything else.
 #
 # SC2016: jq programs are single-quoted on purpose.
 # shellcheck disable=SC2016
@@ -194,17 +195,35 @@ background() {
     --property RuntimeMaxSec=45min /bin/bash "$@" || echo "poll: $unit is already running" >&2
 }
 
-# update: start update.sh when origin's head differs from the checkout's.
-# update.sh arrives with the box's provisioning; a campaign box, and a laptop
-# in skip mode, never update.
+# update: start update.sh when origin's head differs from the checkout's, or
+# when update.sh has not finished for the checkout's HEAD (its last step writes
+# state/updated-rev). update.sh resets the checkout before it provisions, so
+# after a failed provision HEAD already equals origin, and only updated-rev
+# shows the host is behind. While update.sh is not running for such a HEAD,
+# each pass counts an update failure, which the heartbeat reports in
+# poll_failures, and starts it again. update.sh arrives with the box's
+# provisioning; a campaign box, and a laptop in skip mode, never update
+# (FORGE_PERF_POLL_UPDATES=1 lets the tests drive it in skip mode).
 update() {
-  local head remote ref="${FORGE_PERF_REF:-main}"
-  ! host_ops_skipped && [ "${FORGE_PERF_MODE:-persistent}" = persistent ] && [ -e "$here/update.sh" ] || return 1
+  local head remote finished ref="${FORGE_PERF_REF:-main}"
+  { ! host_ops_skipped || [ "${FORGE_PERF_POLL_UPDATES:-}" = 1 ]; } &&
+    [ "${FORGE_PERF_MODE:-persistent}" = persistent ] && [ -e "$here/update.sh" ] || return 1
   head="$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)"
+  finished="$(cat "$state/updated-rev" 2>/dev/null || true)"
   remote="$(limited git -C "$FORGE_PERF_CHECKOUT" ls-remote origin "refs/heads/$ref" | cut -f1)" ||
-    { echo "poll: cannot reach forge-perf's origin" >&2; return 1; }
-  [ -n "$remote" ] && [ "$remote" != "$head" ] || return 1
-  echo "poll: forge-perf moved to ${remote:0:12}; updating before the next run"
+    { echo "poll: cannot reach forge-perf's origin" >&2; remote=""; }
+  if [ -n "$remote" ] && [ "$remote" != "$head" ]; then
+    echo "poll: forge-perf moved to ${remote:0:12}; updating before the next run"
+  elif [ "$finished" != "$head" ]; then
+    if host_check systemctl is-active --quiet forge-perf-update.service; then
+      echo "poll: update.sh is still going for ${head:0:12}; no run starts"
+      return 0
+    fi
+    update_failures=$((update_failures + 1)) status=1
+    echo "poll: update.sh has not finished for ${head:0:12} (failure $update_failures); running it again" >&2
+  else
+    return 1
+  fi
   background forge-perf-update "$here/update.sh"
 }
 
@@ -271,6 +290,7 @@ else
   done
 fi
 echo "$failures" | put poll-failures
+update_failures="$(cat "$state/update-failures" 2>/dev/null || echo 0)"
 
 # The hold is read after resolution, which can take minutes, so a hold set
 # during it still stops this pass's dispatch. run.sh checks it again under
@@ -288,6 +308,10 @@ elif ready; then
 else
   flush
 fi
+# A pass that finds update.sh finished for HEAD clears the count.
+[ "$(cat "$state/updated-rev" 2>/dev/null)" != "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" ] ||
+  update_failures=0
+echo "$update_failures" | put update-failures
 
 # --- 5. the heartbeat --------------------------------------------------------------------
 
@@ -301,7 +325,7 @@ if [ -n "$active" ] && [ -e "$state/current.json" ]; then
 fi
 jq -n --arg box "$FORGE_PERF_BOX_ID" --arg at "$(now)" --arg sha "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" \
   --arg state "$box_state" \
-  --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$failures" \
+  --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$((failures + update_failures))" \
   --argjson kind "$(jq -c '.kind // null' "$state/pending.json" 2>/dev/null || echo null)" \
   '{box: $box, at: $at, forge_perf_sha: $sha, state: $state, run_id: $run_id, run_started_at: $started,
     pending_kind: $kind, poll_failures: $failures}' >"$FORGE_PERF_RUNTIME/heartbeat.json"

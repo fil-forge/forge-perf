@@ -395,6 +395,13 @@ step_preflight() {
       stop instrument_modified "the forge-perf checkout differs from its commit: $(tr '\n' ' ' <<<"$modified")"
     fi
   fi
+  # update.sh records HEAD in updated-rev as its last step. A record for
+  # another commit means the checkout moved and provisioning or the unit sync
+  # did not finish, so the host may still run the previous pins.
+  if [ "${FORGE_PERF_MODE:-persistent}" = persistent ] && [ -s "$state/updated-rev" ] &&
+    [ "$(cat "$state/updated-rev")" != "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" ]; then
+    stop preflight_failed "update.sh has not completed for this checkout"
+  fi
   [[ "$FORGE_PERF_PIRI_BUCKET_PREFIX" = "${smelt_prefix}piri-0-" ]] ||
     stop runner_error "FORGE_PERF_PIRI_BUCKET_PREFIX must be the smelt bucket prefix followed by piri-0-"
   # The box facts the record schema requires; without them no record, not

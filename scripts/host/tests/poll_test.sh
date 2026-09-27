@@ -298,4 +298,30 @@ poll 0
 grep -q -- "--key published/test/test-9.json" "$D/aws.log" || fail "record not uploaded"
 echo "ok: the outbox is flushed between runs"
 
+# The update path, driven in skip mode: the checkout's origin answers from
+# $D/heads, and systemctl is-active reports forge-perf-update as stopped.
+updating() { grep -q "host-op skipped: systemd-run --unit forge-perf-update" "$work/out"; }
+setup
+head="$(/usr/bin/git -C "$work/box/checkout" rev-parse HEAD)"
+echo "origin $head" >>"$D/heads"
+FORGE_PERF_POLL_UPDATES=1 poll 1
+updating && ! dispatched || fail "a checkout without updated-rev dispatched instead of updating"
+[ "$(beat .poll_failures)" = 1 ] || fail "update failure not in the heartbeat: $(beat .poll_failures)"
+FORGE_PERF_POLL_UPDATES=1 poll 1
+updating && ! dispatched || fail "the second pass did not start update.sh again"
+[ "$(beat .poll_failures)" = 2 ] || fail "update failures did not add up: $(beat .poll_failures)"
+echo "ok: while update.sh has not finished for HEAD, each pass reruns it, starts no run, and counts a failure"
+printf '%s\n' "$head" >"$state/updated-rev"
+FORGE_PERF_POLL_UPDATES=1 poll 0
+dispatched && ! updating || fail "no dispatch once updated-rev matches HEAD"
+[ "$(beat .poll_failures)" = 0 ] && [ "$(cat "$state/update-failures")" = 0 ] || fail "update failures not cleared"
+echo "ok: once updated-rev matches HEAD the pending run starts and the count clears"
+start_run
+sed -i.bak "s|^origin .*|origin $(printf '%040d' 9)|" "$D/heads"
+ingot 2
+FORGE_PERF_POLL_UPDATES=1 poll 0
+updating && ! dispatched || fail "origin moved and the pass did not update"
+[ "$(beat .poll_failures)" = 0 ] || fail "a moved origin counted as a failure"
+echo "ok: when origin moves the pass starts update.sh, not the run"
+
 echo "poll: all tests passed"

@@ -452,6 +452,15 @@ run 1 -- --set "$work/set.json" --workers 16
 echo "ok: a hand edit in the checkout stops preflight, and the run is still recorded"
 
 setup
+printf '%040d\n' 7 >"$work/box/state/updated-rev"
+run 1 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = preflight_failed ] || fail "reasons $(runner .reasons)"
+grep -q "update.sh has not completed for this checkout" "$work/out" || fail "no update.sh message"
+git -C "$work/checkout" rev-parse HEAD >"$work/box/state/updated-rev"
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+echo "ok: preflight stops while update.sh has not completed for the checkout's HEAD"
+
+setup
 run 1 NTP=no -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = preflight_failed ] || fail "reasons $(runner .reasons)"
 echo "ok: an unsynchronized clock stops preflight"

@@ -42,6 +42,8 @@ case "${1:-}" in
     show last-started.json '{smelt, harness: .harness.sha, resolved_at}'
     show last-run.json '{run_id, kind, attempt, reasons}'
     printf '%-13s %s\n' "poll failures:" "$(cat "$state/poll-failures" 2>/dev/null || echo 0)"
+    printf '%-13s %s (updated-rev %s)\n' "update fails:" "$(cat "$state/update-failures" 2>/dev/null || echo 0)" \
+      "$(cut -c1-12 "$state/updated-rev" 2>/dev/null || echo none)"
     host_read systemctl list-timers 'forge-perf-*' --no-pager
     ;;
   hold)
