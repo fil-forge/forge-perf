@@ -173,14 +173,14 @@ The box role reads every parameter under `/forge-perf`, so code merged to forge-
 - Install it on fil-one with "Only select repositories" and pick fil-one/storage-qualification alone. The installation's settings page URL ends in the installation ID.
 - On the App's settings page, note the App ID and generate a private key. The browser downloads it as a `.pem` file.
 
-Store the three values as one SecureString. The key travels through a pipe, never a command-line argument, and the downloaded file is deleted once stored:
+Store the three values as one SecureString. As with piri's key, the value goes through a temporary file readable only by you, never a command-line argument, and the downloaded file is deleted once stored. The private key never needs to be printed or pasted anywhere:
 
 ```sh
-jq -n --arg app <app id> --arg inst <installation id> --rawfile key <downloaded>.pem \
-    '{app_id: $app, installation_id: $inst, private_key: $key}' \
-  | jq '{Name: "/forge-perf/harness-app", Type: "SecureString", Value: tojson}' \
-  | aws ssm put-parameter --cli-input-json file:///dev/stdin
-rm <downloaded>.pem
+tmp=$(mktemp)   # created mode 600
+jq -njc --arg app <app id> --arg inst <installation id> --rawfile key <downloaded>.pem \
+  '{app_id: $app, installation_id: $inst, private_key: $key}' >"$tmp"
+aws ssm put-parameter --name /forge-perf/harness-app --type SecureString --value "file://$tmp"
+rm -f "$tmp" <downloaded>.pem
 ```
 
 A 2048-bit key keeps the value under the standard tier's 4 KB limit. Check the parameter's type and fields without printing the key:
@@ -193,7 +193,7 @@ aws ssm get-parameter --with-decryption --name /forge-perf/harness-app \
 
 The first line lists `/forge-perf/harness-app SecureString`; the second prints `["app_id","installation_id","private_key"]`. The next run's checkout step fetches the harness with a minted token, or ends `secrets_unavailable` with "cannot mint a harness token from the GitHub App key in SSM".
 
-The App key is rotated yearly, and when someone with access to it leaves. An App can hold several keys at once: generate a new one, store it as above with `Overwrite: true` added to the second `jq` object, and delete the old key on the App's settings page after the next run fetches the harness. `SQ_AUTH=deploy-key` with a read-only deploy key in `/forge-perf/harness-deploy-key` remains in the code for an organization that allows deploy keys; fil-one does not.
+The App key is rotated yearly, and when someone with access to it leaves. An App can hold several keys at once: generate a new one, store it as above with `--overwrite` added to `put-parameter`, and delete the old key on the App's settings page after the next run fetches the harness. `SQ_AUTH=deploy-key` with a read-only deploy key in `/forge-perf/harness-deploy-key` remains in the code for an organization that allows deploy keys; fil-one does not.
 
 ### The denylist pattern
 
