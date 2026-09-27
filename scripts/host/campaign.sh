@@ -13,9 +13,12 @@
 # A campaign box stays at campaign.json's forge_perf_sha and never updates.
 # It powers off at expires_at through the persistent timer its bootstrap armed
 # (or, without one, a transient timer set again at every boot), once its runs
-# are done, and after an error. Mode calibration runs nothing: the box waits
-# for the ceiling measurements. A reboot mid-campaign resumes after the last
-# run that ended.
+# are done, and after an error, including one before its checkout. Mode
+# calibration runs nothing: the box waits for the ceiling measurements, and an
+# error leaves it up for the operator. A run starts only when its duration
+# plus 45 minutes for setup, record and wipe ends before expires_at; the
+# first that would not ends the campaign. A reboot mid-campaign resumes after
+# the last run that ended.
 #
 # One worker count runs N times, as series campaign. A comma list is a sweep:
 # N rounds over the list, reversed every other round (16,32,64,64,32,16 for
@@ -100,14 +103,17 @@ poweroff_at() {
 if [ -n "$from_conf" ]; then
   [ "${FORGE_PERF_MODE:-}" = campaign ] || die "campaign.json drives only a campaign box; use --set here"
   c="$(jq -ce 'objects' "$conf")" || die "$conf is missing or not a JSON object"
+  # Before the checkout, so a campaign that cannot start does not idle to
+  # expires_at. A calibration box stays up: an operator is attached.
+  [ "$(jq -r .mode <<<"$c")" = calibration ] || armed=1
   sha="$(jq -r '.forge_perf_sha // ""' <<<"$c")"
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || die "$conf has no forge_perf_sha"
   if [ "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" != "$sha" ]; then
     git -C "$FORGE_PERF_CHECKOUT" checkout --quiet --detach "$sha" || die "cannot check out $sha"
     exec "$BASH" "$0"
   fi
-  poweroff_at "$(jq -r '.expires_at // ""' <<<"$c")"
-  armed=1
+  expires_at="$(jq -r '.expires_at // ""' <<<"$c")"
+  poweroff_at "$expires_at"
   if [ "$(jq -r .mode <<<"$c")" = calibration ]; then
     echo "campaign: mode calibration; the box waits for the ceiling measurements"
     exit 0
@@ -153,9 +159,28 @@ if [ -n "$from_conf" ] && [ "$(jq -r '.key // ""' "$progress" 2>/dev/null)" = "$
   start="$(jq '.done' "$progress")"
 fi
 
+# On a campaign box, a run takes its duration (at most 4h, the default) plus
+# 45 minutes for setup, record and wipe.
+run_s=0
+if [ -n "$from_conf" ]; then
+  [[ "${duration:-4h}" =~ ^([1-9][0-9]{0,5})([smh])$ ]] || die "duration '$duration' is not like 30m or 4h"
+  case "${BASH_REMATCH[2]}" in
+    s) run_s="${BASH_REMATCH[1]}" ;;
+    m) run_s=$((BASH_REMATCH[1] * 60)) ;;
+    h) run_s=$((BASH_REMATCH[1] * 3600)) ;;
+  esac
+  run_s=$((run_s + 2700))
+fi
+
 total="${#order[@]}"
 for ((i = start; i < total; i++)); do
   w="${order[i]}"
+  # A run that would still be going at expires_at is cut by the poweroff.
+  if [ -n "$from_conf" ] && [ $(($(date -u +%s) + run_s)) -gt "$(epoch "$expires_at")" ]; then
+    echo "campaign: run $((i + 1)) of $total would not end before expires_at $expires_at; stopping here"
+    total="$i"
+    break
+  fi
   exec 8>"$FORGE_PERF_RUNTIME/poll.lock"
   if command -v flock >/dev/null; then
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
@@ -168,8 +193,15 @@ for ((i = start; i < total; i++)); do
     + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration)' | write_durable "$state/pending.json"
   exec 8>&-
   echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}"
-  host_op systemctl start --wait forge-perf-run.service ||
-    echo "campaign: run $((i + 1)) ended with a failure; its record says why" >&2
+  if ! host_op systemctl start --wait forge-perf-run.service; then
+    # run.sh moves a pending run it refuses to pending.json.rejected, and
+    # writes no record for it.
+    if own_pending "$state/pending.json.rejected"; then
+      echo "campaign: run.sh refused run $((i + 1)) before it started; journalctl -u forge-perf-run says why" >&2
+    else
+      echo "campaign: run $((i + 1)) ended with a failure; its record says why" >&2
+    fi
+  fi
   # The poller retries a failed run it dispatched; a campaign's are its own.
   ! own_pending "$state/last-run.json" || rm -f "$state/last-run.json"
   clean_pending

@@ -81,8 +81,13 @@ run "campaign_box" {
   }
 
   assert {
-    condition     = endswith(module.box.user_data, "systemctl start --no-block forge-perf-campaign.service\n")
-    error_message = "the bootstrap starts the campaign unit on the first boot"
+    condition     = endswith(module.box.user_data, "systemctl start --no-block forge-perf-final-flush.service\nsystemctl start --no-block forge-perf-campaign.service\n")
+    error_message = "the bootstrap starts the shutdown flush and the campaign unit on the first boot"
+  }
+
+  assert {
+    condition     = can(regex("(?s)\nsystemctl enable --now forge-perf-expire.timer\n.*\ntrap 'rc=\\$\\?; \\[ \"\\$rc\" -eq 0 \\] \\|\\| systemctl poweroff' EXIT\n.*\n  git clone ", module.box.user_data))
+    error_message = "a campaign box's bootstrap powers off on a failure, from before its first step that can fail"
   }
 
   assert {
@@ -128,5 +133,10 @@ run "calibration_needs_no_set" {
   command = plan
   variables {
     campaign = { mode = "calibration", set = "", runs = 1, size = "1GB", workers = [], duration = "1m" }
+  }
+
+  assert {
+    condition     = !strcontains(module.box.user_data, "systemctl poweroff' EXIT")
+    error_message = "a calibration box stays up after a failed bootstrap, for the operator attached to it"
   }
 }

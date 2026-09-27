@@ -2,4 +2,5 @@
 # from systemd/ is skipped until the unit lands.
 forge-perf-nvme.service
 forge-perf-recover.service
+forge-perf-final-flush.service
 forge-perf-campaign.service

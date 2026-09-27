@@ -1,0 +1,26 @@
+[Unit]
+# Campaign boxes only (systemd/enabled.campaign). A campaign box has no poller,
+# and at ExpiresAt it powers off and the reaper then terminates it, outbox
+# included. A run stopped by that poweroff is recorded and wiped but leaves its
+# upload to a next poll that never comes. This unit does nothing at start; at
+# shutdown it is stopped after the run and campaign units (Before= reverses at
+# stop) and before the network goes (After=), and its ExecStop uploads what
+# the outbox holds.
+Description=forge-perf outbox flush at shutdown
+Wants=network-online.target
+After=network-online.target
+Before=forge-perf-run.service forge-perf-campaign.service
+ConditionPathExists=/etc/forge-perf/campaign.json
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/true
+ExecStop=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/outbox.sh flush
+# outbox.sh gives each upload 15 minutes.
+TimeoutStopSec=20min
+
+[Install]
+WantedBy=multi-user.target

@@ -24,6 +24,10 @@ cat >"$work/bin/systemctl" <<'STUB'
 echo "systemctl $*" >>"$D/systemctl.log"
 case "$*" in
   "start --wait forge-perf-run.service")
+    if [ -e "$D/refuse" ]; then # as run.sh refuses a pending run
+      mv "$FORGE_PERF_STATE_DIR/pending.json" "$FORGE_PERF_STATE_DIR/pending.json.rejected"
+      exit 2
+    fi
     jq -c . "$FORGE_PERF_STATE_DIR/pending.json" >>"$D/runs.log"
     rm "$FORGE_PERF_STATE_DIR/pending.json"
     jq -n '{run_id: "campaign-1", kind: "campaign"}' >"$FORGE_PERF_STATE_DIR/last-run.json" ;;
@@ -60,9 +64,9 @@ setup() {
     FORGE_PERF_RESULTS_BUCKET=test-results >"$work/box/box.conf"
 }
 # conf JQ: campaign.json, a campaign of two runs at 16 workers pinned at
-# $sha and expiring in an hour, edited by JQ.
+# $sha and expiring in four hours, edited by JQ.
 conf() {
-  jq -n --arg sha "$sha" --argjson at "$(($(date -u +%s) + 3600))" \
+  jq -n --arg sha "$sha" --argjson at "$(($(date -u +%s) + 14400))" \
     '{mode: "campaign", set: "calibration/sets/shakedown.json", runs: 2, size: "10GB", workers: [16],
       duration: "30m", forge_perf_sha: $sha, expires_at: ($at | todate)}' | jq "$1" >"$work/box/campaign.json"
 }
@@ -114,6 +118,37 @@ campaign 1
 [ ! -e "$D/runs.log" ] && [ "$(tail -1 "$D/systemctl.log")" = "systemctl poweroff" ] || fail "an error left the box up"
 grep -q "stopped on an error" "$work/out" || fail "no word of the error"
 echo "ok: a campaign box that stops on an error powers off"
+
+setup campaign
+conf ".forge_perf_sha = \"$(printf 'f%.0s' {1..40})\""
+campaign 1
+[ ! -e "$D/runs.log" ] && [ "$(tail -1 "$D/systemctl.log")" = "systemctl poweroff" ] ||
+  fail "a campaign box whose checkout failed stayed up"
+conf ".mode = \"calibration\" | .forge_perf_sha = \"$(printf 'f%.0s' {1..40})\""
+rm -f "$D/systemctl.log"
+campaign 1
+grep -qx "systemctl poweroff" "$D/systemctl.log" 2>/dev/null && fail "a calibration box powered off on an error"
+echo "ok: a campaign box that cannot check out its commit powers off; a calibration box stays up"
+
+setup campaign
+conf '.duration = "4h" | .expires_at = (now + 3 * 3600 | floor | todate)'
+campaign 0
+[ ! -e "$D/runs.log" ] || fail "a run that cannot end before expires_at started"
+grep -q "run 1 of 2 would not end before expires_at" "$work/out" || fail "no word of the stop"
+[ "$(tail -1 "$D/systemctl.log")" = "systemctl poweroff" ] || fail "no poweroff after the stop"
+conf '.duration = "30m" | .expires_at = (now + 5000 | floor | todate)'
+campaign 0
+[ "$(runs .workers)" = "16 16" ] || fail "runs that fit did not start: $(runs .workers)"
+echo "ok: a run that would not end 45 minutes before expires_at never starts, and the box powers off"
+
+setup campaign
+conf .
+touch "$D/refuse"
+campaign 0
+grep -q "run.sh refused run 1 before it started; journalctl -u forge-perf-run says why" "$work/out" ||
+  fail "a refusal blamed a record"
+[ ! -e "$state/pending.json.rejected" ] || fail "a refused campaign run left pending.json.rejected"
+echo "ok: a run that run.sh refused points at the journal, not a record"
 
 setup campaign
 conf '.mode = "calibration"'

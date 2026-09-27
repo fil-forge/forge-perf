@@ -11,7 +11,10 @@
 # digest for every tracked image, and config/settings/<INSTANCE_TYPE>.env
 # must exist, since run.sh refuses a type without one, and an empty WORKERS
 # needs a WORKERS value in it. DURATION is at most 4h, so a run and its
-# record fit in forge-perf-run.service's 6-hour limit. NOW (Unix seconds)
+# record fit in forge-perf-run.service's 6-hour limit. In mode campaign the
+# runs must fit in HOURS at their longest: 30 minutes to boot and provision,
+# then each run's duration plus 45 minutes for setup, record and wipe, since a
+# run still going at ExpiresAt is cut by the box's poweroff. NOW (Unix seconds)
 # replaces the clock in tests.
 set -euo pipefail
 
@@ -63,6 +66,10 @@ if [ "$MODE" = campaign ]; then
     die "no config/settings/$INSTANCE_TYPE.env; run.sh would refuse every run on this type"
   [ -n "$workers" ] || grep -qE '^WORKERS=[1-9]' "$repo/config/settings/$INSTANCE_TYPE.env" ||
     die "config/settings/$INSTANCE_TYPE.env has no WORKERS yet; give workers, one number or a list to sweep"
+  per_round="$(jq 'if length == 0 then 1 else length end' <<<"$workers_json")"
+  need=$((1800 + RUNS * per_round * (duration_s + 2700)))
+  [ "$need" -le $((HOURS * 3600)) ] ||
+    die "$((RUNS * per_round)) run(s) of $DURATION need up to $(((need + 3599) / 3600)) hours; hours is $HOURS"
 fi
 
 at=$((now + HOURS * 3600))
