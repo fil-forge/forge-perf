@@ -1,14 +1,38 @@
 {
   "schema": "forge-perf.gates/v1",
   "gates": [
-    {"gate": 1, "instance_type": "m9gd.2xlarge", "nic_reference_gbps": 4.25,
-     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
-     "measured_at": null, "forge_perf_sha": null, "method": null},
-    {"gate": 2, "instance_type": "m9gd.8xlarge", "nic_reference_gbps": 17,
-     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
-     "measured_at": null, "forge_perf_sha": null, "method": null},
-    {"gate": 3, "instance_type": "m9gd.16xlarge", "nic_reference_gbps": 34,
-     "ceiling_bytes_per_s": null, "s3_put_bytes_per_s": null, "nvme_seq_write_bytes_per_s": null,
-     "measured_at": null, "forge_perf_sha": null, "method": null}
+    {
+      "gate": 1,
+      "instance_type": "m9gd.2xlarge",
+      "nic_reference_gbps": 4.25,
+      "ceiling_bytes_per_s": 519534455,
+      "s3_put_bytes_per_s": 519534455,
+      "nvme_seq_write_bytes_per_s": 586791287,
+      "measured_at": "2026-09-27T18:36:28Z",
+      "forge_perf_sha": "1ab79e3b8b8b037d61e8dbd677147befb9f477ba",
+      "method": "calibration/ceilings/2026-09-27/m9gd.2xlarge"
+    },
+    {
+      "gate": 2,
+      "instance_type": "m9gd.8xlarge",
+      "nic_reference_gbps": 17,
+      "ceiling_bytes_per_s": 2083730227,
+      "s3_put_bytes_per_s": 2083730227,
+      "nvme_seq_write_bytes_per_s": 2369765069,
+      "measured_at": "2026-09-27T20:13:08Z",
+      "forge_perf_sha": "f9c86eabdc1681803444c1cca73b70b2be7376fe",
+      "method": "calibration/ceilings/2026-09-27/m9gd.8xlarge"
+    },
+    {
+      "gate": 3,
+      "instance_type": "m9gd.16xlarge",
+      "nic_reference_gbps": 34,
+      "ceiling_bytes_per_s": 4187033873,
+      "s3_put_bytes_per_s": 4187033873,
+      "nvme_seq_write_bytes_per_s": 4740753442,
+      "measured_at": "2026-09-27T21:51:06Z",
+      "forge_perf_sha": "f9c86eabdc1681803444c1cca73b70b2be7376fe",
+      "method": "calibration/ceilings/2026-09-27/m9gd.16xlarge"
+    }
   ]
 }

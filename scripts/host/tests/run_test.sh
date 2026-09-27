@@ -243,6 +243,10 @@ setup() {
     >"$D/images"
   (cd "$repo" && git ls-files -z --cached --others --exclude-standard | xargs -0 tar cf - 2>/dev/null) |
     tar xf - -C "$work/checkout"
+  # Cases run with the series off unless they turn it on, whatever the
+  # repository ships.
+  sed 's/^SERIES_LIVE=.*/SERIES_LIVE=0/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
+  mv "$work/launch.conf" "$work/checkout/config/launch.conf"
   # The wipe itself is tested in wipe_test.sh; here it clears the stubs' state.
   cat >"$work/checkout/scripts/host/wipe.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -301,8 +305,10 @@ outcome() { jq -r '.outcome | "\(.class) \(.reasons | join(","))"' "${1:-$D/reco
 has() { grep -qF -- "$2" "$1" || fail "$1 lacks: $2"; }
 lacks() { ! grep -qF -- "$2" "$1" 2>/dev/null || fail "$1 has: $2"; }
 
-# WORKERS is empty in m9gd.2xlarge.env.
+# WORKERS empty in the settings file for the instance type, and no --workers.
 setup
+sed 's/^WORKERS=.*/WORKERS=/' "$work/checkout/config/settings/m9gd.2xlarge.env" >"$work/settings.env"
+mv "$work/settings.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
 run 2 -- --set "$work/set.json"
 grep -q "WORKERS is empty" "$work/out" || fail "no WORKERS message"
 [ ! -e "$work/box/state/runner.json" ] || fail "a refused run wrote runner.json"

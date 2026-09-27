@@ -49,7 +49,16 @@ class Data(unittest.TestCase):
 
     def test_committed_data_passes(self):
         self.assertEqual(check_data.check(ROOT / "data"), [])
-        self.assertTrue(all(g["ceiling_bytes_per_s"] is None for g in self.gates["gates"]))
+        for g in self.gates["gates"]:
+            if g["ceiling_bytes_per_s"] is None:
+                continue
+            self.assertEqual(g["ceiling_bytes_per_s"],
+                             min(g["s3_put_bytes_per_s"], g["nvme_seq_write_bytes_per_s"]))
+            self.assertTrue((ROOT / g["method"].split("#")[0]).exists(), g["method"])
+            summary = ROOT / g["method"] / "summary.json"
+            if summary.exists():
+                self.assertEqual(g["ceiling_bytes_per_s"],
+                                 round(json.loads(summary.read_text(encoding="utf-8"))["ceiling"]))
 
     def test_a_measured_gate_passes(self):
         self.assertEqual(self.errors(self.with_gate1(MEASURED)), [])
