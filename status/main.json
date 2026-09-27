@@ -1,6 +1,3 @@
 {
-  "conditions": [
-    "heartbeat_stale",
-    "no_record"
-  ]
+  "conditions": []
 }
