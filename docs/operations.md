@@ -119,7 +119,7 @@ The endpoint's id is written into piri's policy, so a new endpoint leaves piri's
 
 ### The persistent box
 
-`terraform/envs/box/main` holds the persistent box: the instance, its security group and role, and piri's six buckets. The `deploy` workflow plans it on every pull request. On every push to main the `box-main-changed` job plans it again, and when that plan is not empty `apply-box-main` waits for a reviewer to approve it in the `box-change` environment. The plan is in `box-main-changed`'s log. A resize stops the box and a new AMI or bootstrap replaces it, and either loses a run in progress, so approve once no run is active: `systemctl show -p ActiveState --value forge-perf-run.service` on the box prints `inactive` and `/run/forge-perf/run.lock` is free (`flock -n /run/forge-perf/run.lock true` exits 0). A plan that changes only outputs touches no infrastructure and can be approved while a run is active.
+`terraform/envs/box/main` holds the persistent box: the instance, its security group and role, and piri's six buckets. The `deploy` workflow plans it on every pull request. On every push to main the `box-main-changed` job plans it again, and when that plan is not empty `apply-box-main` waits for a reviewer to approve it in the `box-change` environment. The plan is in `box-main-changed`'s log. A resize stops the box and a new AMI or bootstrap replaces it, and either loses a run in progress, so approve once no run is active: `systemctl show -p ActiveState --value forge-perf-run.service` on the box prints `inactive` and `/run/forge-perf/run.lock` is free (`flock -n /run/forge-perf/run.lock true` exits 0). A replacement also discards the root volume, with the outbox, the hold and the poller's state, so before approving one check that the outbox is empty: `ls -A /var/lib/forge-perf/outbox` prints nothing. If it holds files, run `scripts/host/outbox.sh flush` and look again. A plan that changes only outputs touches no infrastructure and can be approved while a run is active.
 
 A rejected, cancelled or failed `apply-box-main` leaves the change unapplied. The next push to main plans it again and asks again; to apply it sooner, re-run the latest `deploy` run on main from the Actions tab.
 
@@ -343,25 +343,25 @@ A campaign runs one committed set a few times on a box of its own beside the per
 2. Merge it, then dispatch `campaign` from main:
 
    ```sh
-   gh workflow run campaign.yml --ref main -f action=up -f instance_type=m9gd.16xlarge -f hours=6 \
+   gh workflow run campaign.yml --ref main -f action=up -f instance_type=m9gd.16xlarge -f hours=15 \
      -f set=calibration/sets/<name>.json -f runs=3 -f size=2000GB -f workers=64 -f duration=4h
    ```
 
 | Input | Takes |
 |---|---|
 | `instance_type` | `m9gd.2xlarge`, `m9gd.8xlarge` or `m9gd.16xlarge`; in mode `campaign` the type needs `config/settings/<type>.env` |
-| `hours` | 1 to 24. The box's `ExpiresAt` tag is the dispatch time plus this |
+| `hours` | 1 to 24. The box's `ExpiresAt` tag is the dispatch time plus this. In mode `campaign` the runs must fit at their longest: 30 minutes to boot, then `duration` plus 45 minutes per run, where a sweep counts each value. Three 4-hour runs need 15 hours |
 | `mode` | `campaign` runs the set; `calibration` boots the box and waits for the ceiling measurements |
 | `set` | a committed set under `calibration/sets/`, with a digest for every image in `config/images.tracked` |
 | `runs` | 1 to 20 |
 | `size`, `duration` | `--stop-ingest-at` and `--duration` of each run, such as `2000GB` and `4h`; `duration` is at most `4h`, so a run fits in `forge-perf-run.service`'s 6-hour limit |
 | `workers` | empty for the settings file's `WORKERS` (refused while that is empty), one number, or a comma list to sweep |
 
-The workflow refuses bad inputs before it assumes a role, and refuses `up` while the campaign root's state holds a box. The box's first act at boot is a persistent `forge-perf-expire.timer` that powers it off at `ExpiresAt`, across reboots, so a bootstrap or recovery that fails still stops it. It then clones forge-perf at the dispatched commit and never updates. `/etc/forge-perf/campaign.json` holds the inputs, the commit and `expires_at`. `forge-perf-campaign.service` runs `scripts/host/campaign.sh`, which runs each run through `forge-perf-run.service`, flushes the outbox and powers off. If it stops on an error it also flushes the outbox and powers off. A reboot resumes the campaign after the last run that ended.
+The workflow refuses bad inputs before it assumes a role, and refuses `up` while the campaign root's state holds a box. The box's first act at boot is a persistent `forge-perf-expire.timer` that powers it off at `ExpiresAt`, across reboots, so a recovery that fails still stops it. A bootstrap that fails powers a campaign box off at once; a calibration box stays up for the operator. It then clones forge-perf at the dispatched commit and never updates. `/etc/forge-perf/campaign.json` holds the inputs, the commit and `expires_at`. `forge-perf-campaign.service` runs `scripts/host/campaign.sh`, which runs each run through `forge-perf-run.service`, flushes the outbox and powers off. If it stops on an error, including a checkout that fails, it also flushes the outbox and powers off. It starts a run only when the run's duration plus 45 minutes ends before `ExpiresAt`, and otherwise stops there. A run still going at `ExpiresAt` is interrupted, recorded and wiped during shutdown, and `forge-perf-final-flush.service` uploads the outbox after it, before the network goes down. A reboot resumes the campaign after the last run that ended.
 
 One `workers` value runs `runs` times as series `campaign`. A list is a sweep: `runs` rounds over the list, reversed every other round, so `16,32,64` with two runs goes 16, 32, 64, 64, 32, 16 (docs/DESIGN.md §9). A sweep publishes as series `calibration`, since its values are not frozen; the smallest value within 5% of the best mean p5 and median wins, and freezing it in the type's settings file is a pull request.
 
-The box powers off when its runs are done and stops billing for compute. `campaign-reaper.yml` runs hourly. It terminates any forge-perf instance other than `main` that has no `ExpiresAt` tag, is stopped and past `ExpiresAt`, has been stopped for an hour, or is still up an hour after `ExpiresAt`, which leaves a box shutting down at `ExpiresAt` the time to record and upload its last run. For the campaign box it then destroys the campaign root, buckets included. Each finding is a line in `#filone-alerts`, and so is a failed reaper run. Once a day, and on a manual run, it also posts when the persistent box's instance type differs from `terraform/envs/box/main/terraform.tfvars`. A forgotten 12-hour tier 3 campaign costs at most 13 hours of `m9gd.16xlarge`, about $52.
+The box powers off when its runs are done and stops billing for compute. `campaign-reaper.yml` runs hourly. It terminates any forge-perf instance other than `main` that has no `ExpiresAt` tag, is stopped and past `ExpiresAt`, has been stopped for an hour, or is still up an hour after `ExpiresAt`. The box powers itself off at `ExpiresAt`; the hour covers one whose own poweroff failed. Every hour it also reads the campaign root's state, and destroys the root, buckets included, when the box that state holds was just reaped or is already terminated or gone. A destroy that failed is therefore tried again the next hour, and a newer box started since the listing is left alone. Each finding is a line in `#filone-alerts`, and so is a failed reaper run. Once a day, and on a manual run, it also posts when the persistent box's instance type differs from `terraform/envs/box/main/terraform.tfvars`, and every hour it posts when `publish.yml` has not succeeded on main for 2 hours. A forgotten 15-hour tier 3 campaign costs at most 16 hours of `m9gd.16xlarge`, about $64.
 
 To stop one sooner, dispatch `action=down`, which destroys the box and its buckets. GitHub keeps one pending run per workflow and cancels it for a newer dispatch, so check in the Actions tab that the `down` run completed, then check that nothing is left:
 
@@ -380,7 +380,7 @@ For the ceiling measurements, dispatch with `mode=calibration` and the type to m
 
 When a valid run's p5 reaches gate 1:
 
-1. `hold.sh main on`. `set-from-record.sh <run_id> calibration/sets/tier2-bridge.json` writes the set of the run that lit the gate; commit it. On the box, run it three times at each size, with one pairing ID for the whole bridge:
+1. `hold.sh main on`. `set-from-record.sh <run_id> calibration/sets/tier2-bridge.json` writes the set of the run that lit the gate; commit and merge it, then run `scripts/operator/box-update.sh main`. The poller does not update a held box, and `update.sh` runs on one, so this brings the set to the box's checkout. On the box, run it three times at each size, with one pairing ID for the whole bridge:
 
    ```sh
    scripts/host/campaign.sh --set calibration/sets/tier2-bridge.json --runs 3 --pairing pair-<yyyymmdd>-t1t2
@@ -388,8 +388,8 @@ When a valid run's p5 reaches gate 1:
      --pairing pair-<yyyymmdd>-t1t2
    ```
 
-   Run them as root under `systemd-run --unit forge-perf-pairing --collect /bin/bash /opt/forge-perf/scripts/host/campaign.sh …`, so a closed session does not stop them, and follow with `journalctl -fu forge-perf-pairing`. On a persistent box `campaign.sh` refuses without the hold. Each run goes through `forge-perf-run.service` as the poller's would; the poller leaves the campaign's pending run alone and never retries it.
-2. Merge a pull request that sets `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars` and adds `config/settings/m9gd.8xlarge.env` with `WORKERS` empty. Approve `apply-box-main` once the box is idle ("The persistent box" above). The provider stops, modifies and starts the same instance, and the instance store comes back blank.
+   Run them as root under `systemd-run --unit forge-perf-pairing --collect /bin/bash /opt/forge-perf/scripts/host/campaign.sh …`, so a closed session does not stop them, and follow with `journalctl -fu forge-perf-pairing`. On a persistent box `campaign.sh` refuses without the hold. Each run goes through `forge-perf-run.service` as the poller's would; the poller leaves the campaign's pending run alone and never retries it. A run that `run.sh` refuses before it starts writes no record; `journalctl -u forge-perf-run` says why.
+2. Merge a pull request that sets `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars`, adds `config/settings/m9gd.8xlarge.env` with `WORKERS` empty, and raises `budget_monthly_usd` in `terraform/envs/bootstrap/account/terraform.tfvars` to 1600, since tier 2 costs about $1,500 a month and the $600 forecast alert would fire every month. Apply the bootstrap root as in "The bootstrap root" above. Approve `apply-box-main` once the box is idle ("The persistent box" above). The provider stops, modifies and starts the same instance, and the instance store comes back blank. Then run `scripts/operator/box-update.sh main`, so the held box's checkout has `config/settings/m9gd.8xlarge.env`; without it `run.sh` refuses every run.
 3. Check the new drive (`findmnt /var/lib/docker/volumes`), then sweep workers at 1×, 2× and 4× the tier 1 value with `campaign.sh --set … --runs 1 --workers <a>,<b>,<c>`, freeze the winner in a pull request, repeat the paired runs of step 1 with the same pairing ID, and `hold.sh main off`. The page marks the box change and the offset between paired medians; past values never change.
 
 ## Rotating secrets
@@ -401,7 +401,7 @@ When a valid run's p5 reaches gate 1:
 | denylist pattern | SSM `/forge-perf/denylist`; repository secret `PUBLIC_DENYLIST_REGEX` | when the pattern changes |
 | `SLACK_BOT_TOKEN` | repository secret | when the Slack app's token changes |
 
-**piri's key.** IAM allows two keys per user, so the new key overlaps the old. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
+**piri's key.** IAM allows two keys per user, so the new key overlaps the old. Hold each box first (`hold.sh main on`), since a run whose preflight reads the parameters between the two writes starts piri with a mismatched pair, and release the hold once both are written. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
 
 **Harness deploy key.** Make and store a new key as in "The harness credential" above, with `--overwrite` on `put-parameter`, and add its public half beside the old one. After the next run fetches the harness, remove the old key from the repository's deploy keys.
 
@@ -429,8 +429,10 @@ Alerts post to `#filone-alerts` from `publish.yml` (docs/publishing.md, "Alerts"
 | `heartbeat_stale` | `scripts/operator/ssm-session.sh main`, then `systemctl status forge-perf-poll.timer` | the box is down, or the poll unit fails |
 | `poll_failures` | `journalctl -u forge-perf-poll` | GHCR or GitHub unreachable from the box |
 | `long_run` | `scripts/host/status.sh` | a drill past its duration that the watchdog has not yet stopped |
-| `no_record` | the heartbeat and the outbox (`/var/lib/forge-perf/outbox`) | uploads failing, or the box held |
-| reaper: a box destroyed or terminated | the line's reason | a campaign or scratch box left running past its time |
+| `no_record` | the heartbeat, the outbox (`/var/lib/forge-perf/outbox`) and `journalctl -u forge-perf-run` | uploads failing; the box held; the box could not read SSM `/forge-perf/denylist`, and `record.py` writes no record without it; or `WORKERS` empty in the type's settings file, so `run.sh` refuses every run |
+| `forge-perf publish rejected <key>: <check>` | the check's row in docs/publishing.md, "Ingest checks" | `denylist`: SSM `/forge-perf/denylist` and the `PUBLIC_DENYLIST_REGEX` secret differ, or the box's own check was bypassed. `future_run_id`: the box's clock. `schema`: the box runs a record schema that main does not. Fix the cause, then remove the record with operator credentials: `aws s3 rm s3://forge-perf-results-654654381893/<key>` |
+| reaper: `publish.yml` has not succeeded for 2 hours | the latest `publish` run's log, and `gh workflow list --all` | a revoked `SLACK_BOT_TOKEN` (which fails the run before it commits), a changed role trust, an S3 error, or the schedule disabled after 60 days without activity: `gh workflow enable publish.yml` and `gh workflow enable campaign-reaper.yml` |
+| reaper: a box destroyed or terminated | the line's reason | a campaign or scratch box left running past its time. "destroying the campaign root; its box is terminated" means an earlier destroy failed; a failed run of the reaper follows if this one fails too |
 | reaper: the persistent box's type differs | `terraform/envs/box/main/terraform.tfvars` and the last `deploy` run | a resize waiting for approval, or one made by hand |
 
 Availability errors never alert: the page shows the run as a warning and keeps its numbers. Three in a row suggest the frozen `WORKERS` pushes a service past what it serves without errors.
