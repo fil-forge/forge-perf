@@ -326,6 +326,24 @@ class Classification(unittest.TestCase):
         case.edit("run/metadata.json", lambda d: d["suite"].pop("drill_exit"))
         self.assertEqual(case.build()["outcome"]["reasons"], ["drill_interrupted"])
 
+    def test_a_runner_interrupt_without_netem_passes_is_not_a_runner_error(self):
+        # Recovery after a reboot builds the record without --latency or --run-dir.
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d["reasons"].append("drill_interrupted"))
+        os.remove(case.case / "netem" / "latency.json")
+        shutil.rmtree(case.case / "run")
+        runner = load(case.case / "runner.json")
+        self.assertIsNotNone(runner["time"]["drill_started_at"])
+        outcome = record.build(runner, None, None, record.read_env(record.LATENCY_ENV))["outcome"]
+        self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["drill_interrupted"]))
+
+    def test_a_runner_interrupt_after_the_pre_pass_is_not_a_runner_error(self):
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d["reasons"].append("drill_interrupted"))
+        case.edit("run/metadata.json", lambda d: d["suite"].pop("drill_exit"))
+        case.edit("netem/latency.json", lambda d: d.update(post=None))
+        self.assertEqual(case.build()["outcome"]["reasons"], ["drill_interrupted"])
+
     def test_image_labels_come_from_the_runner(self):
         case = Case(self, "stack-boot-failed")
         images = {i["repo"]: i for i in case.build()["provenance"]["images"]}

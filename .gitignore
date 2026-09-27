@@ -49,3 +49,6 @@ local/
 
 # Python bytecode written by the host tests.
 __pycache__/
+
+# A local run's box.conf and scratch files (docs/runner.md, "Local run").
+local/

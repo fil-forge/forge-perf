@@ -167,7 +167,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 
 | Reason | Class | Detected from |
 |---|---|---|
-| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started without a `verify pre` pass, or has numbers without a `verify post` pass; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
+| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started without a `verify pre` pass, or has numbers without a `verify post` pass, unless the runner interrupted it; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
 | `preflight_failed` | `no_data` | preflight: clock not synchronized, settings file missing, CPU without `sha2` |
 | `stack_boot_failed` | `no_data` | `make up` non-zero |
 | `setup_failed` | `no_data` | `perf-drill.sh setup` non-zero |
