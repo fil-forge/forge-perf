@@ -113,10 +113,11 @@ data "aws_iam_policy_document" "apply" {
     resources = ["*"]
   }
 
-  # Boxes boot from Canonical's images, so the role cannot launch another
-  # project's private AMI or a volume from its snapshot. Whether RunInstances
-  # also evaluates the AMI's own backing snapshot, which Canonical owns, is
-  # [unverified] until the first box apply.
+  # Boxes boot from Canonical's public images, so the role cannot launch
+  # another project's private AMI or a volume from its snapshot: those carry
+  # this account's ID as ec2:Owner. On the first campaign apply, Canonical's
+  # Ubuntu AMI evaluated with ec2:Owner "amazon" (its account is
+  # 099720109477), so both values are allowed.
   statement {
     sid     = "LaunchCanonicalImagesOnly"
     effect  = "Deny"
@@ -129,7 +130,7 @@ data "aws_iam_policy_document" "apply" {
     condition {
       test     = "StringNotEquals"
       variable = "ec2:Owner"
-      values   = [var.image_owner]
+      values   = var.image_owners
     }
   }
 
