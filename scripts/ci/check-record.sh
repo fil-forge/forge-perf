@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the Python tests of the host scripts, scripts/host/test_*.py: the run
-# record schema against its fixtures and docs/record.md, and the schema
-# checker itself. Standard library only, so they need no install.
+# record schema against its fixtures and docs/record.md, the schema checker
+# itself, and the record builder against the same fixtures. Standard library
+# only, so they need no install.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)/scripts/host"

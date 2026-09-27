@@ -30,7 +30,17 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `nic` | `allowance_exceeded` deltas, `egress_bytes_per_s_median` and `seconds_above_baseline` from `ethtool -S` and the one-second interface samples |
 | `raw_missing` | the raw tarball could not be built, was dropped from the outbox, or failed to upload for 24 hours |
 
-When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and the runner writes the minimal record below.
+`scripts/host/record.py` is the builder:
+
+```
+record.py build --runner runner.json [--run-dir DIR] [--latency netem/latency.json] \
+                --denylist FILE [--forbid FILE] --out record.json
+record.py minimal --runner runner.json --denylist FILE [--forbid FILE] --out record.json
+```
+
+Before writing, it checks the record against the schema, the denylist patterns (one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. The denylist file is shared with CI's `grep -E -i`, so its patterns must mean the same to both: the builder refuses a pattern that uses `\<`, `\>` or a `[[:class:]]` bracket, or that Python cannot compile. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. For `build`, exit status 0 means the full record was written and 3 the minimal record. For `minimal`, 0 means the minimal record was written. For both, 1 means nothing was written, because an input could not be read or even the minimal record was refused, and 2 is a usage error. Messages name the check or stage that failed, never an input's value.
+
+When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and writes the minimal record below.
 
 ## Field sources
 
@@ -91,7 +101,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `drill.requests.total`, `drill.requests.transport_errors`, `drill.requests.status_408`, `drill.requests.status_429`, `drill.requests.status_5xx` | evidence `drill.availability` `requests`, `transport_errors`, `status_408`, `status_429`, `status_5xx` |
 | `drill.requests.integrity_failures` | evidence `drill.integrity_failures` |
 | `drill.requests.backend_s3_errors` | lines containing `failed to put object` in `logs/piri-0.log`, piri's log when an S3 PUT fails (`piri/pkg/store/objectstore/minio/minio.go:67`); null when the log is missing. It separates an S3 incident from a Forge error |
-| `latency.target_rtt_ms`, `latency.tolerance_pct` | `latency.json` `rtt_ms` and `tolerance_pct` of the pre pass; `config/latency.env` when no pass ran |
+| `latency.target_rtt_ms`, `latency.tolerance_pct` | `latency.json` `rtt_ms` and `tolerance_pct` of the pre pass, else the post pass; `config/latency.env` when no pass ran |
 | `latency.jitter_ms` | constant 0 |
 | `latency.pairs` | cross-boundary pairs in the pre pass; 0 when it did not run |
 | `latency.before`, `latency.after` | a summary of the pre and post passes (`rtt`, below); null when the pass did not run |
@@ -105,7 +115,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `provenance.forge_perf.instrument_tree` | the instrument tree hash, below |
 | `provenance.smelt.sha` | the smelt SHA in the run's set, which is `git rev-parse HEAD` of the run's smelt checkout once it is checked out. smelt's own `metadata.json` `repos` is not used |
 | `provenance.harness.sha` | the harness SHA in the run's set, which is `git rev-parse HEAD` of the storage-qualification checkout once it is checked out |
-| `provenance.harness.modified`, `provenance.harness.go_version`, `provenance.harness.binary_sha256` | evidence `provenance.harness_modified`, `go_version`, `binary_sha256`; null without evidence |
+| `provenance.harness.modified`, `provenance.harness.go_version`, `provenance.harness.binary_sha256` | evidence `provenance.harness_modified`, `go_version`, `binary_sha256`; null without evidence or when the harness wrote an empty string |
 | `provenance.images` | one entry per image in the runner's pinned set, sorted by `repo` |
 | `provenance.images[].repo`, `provenance.images[].ref`, `provenance.images[].digest`, `provenance.images[].role` | the pinned set; `role` is `under_test` for the tracked `ghcr.io/fil-forge/<svc>` images and `instrument` for the third-party images in `config/images.lock` |
 | `provenance.images[].services` | `runner.json` `images[].services`: the services whose image in `docker compose config --format json` of the rendered manifest has the pinned digest, sorted. The netshoot image lists `netem`, the sidecar `netem.sh apply` starts, whenever the manifest was rendered, whether or not netem ran. The list is empty when the run stopped before the manifest was rendered |
@@ -137,7 +147,7 @@ A run has drill numbers when its evidence file exists and the drill exited 0 or 
 | `availability_warning` | no; numbers shown and joined to the line |
 | `valid` | yes |
 
-If the builder fails, or stops because the run directory belongs to another run, the runner writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record.
+If the builder fails, or stops because the run directory belongs to another run, `record.py` writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record.
 
 ## Triggers
 
@@ -157,7 +167,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 
 | Reason | Class | Detected from |
 |---|---|---|
-| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
+| `runner_error` | `no_data` | an unexpected runner failure; `netem.sh apply` exited non-zero or a verify pass exited 2; a netem check line that matches no rule; a drill that started without a `verify pre` pass, or has numbers without a `verify post` pass; a drill that started and ended with exit 2 and no evidence, with no exit status, or with any other status, when neither the watchdog nor the runner interrupted it; a `no_data` run that no other rule gives a reason |
 | `preflight_failed` | `no_data` | preflight: clock not synchronized, settings file missing, CPU without `sha2` |
 | `stack_boot_failed` | `no_data` | `make up` non-zero |
 | `setup_failed` | `no_data` | `perf-drill.sh setup` non-zero |
@@ -182,7 +192,7 @@ If the builder fails, or stops because the run directory belongs to another run,
 | `netem_missing` | `invalid` | a qdisc, delay or filter missing at verify |
 | `container_restarted` | `invalid` | a node or central container restarted, stopped or disappeared after apply; the services go in `outcome.restarted_services` |
 | `image_changed` | `invalid` | a container's image ID at the post-check differs from its pinned digest's |
-| `harness_mismatch` | `invalid` | evidence `provenance.harness_revision` differs from `provenance.harness.sha`, or `harness_modified` is true |
+| `harness_mismatch` | `invalid` | evidence `provenance.harness_revision` is empty or differs from `provenance.harness.sha`, or `harness_modified` is true |
 | `read_back_incomplete` | `invalid` | failure code `read_back_incomplete`: the duration ended before every scheduled read-back ran |
 | `ingest_cutoff_before_measurement` | `invalid` | failure code `ingest_cutoff_before_measurement`: the cap was spent before the first window |
 | `no_steady_windows` | `invalid` | evidence without the fact `sustained_windows`, or with 0 |
@@ -252,4 +262,4 @@ The publish Action recomputes both fingerprints and rejects a record whose store
 
 ## Fixtures
 
-`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, and a run whose run directory belongs to another run, which ends in the minimal record. `scripts/host/test_schema.py` checks every `expected.json` against the schema.
+`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, and a run whose run directory belongs to another run, which ends in the minimal record. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.

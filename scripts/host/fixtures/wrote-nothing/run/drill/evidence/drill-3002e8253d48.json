@@ -46,7 +46,6 @@
    "status_429": 0,
    "status_5xx": 0
   },
-  "windows": [],
   "facts": {
    "blobs_written": 0,
    "blobs_adopted": 0,
