@@ -502,7 +502,10 @@ step_checkout() {
   mkdir -p "$MIRRORS"
   harness_git "$SECRETS" || case $? in
     2) stop runner_error "the harness credential (SQ_AUTH) must be deploy-key, app or none" ;;
-    *) stop secrets_unavailable "cannot read the harness credential from SSM" ;;
+    *) case "${FORGE_PERF_HARNESS_AUTH:-${SQ_AUTH:-app}}" in
+         app) stop secrets_unavailable "cannot mint a harness token from the GitHub App key in SSM" ;;
+         *) stop secrets_unavailable "cannot read the harness deploy key from SSM" ;;
+       esac ;;
   esac
   mirror smelt "${FORGE_PERF_SMELT_URL:-https://github.com/$SMELT_REPO.git}" "$smelt_sha" smelt_unreachable tags git
   mirror storage-qualification "$HARNESS_URL" "$harness_sha" harness_unreachable pull "${HARNESS_GIT[@]}"
