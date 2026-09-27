@@ -1,0 +1,37 @@
+# Calibration
+
+`sets/` holds committed sets, the image digests a campaign or manual run pins ([docs/runner.md](../docs/runner.md)). `ceilings/<date>/<instance type>/` holds the evidence behind each gate on the page, measured by `scripts/operator/calibrate-ceilings.sh` ([docs/operations.md](../docs/operations.md#measuring-the-ceilings)).
+
+## Ceilings
+
+A gate is one instance type's ceiling: the lower of two rates, each measured alone on that type. Both are scored the way the drill scores its ingest rate: 30-second windows over the sustained segment, their p5 (the highest rate at least 95% of the windows held) and their median. Rates are bytes per second, with GB meaning 10^9 bytes.
+
+### S3 PUT
+
+`cmd/s3-ceiling` makes piri's call. It uses minio-go at piri's version (CI fails when the two go.mod files differ), TLS to `s3.us-east-2.amazonaws.com` with no region set, piri's own key, and the box's own `pdp` bucket. Each worker loops `PutObject` of 134,217,728 bytes with default options, from a body that hides `io.Seeker` and `io.ReaderAt` as piri's request body does, onto two keys of its own. The main phase runs 8 workers per vCPU. Half and twice that many follow for 10 minutes each with no pause in between; when twice the workers run more than 3% faster than the main phase, the summary carries `under_driven` and the type is measured again with the higher count.
+
+The instance's network burst allowance would inflate a short measurement. AWS rates m9gd.8xlarge and m9gd.16xlarge as sustained, so their main phase runs 30 minutes and the first 5 are dropped. m9gd.2xlarge has a 4.25 Gbps baseline and bursts to 17 Gbps for a time AWS does not state, so its main phase runs 75 minutes and the last 30 are scored. At minute 60 the burst must have visibly ended: the ENA counter `bw_out_allowance_exceeded` rising in every 10-second sample for 5 minutes, the last 10 minutes' mean rate within 5% of the 10 minutes before, and the last 10 minutes' median window at least 10% below the first 10 minutes'. Otherwise the phase runs to 120 minutes and the summary carries `burst_unconfirmed`. `burst_ended_s` is reported only when the rate fell after it. Failed PUTs still count the bytes read before they failed, so any failure in the scored segment adds the `errors` flag.
+
+### NVMe write
+
+`scripts/host/ceiling-nvme.sh` stops Docker, discards the instance-store drive and writes all of it with fio: O_DIRECT, io_uring, 1 MiB blocks, 4 jobs at queue depth 32, each writing one quarter in order. Writing every byte gets past any cache in the drive. The first 30 seconds are dropped, and scoring ends before the last sample of the first job to finish. A second pass without a discard gives the full-drive rate for reference. Then the drive is formatted and mounted as every boot does it, and the same job writes a file through ext4 for 300 seconds. The file holds 100 GB or 300 seconds at the raw median, whichever is larger, up to 80% of the drive, and fio starts over from its beginning if the time outlasts it. Each job's region is a whole number of MiB, since O_DIRECT needs aligned offsets. If the filesystem rate lands more than 10% below the raw rate, it sets the drive's figure, since ingot's spool writes through the filesystem. A pass too short to score one window stops the measurement.
+
+### Combined
+
+The combined phase runs 10 minutes of S3 PUT while fio writes a file on the drive. It shows how far the two limits interfere on one host and does not set a gate.
+
+## Files
+
+Each `ceilings/<date>/<instance type>/` holds:
+
+| File | Contents |
+|---|---|
+| `summary.json` | `ceiling`, `limited_by`, and p5, median and windows of `s3_put` and `nvme_write`, with the flags and the `combined` medians |
+| `host.json` | instance ID, type, zone, AMI, kernel, vCPUs, ENA driver, fio, Go and minio-go versions, forge-perf commit |
+| `s3-put.csv` | one row per second: `t, bytes, objects_done, errors, workers` |
+| `s3-put.json` | the S3 scoring: phases with their medians, the sustained segment's start, the second the burst ended |
+| `ena.csv` | ENA allowance counters every 10 seconds |
+| `nvme-pass1_bw.<job>.log`, `nvme-pass2_bw.<job>.log`, `nvme-fs_bw.<job>.log` | fio bandwidth logs per job, one line per second in KiB/s |
+| `nvme-*.json` | fio's reports |
+| `nvme.json` | the NVMe scoring of each pass |
+| `combined/` | the combined phase's S3 files and fio logs |

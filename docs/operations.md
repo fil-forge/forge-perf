@@ -374,7 +374,33 @@ aws s3api list-buckets --query "Buckets[?starts_with(Name, 'forge-perf-piri-camp
 
 Both should print nothing.
 
-For the ceiling measurements, dispatch with `mode=calibration` and the type to measure, then `scripts/operator/ssm-session.sh campaign` reaches it.
+For the ceiling measurements, dispatch with `mode=calibration` and the type to measure, as the next section describes.
+
+## Measuring the ceilings
+
+Each gate on the page is one instance type's ceiling: the lower of its sustained S3 PUT rate and its instance-store NVMe write rate, each the p5 of 30-second windows (docs/DESIGN.md §9). A session measures the three types one after another on the campaign box, each in about 1 to 3 hours. [calibration/README.md](../calibration/README.md) describes the method and the files. For each type:
+
+1. Start a calibration box. It boots, provisions and waits:
+
+   ```sh
+   gh workflow run campaign.yml --ref main -f action=up -f mode=calibration -f instance_type=m9gd.2xlarge -f hours=5
+   ```
+
+2. Once the `up` run has completed, measure it from a checkout of main:
+
+   ```sh
+   scripts/operator/calibrate-ceilings.sh m9gd.2xlarge --date <yyyy-mm-dd>
+   ```
+
+   The script waits for Session Manager to see the box, runs `scripts/host/ceiling.sh` on it over SSM Run Command, copies `s3://forge-perf-results-654654381893/raw/calibration/<date>/<type>/` to `calibration/ceilings/<date>/<type>/`, prints the summary and dispatches `down`. Check that `down` completed, as in "A campaign" above. After a failure the box stays up for a look through `ssm-session.sh campaign`, and powers off at `ExpiresAt`.
+
+Use one date for the whole session. m9gd.2xlarge needs `hours=5`: its S3 phase runs 95 minutes, or up to 140 when its burst allowance has not visibly ended by minute 60 (the summary then carries `burst_unconfirmed`). The larger types measure S3 for 50 minutes and write their whole drive twice; `hours=4` covers them.
+
+`--quick` runs a few minutes of each measurement and copies the evidence to `local/ceilings/`, which git ignores; it checks the path end to end before a session. `--keep` leaves the box up. `--workers N` replaces the main phase's 8 workers per vCPU.
+
+The measurement wipes the instance store, so `ceiling.sh` refuses on any box but a campaign box in mode `calibration`. It uses piri's key against the box's own `pdp` bucket and deletes what it wrote.
+
+When all three types are in, commit `calibration/ceilings/<date>/` with `data/gates.json` updated from the three `summary.json` files (each gate's `ceiling_bytes_per_s` is the summary's `ceiling`), in one pull request that a person reviews. Flags in a summary need a look before the gate changes: `under_driven` means twice the workers ran more than 3% faster, so that type is measured again with `--workers <that count>`; `burst_unconfirmed` means the burst allowance had not visibly ended by minute 60; `errors` means PUTs failed in the scored segment, and the S3 figure counts the bytes they read before failing.
 
 ## Tier 1 to tier 2
 

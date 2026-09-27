@@ -211,6 +211,57 @@ run "role" {
   }
 }
 
+run "campaign_role" {
+  command = plan
+
+  module {
+    source = "../../../modules/box"
+  }
+
+  variables {
+    box_name   = "campaign"
+    mode       = "campaign"
+    expires_at = "2026-10-01T14:00:00Z"
+    campaign   = "{\"mode\": \"calibration\"}"
+  }
+
+  assert {
+    condition = toset(flatten([
+      for s in jsondecode(aws_iam_role_policy.box.policy).Statement : flatten([s.Resource]) if s.Sid == "WriteOwnResults"
+      ])) == toset([
+      "arn:aws:s3:::forge-perf-results-654654381893/raw/campaign/*",
+      "arn:aws:s3:::forge-perf-results-654654381893/published/campaign/*",
+      "arn:aws:s3:::forge-perf-results-654654381893/raw/calibration/*",
+    ])
+    error_message = "a calibration box also writes the ceiling evidence under raw/calibration/"
+  }
+}
+
+run "campaign_set_role" {
+  command = plan
+
+  module {
+    source = "../../../modules/box"
+  }
+
+  variables {
+    box_name   = "campaign"
+    mode       = "campaign"
+    expires_at = "2026-10-01T14:00:00Z"
+    campaign   = "{\"mode\": \"campaign\"}"
+  }
+
+  assert {
+    condition = toset(flatten([
+      for s in jsondecode(aws_iam_role_policy.box.policy).Statement : flatten([s.Resource]) if s.Sid == "WriteOwnResults"
+      ])) == toset([
+      "arn:aws:s3:::forge-perf-results-654654381893/raw/campaign/*",
+      "arn:aws:s3:::forge-perf-results-654654381893/published/campaign/*",
+    ])
+    error_message = "a campaign box running a set cannot write the ceiling evidence"
+  }
+}
+
 run "buckets" {
   command = plan
 
