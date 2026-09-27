@@ -17,7 +17,7 @@ MB = 1_000_000
 
 
 def record(run_id, p5, median, workers=32, cls="valid", reasons=(), flags=(),
-           instance_type="m9gd.2xlarge", cap=100_000_000_000):
+           instance_type="m9gd.2xlarge", cap=100_000_000_000, ingot="d"):
     """The record fields the summary reads, and no others."""
     stamp = run_id.split("-")[1]
     return {
@@ -26,6 +26,7 @@ def record(run_id, p5, median, workers=32, cls="valid", reasons=(), flags=(),
         "time": {"run_started_at": f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}T{stamp[9:11]}:00:00Z"},
         "box": {"id": run_id.split("-")[0], "instance_type": instance_type},
         "outcome": {"class": cls, "reasons": list(reasons), "flags": list(flags)},
+        "instrument": {"fingerprint": "e" * 64},
         "drill": {
             "settings": {"workers": workers, "stop_ingest_at_bytes": cap},
             "results": {"ingest_p5_bytes_per_s": p5, "ingest_median_bytes_per_s": median},
@@ -34,7 +35,7 @@ def record(run_id, p5, median, workers=32, cls="valid", reasons=(), flags=(),
             "forge_perf": {"sha": "a" * 40},
             "smelt": {"sha": "b" * 40},
             "harness": {"sha": "c" * 40},
-            "images": [{"repo": "ghcr.io/fil-forge/ingot", "digest": "sha256:" + "d" * 64,
+            "images": [{"repo": "ghcr.io/fil-forge/ingot", "digest": "sha256:" + ingot * 64,
                         "role": "under_test"}],
         },
     }
@@ -124,6 +125,32 @@ class Summary(unittest.TestCase):
         got = self.run_cli("workers", "--runs", *ids, ok=False)
         self.assertIn("instance types", got.stderr)
 
+    def test_workers_refuses_mixed_ingest_caps(self):
+        ids = self.add(record(rid(0), 1, 1), record(rid(1), 1, 1, cap=350_000_000_000))
+        got = self.run_cli("workers", "--runs", *ids, ok=False)
+        self.assertIn("ingest caps", got.stderr)
+
+    def test_workers_refuses_a_sweep_with_no_qualified_value(self):
+        ids = self.add(record(rid(0), None, None, cls="no_data"),
+                       record(rid(1), None, None, workers=64, cls="no_data"))
+        got = self.run_cli("workers", "--runs", *ids, ok=False)
+        self.assertIn("no workers value qualified", got.stderr)
+        self.assertIn(rid(1), got.stderr)
+
+    def test_options_go_after_the_subcommand_too(self):
+        ids = self.add(record(rid(0), 5, 6))
+        out = self.tmp / "after"
+        got = subprocess.run([sys.executable, str(SCRIPT), "workers", "--runs", *ids,
+                              "--records", str(self.tmp / "runs"), "--out-dir", str(out)],
+                             capture_output=True, text=True)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertTrue((out / "workers/2026-09-27-m9gd.2xlarge.json").exists())
+
+    def test_noise_refuses_mixed_image_digests(self):
+        ids = self.add(record(rid(0), 5, 5), record(rid(1), 5, 5, ingot="f"))
+        got = self.run_cli("noise", "--series", "nightly", "--runs", *ids, ok=False)
+        self.assertIn("image digests", got.stderr)
+
     def test_noise_band_and_pass(self):
         ids = self.add(*[record(rid(i), p * MB, (p + 50) * MB)
                          for i, p in enumerate([500, 510, 520, 530, 540])])
@@ -150,10 +177,18 @@ class Summary(unittest.TestCase):
         got = self.run_cli("noise", "--series", "nightly", "--runs", *ids, ok=False)
         self.assertIn(rid(1), got.stderr)
 
+    def band(self, name="band.json", **over):
+        band = self.tmp / name
+        doc = {"kind": "noise", "pass": True, "box": "main", "series": "per-trigger",
+               "instance_type": "m9gd.2xlarge", "workers": 32,
+               "stop_ingest_at_bytes": 100_000_000_000,
+               "p5": {"min": 500 * MB}, "runs": [{"run_id": rid(99)}]}
+        doc.update(over)
+        band.write_text(json.dumps(doc))
+        return band
+
     def test_falsification_three_of_three(self):
-        band = self.tmp / "band.json"
-        band.write_text(json.dumps({"box": "main", "series": "per-trigger",
-                                    "p5": {"min": 500 * MB}, "runs": [{"run_id": rid(99)}]}))
+        band = self.band()
         low = self.add(*[record(rid(i), 400 * MB, 450 * MB, flags=["cpu_capped"])
                          for i in range(3)])
         mixed = self.add(record(rid(10), 450 * MB, 1), record(rid(11), 499 * MB, 1),
@@ -170,6 +205,44 @@ class Summary(unittest.TestCase):
         self.assertFalse(checks["older-digest"]["pass"])
         self.assertFalse(doc["pass"])
         self.assertEqual(doc["band"]["run_ids"], [rid(99)])
+        self.assertEqual(doc["band"]["workers"], 32)
+
+    def test_falsification_check_takes_exactly_three_runs(self):
+        low = self.add(*[record(rid(i), 400 * MB, 450 * MB) for i in range(2)])
+        got = self.run_cli("falsification", "--band", str(self.band()),
+                           "--check", "cpu-cap=" + ",".join(low), ok=False)
+        self.assertIn("exactly 3", got.stderr)
+        self.assertFalse(self.out.exists())
+
+    def test_falsification_refuses_a_run_not_valid_or_off_the_band(self):
+        band = str(self.band())
+        bad = self.add(record(rid(0), 400 * MB, 1, cls="invalid"),
+                       record(rid(1), 400 * MB, 1), record(rid(2), 400 * MB, 1))
+        got = self.run_cli("falsification", "--band", band, "--check", "a=" + ",".join(bad),
+                           ok=False)
+        self.assertIn(rid(0), got.stderr)
+        off = self.add(record(rid(3), 400 * MB, 1, workers=64),
+                       record(rid(4), 400 * MB, 1), record(rid(5), 400 * MB, 1))
+        got = self.run_cli("falsification", "--band", band, "--check", "a=" + ",".join(off),
+                           ok=False)
+        self.assertIn("workers", got.stderr)
+
+    def test_falsification_refuses_a_run_in_two_checks(self):
+        ids = self.add(*[record(rid(i), 400 * MB, 1) for i in range(5)])
+        got = self.run_cli("falsification", "--band", str(self.band()),
+                           "--check", "a=" + ",".join(ids[:3]),
+                           "--check", "b=" + ",".join(ids[2:]), ok=False)
+        self.assertIn("twice", got.stderr)
+
+    def test_falsification_refuses_a_file_that_is_no_band(self):
+        ids = ",".join(self.add(*[record(rid(i), 400 * MB, 1) for i in range(3)]))
+        for band, want in ((self.tmp / "missing.json", "cannot read"),
+                           (self.band("w.json", kind="workers"), "not a noise band"),
+                           (self.band("f.json", **{"pass": False}), "CV test")):
+            got = self.run_cli("falsification", "--band", str(band), "--check", "a=" + ids,
+                               ok=False)
+            self.assertIn(want, got.stderr)
+            self.assertNotIn("Traceback", got.stderr)
 
     def test_falsification_refuses_free_text_check_name(self):
         band = self.tmp / "band.json"

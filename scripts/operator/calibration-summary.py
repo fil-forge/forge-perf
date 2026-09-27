@@ -4,7 +4,7 @@
     scripts/operator/calibration-summary.py workers --runs ID...
     scripts/operator/calibration-summary.py noise --series per-trigger --runs ID...
     scripts/operator/calibration-summary.py falsification --band FILE \\
-        --check NAME=ID,ID,ID...
+        --check NAME=ID,ID,ID
 
 Records come from the public results branch, runs/<yyyy>/<mm>/<run_id>.json,
 read with `git show <ref>:<path>` in the current forge-perf clone (--ref,
@@ -28,6 +28,7 @@ RUN_ID = re.compile(r"^[a-z0-9]{2,12}-([0-9]{4})([0-9]{2})[0-9]{2}t[0-9]{6}z$")
 CHECK_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 WORKERS_MARGIN = 0.05  # DESIGN section 9: within 5% of the best mean p5 and median
 NOISE_MAX_CV = 0.10  # DESIGN section 9: above 10% CV the series stays unpublished
+CHECK_RUNS = 3  # DESIGN section 9: below the band in three runs of three
 
 
 class Refused(Exception):
@@ -57,6 +58,9 @@ def load_record(run_id, records=None, ref="origin/results"):
 
 def provenance(rec):
     p = rec["provenance"]
+    repos = [i["repo"] for i in p["images"]]
+    if len(set(repos)) != len(repos):
+        raise Refused(f"{rec['run_id']} lists an image repo twice")
     return {
         "forge_perf_sha": p["forge_perf"]["sha"],
         "smelt_sha": p["smelt"]["sha"],
@@ -89,6 +93,13 @@ def one(recs, get, what):
     return values.pop()
 
 
+def one_stack(recs):
+    """A band is the range an unchanged stack falls in: one instrument, one set of images."""
+    one(recs, lambda r: r["instrument"]["fingerprint"], "instrument fingerprints")
+    if len({json.dumps(provenance(r)["images"], sort_keys=True) for r in recs}) != 1:
+        raise Refused("the runs mix image digests")
+
+
 def run_date(recs):
     return max(r["time"]["run_started_at"] for r in recs)[:10]
 
@@ -112,15 +123,20 @@ def summarize_workers(recs):
         runs = groups[workers]
         bad = [r["run_id"] for r in runs
                if r["class"] != "valid" or "availability_errors" in r["reasons"]]
+        mean_p5 = mean_or_none([r["ingest_p5_bytes_per_s"] for r in runs])
+        mean_median = mean_or_none([r["ingest_median_bytes_per_s"] for r in runs])
         values.append({
             "workers": workers,
             "run_ids": [r["run_id"] for r in runs],
-            "mean_p5_bytes_per_s": mean_or_none([r["ingest_p5_bytes_per_s"] for r in runs]),
-            "mean_median_bytes_per_s": mean_or_none([r["ingest_median_bytes_per_s"] for r in runs]),
-            "qualified": not bad,
+            "mean_p5_bytes_per_s": mean_p5,
+            "mean_median_bytes_per_s": mean_median,
+            "qualified": not bad and mean_p5 is not None and mean_median is not None,
             "disqualifying_run_ids": bad,
         })
-    qualified = [v for v in values if v["qualified"] and v["mean_p5_bytes_per_s"] is not None]
+    qualified = [v for v in values if v["qualified"]]
+    if not qualified:
+        raise Refused("no workers value qualified: "
+                      + ", ".join(i for v in values for i in v["disqualifying_run_ids"]))
     best_p5 = max((v["mean_p5_bytes_per_s"] for v in qualified), default=None)
     best_median = max((v["mean_median_bytes_per_s"] for v in qualified), default=None)
     winner = next((v["workers"] for v in qualified
@@ -130,6 +146,8 @@ def summarize_workers(recs):
         "kind": "workers",
         "instance_type": one(recs, lambda r: r["box"]["instance_type"], "instance types"),
         "box": one(recs, lambda r: r["box"]["id"], "boxes"),
+        "stop_ingest_at_bytes": one(
+            recs, lambda r: run_entry(r)["stop_ingest_at_bytes"], "ingest caps"),
         "margin": WORKERS_MARGIN,
         "best_mean_p5_bytes_per_s": best_p5,
         "best_mean_median_bytes_per_s": best_median,
@@ -151,8 +169,11 @@ def stats(values):
 def summarize_noise(recs, series):
     runs = [run_entry(r) for r in recs]
     for r in runs:
-        if r["class"] != "valid" or r["ingest_p5_bytes_per_s"] is None:
+        if r["class"] != "valid":
             raise Refused(f"{r['run_id']} is {r['class']}; a noise band takes valid runs only")
+        if r["ingest_p5_bytes_per_s"] is None or r["ingest_median_bytes_per_s"] is None:
+            raise Refused(f"{r['run_id']} records no p5 or median")
+    one_stack(recs)
     p5 = stats([r["ingest_p5_bytes_per_s"] for r in runs])
     return {
         "kind": "noise",
@@ -174,7 +195,27 @@ def parse_check(text):
     name, sep, ids = text.partition("=")
     if not sep or not CHECK_NAME.match(name) or not ids:
         raise Refused(f"--check takes NAME=ID,ID,ID with NAME matching {CHECK_NAME.pattern}")
-    return name, ids.split(",")
+    ids = ids.split(",")
+    if len(ids) != CHECK_RUNS:
+        raise Refused(f"check {name} names {len(ids)} runs; a check takes exactly {CHECK_RUNS}")
+    return name, ids
+
+
+BAND_KEYS = ("box", "instance_type", "workers", "stop_ingest_at_bytes")
+
+
+def load_band(path):
+    try:
+        band = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise Refused(f"cannot read band {path}: {e}")
+    if (not isinstance(band, dict) or band.get("kind") != "noise"
+            or not isinstance(band.get("p5"), dict) or band["p5"].get("min") is None
+            or any(k not in band for k in BAND_KEYS + ("series", "runs"))):
+        raise Refused(f"{path} is not a noise band file")
+    if band.get("pass") is not True:
+        raise Refused(f"{path} failed its {NOISE_MAX_CV:.0%} CV test; it is no band")
+    return band
 
 
 def summarize_falsification(band, checks):
@@ -183,13 +224,22 @@ def summarize_falsification(band, checks):
     for name, recs in checks:
         all_recs += recs
         runs = [run_entry(r) for r in recs]
+        for r, rec in zip(runs, recs):
+            if r["class"] != "valid":
+                raise Refused(f"{r['run_id']} is {r['class']}; a check takes valid runs only")
+            got = {"box": rec["box"]["id"], "instance_type": rec["box"]["instance_type"],
+                   "workers": r["workers"], "stop_ingest_at_bytes": r["stop_ingest_at_bytes"]}
+            for k in BAND_KEYS:
+                if got[k] != band[k]:
+                    raise Refused(f"{r['run_id']} has {k} {got[k]}; the band has {band[k]}")
         below = [r for r in runs
                  if r["ingest_p5_bytes_per_s"] is not None and r["ingest_p5_bytes_per_s"] < band_min]
         out.append({"name": name, "below": len(below), "of": len(runs),
                     "pass": len(below) == len(runs), "runs": runs})
     return {
         "kind": "falsification",
-        "band": {"box": band["box"], "series": band["series"], "p5_min_bytes_per_s": band_min,
+        "band": {**{k: band[k] for k in BAND_KEYS}, "series": band["series"],
+                 "p5_min_bytes_per_s": band_min,
                  "run_ids": [r["run_id"] for r in band["runs"]]},
         "checks": out,
         "pass": all(c["pass"] for c in out),
@@ -203,17 +253,28 @@ def write(doc, path):
 
 
 def main(argv=None):
+    def common(parser, defaults):
+        # The options go before or after the subcommand. A subcommand's copy
+        # sets a value only when given, so it never hides one given before it.
+        d = (lambda v: v) if defaults else (lambda v: argparse.SUPPRESS)
+        parser.add_argument("--records", default=d(None),
+                            help="directory of records instead of the results branch")
+        parser.add_argument("--ref", default=d("origin/results"),
+                            help="git ref of the results branch")
+        parser.add_argument("--out-dir", default=d(str(ROOT / "calibration")))
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--records", help="directory of records instead of the results branch")
-    ap.add_argument("--ref", default="origin/results", help="git ref of the results branch")
-    ap.add_argument("--out-dir", default=str(ROOT / "calibration"))
+    common(ap, True)
     sub = ap.add_subparsers(dest="cmd", required=True)
     w = sub.add_parser("workers")
+    common(w, False)
     w.add_argument("--runs", nargs="+", required=True)
     n = sub.add_parser("noise")
+    common(n, False)
     n.add_argument("--series", choices=["per-trigger", "nightly"], required=True)
     n.add_argument("--runs", nargs="+", required=True)
     f = sub.add_parser("falsification")
+    common(f, False)
     f.add_argument("--band", required=True)
     f.add_argument("--check", action="append", required=True, metavar="NAME=ID,ID,ID")
     a = ap.parse_args(argv)
@@ -233,10 +294,14 @@ def main(argv=None):
             doc = summarize_noise(load(a.runs), a.series)
             write(doc, out / "noise" / f"{doc['box']}-{a.series}.json")
         else:
-            band = json.loads(Path(a.band).read_text(encoding="utf-8"))
-            checks = [(name, load(ids)) for name, ids in map(parse_check, a.check)]
-            if len({name for name, _ in checks}) != len(checks):
+            parsed = [parse_check(c) for c in a.check]
+            if len({name for name, _ in parsed}) != len(parsed):
                 raise Refused("a check name is given twice")
+            every = [i for _, ids in parsed for i in ids]
+            if len(set(every)) != len(every):
+                raise Refused("a run ID is given twice")
+            band = load_band(a.band)
+            checks = [(name, load(ids)) for name, ids in parsed]
             doc, date = summarize_falsification(band, checks)
             write(doc, out / "falsification" / f"{date}.json")
     except Refused as e:
