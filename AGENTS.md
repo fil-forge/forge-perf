@@ -17,7 +17,7 @@ forge-perf measures the sustained ingest rate of the Forge storage stack on a de
 | `config/` | run settings per instance type, pinned images, the harness pin |
 | `schema/` | JSON schemas for the run record, gates and overrides |
 | `site/`, `data/` | the static page, gates and overrides |
-| `calibration/` | committed sets and measured ceilings |
+| `calibration/` | committed sets, measured ceilings and tier calibration results |
 
 ## Conventions
 

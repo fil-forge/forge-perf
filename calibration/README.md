@@ -1,6 +1,6 @@
 # Calibration
 
-`sets/` holds committed sets, the image digests a campaign or manual run pins ([docs/runner.md](../docs/runner.md)). `ceilings/<date>/<instance type>/` holds the evidence behind each gate on the page, measured by `scripts/operator/calibrate-ceilings.sh` ([docs/operations.md](../docs/operations.md#measuring-the-ceilings)).
+`sets/` holds committed sets, the image digests a campaign or manual run pins ([docs/runner.md](../docs/runner.md)). `workers/`, `noise/` and `falsification/` hold the results of tier calibration ([docs/DESIGN.md §9](../docs/DESIGN.md#9-calibration-and-ceilings)), written by `scripts/operator/calibration-summary.py` from published run records. `ceilings/<date>/<instance type>/` holds the evidence behind each gate on the page, measured by `scripts/operator/calibrate-ceilings.sh` ([docs/operations.md](../docs/operations.md#measuring-the-ceilings)).
 
 ## Ceilings
 
@@ -35,3 +35,27 @@ Each `ceilings/<date>/<instance type>/` holds:
 | `nvme-*.json` | fio's reports |
 | `nvme.json` | the NVMe scoring of each pass |
 | `combined/` | the combined phase's S3 files and fio logs |
+
+## Tier calibration
+
+`scripts/operator/calibration-summary.py` reads the run records of a calibration step and writes its result. It takes every run by ID and never selects runs by time, so the command line in the PR that adds a file reproduces it. Records come from the public results branch, `runs/<yyyy>/<mm>/<run_id>.json`, read with `git show origin/results:<path>` in a forge-perf clone (`git fetch origin results` first; `--ref` names another ref), or from a directory of records given with `--records`. `--out-dir` replaces `calibration/`. Python 3, standard library only.
+
+```
+scripts/operator/calibration-summary.py workers --runs <id> <id> ...
+scripts/operator/calibration-summary.py noise --series per-trigger --runs <id> ...
+scripts/operator/calibration-summary.py noise --series nightly --runs <id> ...
+scripts/operator/calibration-summary.py falsification \
+  --band calibration/noise/main-per-trigger.json \
+  --check older-digest=<id>,<id>,<id> --check cpu-cap=<id>,<id>,<id>
+scripts/operator/calibration-summary.py --records <dir> --out-dir <dir> workers --runs <id> ...
+```
+
+`--records`, `--ref` and `--out-dir` go before or after the subcommand.
+
+A file holds the box and instance type the runs share, and per run its ID, start time, class, reasons, flags, workers, ingest cap, p5 and median, and its forge-perf, smelt and harness SHAs with the digest of every image. It holds nothing else from the records and no time of its own making, so the same runs always give the same bytes. Rates are bytes per second. A falsification check name is lowercase letters, digits and hyphens.
+
+| File | Contents |
+|---|---|
+| `workers/<date>-<instance type>.json` | the shared ingest cap; per workers value, its runs, mean p5 and mean median; `winner`, the smallest value whose mean p5 and mean median are both within 5% (`margin`) of the best qualified means, or null when no value is within 5% on both. A value with any run not `valid`, or with `availability_errors` among its reasons, is disqualified and names those runs. A sweep with no qualified value writes no file. The date is the latest run's start. |
+| `noise/<box>-<series>.json` | count, mean, min, max, sample standard deviation and coefficient of variation of p5 and of median; `pass` when the p5 coefficient of variation is at most 10% (`max_cv`). The file also names the workers value and ingest cap. Every run must be `valid`, record a p5 and a median, and share one box, instance type, workers value, ingest cap, instrument fingerprint and set of image digests. |
+| `falsification/<date>.json` | the band's box, instance type, workers value, ingest cap, series, run IDs and minimum p5; per check, each run's p5 and flags, how many landed below the band's minimum p5, and `pass` when all three did. A check names exactly three runs, no run appears in two checks, and every run must be `valid` (`cpu_capped` is a flag, so a capped run can be) and match the band's box, instance type, workers value and ingest cap. The band must be a noise file that passed its CV test. `pass` at the top needs every check to pass. The date is the latest run's start. |
