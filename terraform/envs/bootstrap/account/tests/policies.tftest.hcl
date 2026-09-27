@@ -136,7 +136,8 @@ run "policies" {
       { for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Effect == "Deny",
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Action]) == ["ec2:RunInstances"],
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Resource])) == toset(["arn:aws:ec2:*::image/*", "arn:aws:ec2:*::snapshot/*"]),
-      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Condition.StringNotEquals["ec2:Owner"]]) == ["099720109477"],
+      flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Condition.StringNotEquals["ec2:Owner"]]) == ["amazon", "099720109477"],
+      !contains(flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.apply).Statement : s.Sid => s }["LaunchCanonicalImagesOnly"].Condition.StringNotEquals["ec2:Owner"]]), "654654381893"),
     ])
     error_message = "the apply role may create gateway endpoints only, may not replace the main route table association, and may launch Canonical's images only"
   }

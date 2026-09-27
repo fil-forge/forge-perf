@@ -69,10 +69,10 @@ variable "ssm_path" {
   type        = string
 }
 
-variable "image_owner" {
-  description = "Account that owns the images boxes boot from: Canonical, which the box module's AMI lookup filters on."
-  type        = string
-  default     = "099720109477"
+variable "image_owners" {
+  description = "ec2:Owner values a box image or its snapshot may carry. Canonical's public Ubuntu images evaluate as \"amazon\", not as Canonical's account ID; the account ID stays for anything that reports it."
+  type        = list(string)
+  default     = ["amazon", "099720109477"]
 }
 
 variable "box_instance_types" {
