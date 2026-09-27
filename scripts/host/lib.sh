@@ -139,3 +139,71 @@ refuse_skip_on_box() {
   fi
 }
 refuse_skip_on_box
+
+# The unit the caller runs inside, if any: a unit removed from the checkout
+# while it runs is disabled and left to exit rather than stopped mid-pass.
+current_service_unit() {
+  local cgroup
+  cgroup="$(tail -1 /proc/self/cgroup 2>/dev/null || true)"
+  [[ "$cgroup" =~ /([^/[:space:]]+\.service) ]] || return 0
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# Install the checkout's systemd/forge-perf-* units and remove the ones it no
+# longer has, as infra-nodes' sync_systemd_units (scripts/host/lib.sh:145-184).
+# Removal covers only units this function installed, listed in the state
+# directory, so a unit written by something else (a scratch box's expiry
+# timer) stays. Timers go before services: a stopped service whose timer is
+# still enabled starts again on the next tick.
+sync_systemd_units() {
+  local dir="$R/etc/systemd/system" list="$R$FORGE_PERF_STATE_DIR/installed-units"
+  local unit name wanted="" changed=0 self
+  self="$(current_service_unit)"
+  host_op mkdir -p "$dir" "$(dirname "$list")"
+  shopt -s nullglob
+  for unit in "$FORGE_PERF_CHECKOUT"/systemd/forge-perf-*.service "$FORGE_PERF_CHECKOUT"/systemd/forge-perf-*.timer; do
+    name="$(basename "$unit")"
+    wanted+="$name"$'\n'
+    host_file 0644 "/etc/systemd/system/$name" <"$unit" || continue
+    echo "  installed $name"
+    changed=1
+  done
+  shopt -u nullglob
+  for name in $(grep '\.timer$' "$list" 2>/dev/null; grep '\.service$' "$list" 2>/dev/null); do
+    grep -qxF "$name" <<<"$wanted" && continue
+    echo "  removing $name, which the checkout no longer has"
+    if [ "$name" = "$self" ]; then
+      host_op systemctl disable "$name" >/dev/null 2>&1 || true
+    else
+      host_op systemctl disable --now "$name" >/dev/null 2>&1 || true
+    fi
+    host_op rm -f "$dir/$name"
+    changed=1
+  done
+  printf '%s' "$wanted" | host_file 0644 "$FORGE_PERF_STATE_DIR/installed-units" || true
+  [ "$changed" -eq 0 ] || host_op systemctl daemon-reload
+}
+
+# Enable the units named in systemd/enabled.<mode>, one per line. A name the
+# checkout does not have yet is skipped, so the list can run ahead of the
+# units. Timers also start now; services wait for the next boot, so a
+# recovery or campaign unit never starts in the middle of an update.
+enable_mode_units() {
+  local list="$FORGE_PERF_CHECKOUT/systemd/enabled.$1" name
+  if [ ! -f "$list" ]; then
+    echo "  no systemd/enabled.$1; nothing to enable"
+    return 0
+  fi
+  while read -r name; do
+    if [ ! -f "$FORGE_PERF_CHECKOUT/systemd/$name" ]; then
+      echo "  $name is not in this checkout yet"
+      continue
+    fi
+    host_check systemctl is-enabled --quiet "$name" && continue
+    case "$name" in
+      *.timer) host_op systemctl enable --now "$name" ;;
+      *) host_op systemctl enable "$name" ;;
+    esac
+    echo "  enabled $name"
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$list")
+}

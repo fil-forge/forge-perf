@@ -1,5 +1,7 @@
 # Plans the CI-applied OpenTofu roots on every pull request and applies them
-# on every push to main.
+# on every push to main: the network on every push, the persistent box only
+# when its plan shows a change, and only after a reviewer approves in the
+# box-change environment.
 #
 # `make check` lives in check.yml, a required check. That check ran on the pull
 # request's merge ref, and a squash merge onto a main that moved since then can
@@ -58,6 +60,8 @@ jobs:
         include:
           - name: network
             root: network
+          - name: box-main
+            root: box/main
     defaults:
       run:
         working-directory: terraform/envs/${{ matrix.root }}
@@ -95,7 +99,9 @@ jobs:
 
   # Runs on every push, with no path filter: a filter has to name every module
   # the root uses, and one added without a matching filter silently stops being
-  # deployed. An empty plan costs about a minute.
+  # deployed. An empty plan costs about a minute. The box root is the
+  # exception below, because its apply waits on a person; it is planned on
+  # every push and applied only when the plan is not empty.
   apply-network:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
@@ -136,4 +142,106 @@ jobs:
 
       # -auto-approve, and the log is the audit trail: apply prints the whole
       # plan before it changes anything.
+      - run: tofu apply -auto-approve -input=false -lock-timeout=5m
+
+  # Whether the persistent box differs from main. An apply there asks a
+  # reviewer to approve, and an approval request on every merge would train
+  # reviewers to approve without looking. Deciding on the plan rather than on
+  # the push's diff means a box change that a cancelled, rejected or failed
+  # run left unapplied comes back on the next push, and the reviewer sees the
+  # exact plan in this job's log before approving.
+  box-main-changed:
+    needs: [apply-network]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+    defaults:
+      run:
+        working-directory: terraform/envs/box/main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-plan-box-${{ github.run_id }}
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/box/main/.terraform.lock.hcl') }}
+
+      - run: tofu init -input=false -lockfile=readonly
+
+      # -detailed-exitcode: 0 no changes, 2 changes, 1 an error, which fails
+      # the job rather than skipping the apply.
+      - id: plan
+        run: |
+          code=0
+          tofu plan -input=false -lock=false -detailed-exitcode || code=$?
+          case "$code" in
+            0) echo "changed=false" >>"$GITHUB_OUTPUT" ;;
+            2) echo "changed=true" >>"$GITHUB_OUTPUT" ;;
+            *) exit "$code" ;;
+          esac
+
+  # A resize stops the box and a replacement rebuilds it, and either loses a
+  # run in progress. The box-change environment has a required reviewer and
+  # main as its only deployment branch; the reviewer approves once no run is
+  # active (docs/operations.md, "The persistent box"). The job's token then
+  # names the environment, which the apply role trusts.
+  apply-box-main:
+    needs: [apply-network, box-main-changed]
+    if: github.event_name == 'push' && needs.box-main-changed.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    environment: box-change
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: terraform/envs/box/main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.APPLY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-apply-${{ github.run_id }}
+
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tofu-providers-${{ hashFiles('terraform/envs/box/main/.terraform.lock.hcl') }}
+
+      - run: tofu init -input=false -lockfile=readonly
+
+      # Neither needs credentials; tofu test plans against placeholder ones.
+      - run: tofu validate
+      - run: tofu test
+
       - run: tofu apply -auto-approve -input=false -lock-timeout=5m

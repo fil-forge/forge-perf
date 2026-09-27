@@ -1,0 +1,5 @@
+# Units the bootstrap enables on a campaign box, one per line. A name missing
+# from systemd/ is skipped until the unit lands.
+forge-perf-nvme.service
+forge-perf-recover.service
+forge-perf-campaign.service

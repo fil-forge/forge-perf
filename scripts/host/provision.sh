@@ -45,9 +45,19 @@ installed_version() {
 export DEBIAN_FRONTEND=noninteractive
 # Waits up to five minutes for the dpkg lock instead of failing at once.
 apt_get() { host_op apt-get -o DPkg::Lock::Timeout=300 "$@"; }
+# apt-get update takes the lists lock, which DPkg::Lock::Timeout does not cover,
+# so it retries for 5 minutes while an apt-daily run already under way holds it.
+apt_update() {
+  local tries=0
+  until apt_get update -q; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 30 ] || return 1
+    sleep 10
+  done
+}
 
 # First, so no apt-daily run starts while this script uses apt. One already
-# running holds the dpkg lock, which apt_get waits for.
+# running holds apt's locks, which apt_get and apt_update wait for.
 step "OS drift controls"
 # Timers that do disk or CPU work at random times. logrotate and tmpfiles stay.
 for t in apt-daily.timer apt-daily-upgrade.timer fstrim.timer man-db.timer motd-news.timer \
@@ -88,7 +98,7 @@ step "archive packages"
 # shellcheck disable=SC2086 # a list of names
 missing=$(for p in $ARCHIVE_PACKAGES; do [ -n "$(installed_version "$p")" ] || echo "$p"; done)
 if [ -n "$missing" ]; then
-  apt_get update -q
+  apt_update
   # shellcheck disable=SC2086
   apt_get install -y -q --no-install-recommends $missing
   changes=$((changes + 1))
@@ -120,7 +130,7 @@ done
 if [ "${#stale[@]}" -gt 0 ]; then
   # Update first: on a new box apt has not read docker.list yet, and apt-mark
   # fails on a package it knows nothing about.
-  apt_get update -q
+  apt_update
   host_op apt-mark unhold "${want[@]%%=*}" >/dev/null
   # No recommends: they (buildx, rootless extras, pigz) would arrive unpinned.
   apt_get install -y -q --no-install-recommends --allow-downgrades "${want[@]}"
