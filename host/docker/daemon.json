@@ -1,0 +1,8 @@
+{
+  "data-root": "/var/lib/docker",
+  "live-restore": false,
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "256m", "max-file": "4" },
+  "default-address-pools": [ { "base": "10.213.0.0/16", "size": 24 } ],
+  "features": { "containerd-snapshotter": false }
+}

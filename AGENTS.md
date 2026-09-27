@@ -21,6 +21,7 @@ forge-perf measures the sustained ingest rate of the Forge storage stack on a de
 ## Conventions
 
 - Host scripts are bash with `set -euo pipefail` and pass shellcheck (`-x -P SCRIPTDIR`); CI pins shellcheck 0.11.0.
+- Host scripts reach the host (packages, `systemctl`, `mkfs`, `mount`, `sysctl`, files under `/etc`, instance metadata) through `host_op`, `host_check`, `host_read`, `host_file` and `imds` in `scripts/host/lib.sh`, or behind a `host_ops_skipped` check as in `install-tools.sh`, so `FORGE_PERF_HOST_OPS=skip` turns them into logged no-ops for a local run (`docs/runner.md`).
 - OpenTofu follows infra-nodes and infra-central: `versions.tofu`, a `versions.tf` that refuses Terraform, committed `terraform.tfvars`, shared values in `terraform/modules/shared/constants`.
 - `make check` is the CI surface. It runs every `scripts/ci/check-*.sh` in name order and stops at the first failure. A new area adds its own `check-<area>.sh` instead of editing the Makefile or the workflow. Tests exercise behavior with fixtures and stubbed commands on `PATH`.
 - Go: `go test ./...` and `go vet` pass; minio-go stays at the version piri pins.

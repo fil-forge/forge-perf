@@ -1,0 +1,5 @@
+// Installed to /etc/apt/apt.conf.d/. No package changes at random times: a
+// kernel, Docker or library update is a pull request and a marked instrument
+// change, never something apt does between two runs.
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";

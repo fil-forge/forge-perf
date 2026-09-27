@@ -1,0 +1,18 @@
+[Unit]
+# Format the instance-store NVMe and bind it under Docker's volumes directory.
+# Every boot formats, so a reboot, a stop/start and a resize start the same
+# way; after a reboot during a run it mounts without formatting, so recovery
+# can collect what the run left.
+Description=forge-perf instance-store NVMe
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/forge-perf/box.conf
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/nvme.sh boot
+TimeoutStartSec=15min
+
+[Install]
+RequiredBy=docker.service
