@@ -230,7 +230,7 @@ A static site in `site/`, with Observable Plot and d3 vendored:
 
 ## 8. smelt changes
 
-Five upstream PRs give smelt every setting forge-perf needs. Each is opt-in and reproduces today's stack when unset, so forge-perf keeps no compose override file. Its first recorded run uses a smelt SHA containing all five; test runs before that use an integration branch of the five and publish only as `calibration`.
+Five upstream PRs give smelt every setting forge-perf needs. Each is opt-in and reproduces today's stack when unset, so forge-perf keeps no compose override file. All five are on smelt main, which runs follow.
 
 | PR | Change | forge-perf sets |
 |---|---|---|

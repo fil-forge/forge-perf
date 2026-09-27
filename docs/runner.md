@@ -250,7 +250,7 @@ Exit status 0 means the run was recorded and wiped, whatever its class, or reach
 | `config/images.tracked` | the smelt variable and `repo:tag` of each image under test; the set supplies the digest |
 | `config/images.lock` | the smelt variable, `repo:tag` and index digest of each third-party image, and the netem sidecar |
 | `config/harness.conf` | `SQ_REPO`; `SQ_PIN`, the harness commit while harness main cannot run the capped drill; `SQ_AUTH`, the harness credential |
-| `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, smelt's `perf/shakedown` head until the smelt changes reach main; `MANIFEST_NAME` |
+| `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, a smelt commit to hold runs at (empty: smelt main); `MANIFEST_NAME` |
 | `config/smelt-manifest.yml.tmpl` | one piri node on Postgres with its blobs in S3; `@ENDPOINT@`, `@BUCKET_PREFIX@` and `@INSECURE@` come from `config/piri-s3.env` and `box.conf` |
 | `config/settings/<instance type>.env` | `BOX_TIER`, `BASELINE_BYTES_PER_S`, the size and duration per kind of run, and one smelt variable per drill flag; `WORKERS` stays empty until calibration freezes it |
 | `config/launch.conf` | `SERIES_LIVE` |
