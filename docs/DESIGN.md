@@ -101,7 +101,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Preflight | no containers, volumes or `forge-network`; empty piri buckets; synchronized clock; clean checkout; secrets from SSM to tmpfs | `no_data` |
 | Checkout | smelt and the harness from the mirrors at the set's SHAs; build the drill | `no_data` |
 | Images | set each image variable in `config/images.tracked` to `<repo>@sha256:<digest>`; pull what is missing; `docker compose config --images` lists only pinned digests | `no_data` |
-| Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP>:80 perf-drill.sh setup` | `no_data` |
+| Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
 | Post-check | latency, restarts, central addresses, image IDs | `invalid` |

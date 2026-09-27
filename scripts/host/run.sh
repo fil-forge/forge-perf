@@ -601,12 +601,16 @@ step_setup() {
   step "setup"
   case "${FORGE_PERF_CLIENT_PATH:-container-ip}" in
     container-ip)
-      # Straight to ingot's bridge address, past Docker's userland proxy.
+      # Straight to ingot's bridge address, past Docker's userland proxy. No
+      # ":80": the drill's S3 client signs the Host header as it sends it,
+      # hilt checks SigV4 against the host with the scheme's default port
+      # stripped, and "<ip>:80" fails every drill request with 403
+      # SignatureDoesNotMatch.
       ingot="$(cd "$SMELT" && docker compose ps -q ingot)" || stop setup_failed "no ingot container"
       ip="$(docker inspect -f '{{with index .NetworkSettings.Networks "forge-network"}}{{.IPAddress}}{{end}}' "$ingot")" ||
         stop setup_failed "cannot read ingot's forge-network address"
       [ -n "$ip" ] || stop setup_failed "ingot has no forge-network address"
-      export INGOT_URL="http://$ip:80"
+      export INGOT_URL="http://$ip"
       ;;
     published) unset INGOT_URL ;;
     *) stop runner_error "FORGE_PERF_CLIENT_PATH must be container-ip or published" ;;
