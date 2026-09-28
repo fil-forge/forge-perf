@@ -14,6 +14,10 @@ trap 'rm -rf "$work"' EXIT
 export LOG="$work/tc.log"
 mkdir -p "$work/bin"
 
+# Like the real ip, each stub writes more after the line netem-apply.sh wants
+# (route get's "cache" line, an interface after the matching one). The pause
+# lets a reader that stops at the first match close the pipe first, so under
+# pipefail the late write fails with SIGPIPE every time instead of now and then.
 cat >"$work/bin/ip" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
@@ -21,9 +25,11 @@ case "$*" in
     echo "1: lo    inet 127.0.0.1/8 scope host lo"
     echo "2: eth0    inet 10.213.1.3/24 brd 10.213.1.255 scope global eth0"
     echo "3: eth1    inet 172.30.0.5/24 brd 172.30.0.255 scope global eth1"
+    sleep 0.2
+    echo "4: eth2    inet 192.168.9.2/24 brd 192.168.9.255 scope global eth2"
     ;;
   "route get 10.213.1.9") echo "10.213.1.9 dev eth0 src 10.213.1.3 uid 0" ;;
-  "route get "*) echo "${3} dev eth1 src 172.30.0.5 uid 0" ;;
+  "route get "*) echo "${3} dev eth1 src 172.30.0.5 uid 0"; sleep 0.2; echo "    cache" ;;
 esac
 STUB
 cat >"$work/bin/tc" <<'STUB'

@@ -33,7 +33,8 @@ if [ -n "$features" ]; then
 fi
 
 # lscpu's model name; on arm64 it can be "-", so MIDR_EL1 identifies the core.
-cpu_model="$(q host_read lscpu | awk -F': *' '/^Model name/ { print $2; exit }')"
+# awk reads to the end: exiting at the match can end lscpu with SIGPIPE.
+cpu_model="$(q host_read lscpu | awk -F': *' 'm == "" && /^Model name/ { m = $2 } END { if (m != "") print m }')"
 case "$cpu_model" in
   '' | -) cpu_model="$(q host_read cat /sys/devices/system/cpu/cpu0/regs/identification/midr_el1)" ;;
 esac

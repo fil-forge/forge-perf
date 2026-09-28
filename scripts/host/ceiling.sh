@@ -59,7 +59,8 @@ go_cache="${FORGE_PERF_GO_CACHE-/var/cache/forge-perf/go}"
 [ -z "$go_cache" ] || export GOCACHE="$go_cache/build" GOMODCACHE="$go_cache/mod"
 (cd "$FORGE_PERF_CHECKOUT" && GOTOOLCHAIN=local GOFLAGS=-mod=readonly go build -o "$bin" ./cmd/s3-ceiling)
 
-iface="$(host_read ip -o route show default | awk '{ print $5; exit }')"
+# awk reads to the end: exiting at the first line can end ip with SIGPIPE.
+iface="$(host_read ip -o route show default | awk 'iface == "" { iface = $5 } END { if (iface != "") print iface }')"
 ssm="${FORGE_PERF_SSM_PATH:-/forge-perf}"
 if ! FORGE_PERF_PIRI_S3_KEY_ID="$(ssm_value "$ssm/piri-s3-access-key-id")" ||
   ! FORGE_PERF_PIRI_S3_SECRET="$(ssm_value "$ssm/piri-s3-secret-access-key")"; then

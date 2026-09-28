@@ -698,7 +698,10 @@ step_drill() {
   secs=$(($(jq '.settings.duration_s' "$state/runner.json") + 1800))
   host_op sync
   host_op sysctl -q vm.drop_caches=3
-  nic_if="$(q host_read ip route get 1.1.1.1 | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+  # awk reads to the end: exiting at the match can end ip with SIGPIPE, and
+  # under pipefail that stops the run.
+  nic_if="$(q host_read ip route get 1.1.1.1 | awk 'dev == "" { for (i = 1; i < NF; i++) if ($i == "dev") { dev = $(i + 1); break } }
+    END { if (dev != "") print dev }')"
   : >"$RUN/ethtool-pre.txt"
   : >"$RUN/ethtool-post.txt"
   : >"$RUN/nic.csv"
