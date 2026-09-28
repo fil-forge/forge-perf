@@ -1,3 +1,5 @@
 {
-  "conditions": []
+  "alerted_classes": [],
+  "conditions": [],
+  "infra_streak": 0
 }
