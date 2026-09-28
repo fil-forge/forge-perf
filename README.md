@@ -16,8 +16,8 @@ The results page will be served from GitHub Pages at https://fil-forge.github.io
 
 | Tier | Instance | Role |
 |---|---|---|
-| 1 | m9gd.2xlarge | the persistent box today |
-| 2 | m9gd.8xlarge | the persistent box once a valid run reaches tier 1's ceiling |
+| 1 | m9gd.2xlarge | the persistent box until a valid run reached its ceiling on 2026-09-28 |
+| 2 | m9gd.8xlarge | the persistent box |
 | 3 | m9gd.16xlarge | short-lived campaign boxes only |
 
 Each tier's ceiling is the lower of its measured sustained S3 PUT and NVMe write throughput. The page draws the three ceilings as gates on a thermometer.
