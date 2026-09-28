@@ -2,13 +2,16 @@
 """Builds the public run record, forge-perf.run/v1, from one run's inputs.
 
     record.py build --runner runner.json [--run-dir DIR] [--latency latency.json]
-                    --denylist FILE [--forbid FILE] --out record.json
-    record.py minimal --runner runner.json --denylist FILE [--forbid FILE] --out record.json
+                    [--traces DIR] --denylist FILE [--forbid FILE] --out record.json
+    record.py minimal --runner runner.json [--traces DIR] --denylist FILE [--forbid FILE]
+                      --out record.json
 
 docs/record.md is the contract: which input each field comes from, the
 classification order, the reasons and the flags. The builder copies named
 fields and nothing else. It never reads the drill's report, drill.out, the
-other service logs, or the free-text parts of the evidence and metadata.
+other service logs, or the free-text parts of the evidence and metadata. From
+a traced run's trace files (--traces, the run's traces/ directory) it takes
+counts and a hash, never a span's name, attributes or timing.
 
 `build` falls back to the minimal record when the run directory belongs to
 another run, when any input cannot be read as expected, or when the full
@@ -27,6 +30,7 @@ the minimal record was refused, and 2 is a usage error.
 """
 
 import argparse
+import decimal
 import glob
 import hashlib
 import json
@@ -63,6 +67,15 @@ SETTINGS = ["profile", "manifest", "window_s", "ramp_s", "workers", "duration_s"
             "enforce_floor", "progress_s", "keep_objects"]
 ALLOWANCE = ["bw_in", "bw_out", "pps", "conntrack", "linklocal"]
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
+TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
+# spans_by_service names each service that traces in the stack; any other
+# service.name, or none, counts as `other`, so no span text reaches the record.
+TRACE_SERVICES = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["spans_by_service"]["required"])
+# The collector's counters of spans it refused, failed to send or dropped,
+# with or without the _total suffix its Prometheus exporter adds.
+DROPPED_SPANS = re.compile(r"^otelcol_(receiver_refused|receiver_failed|processor_refused|processor_dropped"
+                           r"|exporter_send_failed|exporter_enqueue_failed)_spans(_total)?$")
+METRIC_LINE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{.*\})?\s+(\S+)(\s+-?[0-9]+)?\s*$")
 SOURCE = re.compile(r"^https://github\.com/fil-forge/[A-Za-z0-9._-]+$")
 
 
@@ -225,6 +238,103 @@ def latency_block(latency, env):
             "max_drift_pct": round(max(drifts), 2) if drifts else None, "central_ips_stable": stable}
 
 
+# --- trace files ---------------------------------------------------------------
+
+def trace_ratio(text):
+    """runner.json's trace ratio: a decimal in (0, 1] with at most six places."""
+    if not isinstance(text, str) or not re.fullmatch(r"[0-9]+(\.[0-9]+)?|\.[0-9]+", text):
+        raise ValueError("the trace ratio is not a decimal")
+    d = decimal.Decimal(text)
+    if not 0 < d <= 1 or (d * 1000000) % 1:
+        raise ValueError("the trace ratio is outside (0, 1] or finer than a millionth")
+    return number(text)
+
+
+def read_spans(path):
+    """(traces, spans, spans_by_service, file_bytes, file_sha256) of traces.jsonl, or
+    None when the file is missing or cannot be read. The size and hash cover the whole
+    file; the counts skip any line that is not an OTLP JSON trace export, such as a last
+    line cut short when the collector stopped."""
+    digest, size, spans, ids = hashlib.sha256(), 0, 0, set()
+    by_service = dict.fromkeys(TRACE_SERVICES, 0)
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                digest.update(line)
+                size += len(line)
+                counted = export_spans(line)
+                if counted is None:
+                    continue
+                for service, trace_id in counted:
+                    ids.add(trace_id)
+                    spans += 1
+                    by_service[service] += 1
+    except OSError:
+        return None
+    return len(ids), spans, by_service, size, digest.hexdigest()
+
+
+def export_spans(line):
+    """[(service, traceId)] for each span in one line of traces.jsonl, [] for a blank
+    line, or None when the line is not an OTLP JSON trace export."""
+    if not line.strip():
+        return []
+    out = []
+    try:
+        doc = json.loads(line)
+        for rs in doc["resourceSpans"]:
+            names = [a["value"].get("stringValue") for a in (rs.get("resource") or {}).get("attributes") or []
+                     if a["key"] == "service.name"]
+            service = names[0] if names and names[0] in TRACE_SERVICES else "other"
+            for ss in rs.get("scopeSpans") or []:
+                for span in ss.get("spans") or []:
+                    if not isinstance(span["traceId"], str) or not TRACE_ID.match(span["traceId"]):
+                        return None
+                    out.append((service, span["traceId"]))
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return None
+    return out
+
+
+def read_dropped(path):
+    """The sum of the collector's dropped-span counters, or None when the scrape is
+    missing or a counter's value cannot be read. A counter never incremented may be
+    absent, so a scrape without any counts 0."""
+    total = 0.0
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                m = METRIC_LINE.match(line)
+                if line.startswith("#") or not m or not DROPPED_SPANS.match(m.group(1)):
+                    continue
+                value = float(m.group(3))
+                if not 0 <= value < 2 ** 53:
+                    return None
+                total += value
+    except (OSError, ValueError):
+        return None
+    return round(total)
+
+
+def trace_block(runner, traces_dir):
+    """(record `trace`, flags) from runner.json's trace and the run's traces/ directory."""
+    spec = runner.get("trace")
+    if spec is None:
+        return None, set()
+    block = {"ratio": trace_ratio(spec["ratio"]), "traces": 0, "spans": 0,
+             "spans_by_service": dict.fromkeys(TRACE_SERVICES, 0), "dropped_spans": None,
+             "file_bytes": 0, "file_sha256": None}
+    flags = {"traced"}
+    spans = read_spans(Path(traces_dir) / "traces.jsonl") if traces_dir is not None else None
+    if spans is None:
+        flags.add("trace_missing")
+    else:
+        block.update(zip(("traces", "spans", "spans_by_service", "file_bytes", "file_sha256"), spans))
+    if traces_dir is not None:
+        block["dropped_spans"] = read_dropped(Path(traces_dir) / "collector-metrics.txt")
+    return block, flags
+
+
 # --- the record ----------------------------------------------------------------
 
 def base_record(runner, env):
@@ -287,12 +397,16 @@ def finish(record, reasons, restarted, flags):
     classes = {CLASS_OF[r] for r in reasons}
     out["class"] = "no_data" if not has_numbers else next((c for c in CLASS_ORDER if c in classes), "valid")
     prov = record["provenance"]
-    record["instrument"]["fingerprint"] = canonical_sha256({
+    inputs = {
         "forge_perf_instrument_tree": prov["forge_perf"]["instrument_tree"],
         "smelt_sha": prov["smelt"]["sha"], "harness_sha": prov["harness"]["sha"],
         "instrument_images": [[i["repo"], i["digest"]] for i in prov["images"] if i["role"] == "instrument"],
         "settings": record["drill"]["settings"],
-        "target_rtt_us": round(record["latency"]["target_rtt_ms"] * 1000), "jitter_us": 0})
+        "target_rtt_us": round(record["latency"]["target_rtt_ms"] * 1000), "jitter_us": 0}
+    # Only a traced run hashes its ratio, so an untraced fingerprint is unchanged.
+    if record["trace"] is not None:
+        inputs["trace_ratio_ppm"] = round(record["trace"]["ratio"] * 1000000)
+    record["instrument"]["fingerprint"] = canonical_sha256(inputs)
     box = record["box"]
     facts = {k: box[k] for k in ("instance_type", "arch", "ami_id", "kernel", "docker_server", "docker_compose", "cpu")}
     facts.update(nvme_model=box["nvme"]["model"], nvme_filesystem=box["nvme"]["filesystem"])
@@ -311,17 +425,20 @@ def runner_flags(runner):
     return flags
 
 
-def minimal(runner, env):
+def minimal(runner, env, traces_dir=None):
     record = base_record(runner, env)
     reasons = set(runner["reasons"]) | {"record_build_failed"}
     if runner["watchdog_fired"]:
         reasons.add("watchdog_timeout")
-    return finish(record, reasons, set(runner["restarted_services"]), runner_flags(runner))
+    record["trace"], trace_flags = trace_block(runner, traces_dir)
+    return finish(record, reasons, set(runner["restarted_services"]), runner_flags(runner) | trace_flags)
 
 
-def build(runner, run_dir, latency, env):
+def build(runner, run_dir, latency, env, traces_dir=None):
     record = base_record(runner, env)
     reasons, restarted, flags = set(runner["reasons"]), set(runner["restarted_services"]), runner_flags(runner)
+    record["trace"], trace_flags = trace_block(runner, traces_dir)
+    flags |= trace_flags
     record["latency"] = latency_block(latency, env)
     known = services()
     for p in ((latency or {}).get("pre"), (latency or {}).get("post")):
@@ -498,6 +615,7 @@ def main(argv):
     parser.add_argument("--run-dir")
     parser.add_argument("--latency")
     parser.add_argument("--latency-env", default=str(LATENCY_ENV))
+    parser.add_argument("--traces", help="the run's traces/ directory, read when runner.json has a trace")
     parser.add_argument("--denylist", required=True)
     parser.add_argument("--forbid", help="file of literal strings, one per line, that must not appear")
     parser.add_argument("--out", required=True)
@@ -518,7 +636,7 @@ def main(argv):
     if args.command == "build":
         try:
             latency = read_json(args.latency) if args.latency and Path(args.latency).exists() else None
-            record = build(runner, args.run_dir, latency, env)
+            record = build(runner, args.run_dir, latency, env, args.traces)
             check_public(record, denylist, forbidden)
             write(record, args.out)
             return 0
@@ -529,7 +647,7 @@ def main(argv):
         except Exception as e:  # noqa: BLE001 - any failure ends in the minimal record
             print(f"record: the build failed ({type(e).__name__}); writing the minimal record", file=sys.stderr)
     try:
-        record = minimal(runner, env)
+        record = minimal(runner, env, args.traces)
         check_public(record, denylist, forbidden)
         write(record, args.out)
     except Exception as e:  # noqa: BLE001

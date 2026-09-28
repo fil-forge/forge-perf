@@ -90,6 +90,8 @@ def fingerprints(record):
         "target_rtt_us": round(record["latency"]["target_rtt_ms"] * 1000),
         "jitter_us": 0,
     }
+    if record["trace"] is not None:
+        instrument["trace_ratio_ppm"] = round(record["trace"]["ratio"] * 1000000)
     box = record["box"]
     box_facts = {k: box[k] for k in ("instance_type", "arch", "ami_id", "kernel", "docker_server",
                                      "docker_compose", "cpu")}
@@ -103,7 +105,7 @@ class FixtureRecords(unittest.TestCase):
         names = {p.name for p in FIXTURES}
         self.assertEqual(names, {"valid", "availability-errors", "integrity-failure", "wrote-nothing",
                                  "read-back-incomplete", "container-restart", "exit1-no-evidence", "exit2",
-                                 "stack-boot-failed", "record-build-failed", "cpu-capped"})
+                                 "stack-boot-failed", "record-build-failed", "cpu-capped", "traced"})
         classes = {expected(p)["outcome"]["class"] for p in FIXTURES}
         self.assertEqual(classes, set(CLASS_ORDER) | {"valid"})
 
@@ -151,11 +153,30 @@ class FixtureRecords(unittest.TestCase):
                 self.assertEqual(got, fingerprints(record))
 
     def test_runs_on_one_instrument_share_fingerprints(self):
-        # Every fixture runs the same instrument on the same box, whether or
-        # not its drill wrote evidence.
+        # Every untraced fixture runs the same instrument on the same box,
+        # whether or not its drill wrote evidence.
+        untraced = [p for p in FIXTURES if expected(p)["trace"] is None]
+        self.assertEqual(len(untraced), len(FIXTURES) - 1)
         seen = {(expected(p)["instrument"]["fingerprint"], expected(p)["instrument"]["box_fingerprint"])
-                for p in FIXTURES}
+                for p in untraced}
         self.assertEqual(len(seen), 1)
+
+    def test_tracing_changes_the_instrument_fingerprint_alone(self):
+        traced = expected(HERE / "fixtures" / "traced")
+        valid = expected(HERE / "fixtures" / "valid")
+        self.assertEqual(traced["instrument"]["box_fingerprint"], valid["instrument"]["box_fingerprint"])
+        self.assertNotEqual(traced["instrument"]["fingerprint"], valid["instrument"]["fingerprint"])
+        self.assertEqual(fingerprints(dict(traced, trace=None))[0], valid["instrument"]["fingerprint"])
+
+    def test_traced_and_trace_missing_follow_the_trace(self):
+        for fixture in FIXTURES:
+            with self.subTest(fixture=fixture.name):
+                record = expected(fixture)
+                flags = record["outcome"]["flags"]
+                self.assertEqual("traced" in flags, record["trace"] is not None)
+                if record["trace"] is not None:
+                    self.assertEqual("trace_missing" in flags, record["trace"]["file_sha256"] is None)
+                    self.assertEqual(sum(record["trace"]["spans_by_service"].values()), record["trace"]["spans"])
 
     def test_image_services_come_from_the_runner(self):
         for fixture in FIXTURES:
@@ -198,6 +219,12 @@ class FixtureRecords(unittest.TestCase):
                     self.assertIn(MARKER, doc["provider"]["config_note"])
                     self.assertTrue(all(MARKER in f["detail"] for f in doc["drill"].get("failures", [])))
                     self.assertTrue(all(MARKER in n for n in doc["drill"]["facts"]["notes"]))
+                for name in ("traces.jsonl", "collector-metrics.txt", "collector.log"):
+                    path = fixture / "traces" / name
+                    self.assertTrue(not path.exists() or MARKER in path.read_text(encoding="utf-8"))
+
+
+TRACE = expected(HERE / "fixtures" / "traced")["trace"]
 
 
 class Rejections(unittest.TestCase):
@@ -223,11 +250,25 @@ class Rejections(unittest.TestCase):
             "duplicate flag": lambda r: r["outcome"].update(flags=["few_windows", "few_windows"]),
             "missing field": lambda r: r["latency"].pop("pairs"),
             "trace": lambda r: r.update(trace={}),
+            "trace ratio 0": lambda r: r.update(trace=dict(TRACE, ratio=0)),
+            "trace ratio above 1": lambda r: r.update(trace=dict(TRACE, ratio=1.5)),
+            "trace ratio as text": lambda r: r.update(trace=dict(TRACE, ratio="0.1")),
+            "negative span count": lambda r: r.update(trace=dict(TRACE, spans=-1)),
+            "span count as float": lambda r: r.update(trace=dict(TRACE, spans=8.5)),
+            "a service outside the list": lambda r: r.update(
+                trace=dict(TRACE, spans_by_service=dict(TRACE["spans_by_service"], grafana=1))),
+            "a service missing": lambda r: r.update(trace=dict(TRACE, spans_by_service={"ingot": 8})),
+            "trace file hash": lambda r: r.update(trace=dict(TRACE, file_sha256="e80284")),
             "free text": lambda r: r["provenance"]["images"][0].update(ref="has spaces in it"),
         }
         for name, change in cases.items():
             with self.subTest(case=name):
                 self.assertNotEqual(self.rejected(change), [])
+
+    def test_a_trace_with_unread_files_validates(self):
+        missing = dict(TRACE, traces=0, spans=0, spans_by_service=dict.fromkeys(TRACE["spans_by_service"], 0),
+                       dropped_spans=None, file_bytes=0, file_sha256=None)
+        self.assertEqual(self.rejected(lambda r: r.update(trace=missing)), [])
 
     def test_errors_never_carry_the_value(self):
         errors = self.rejected(lambda r: r.update(run_id=MARKER, **{MARKER: MARKER}))

@@ -92,7 +92,7 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
-`instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
+`instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip), `trace` (the trace ratio, or tracing turned on or off) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
 
 ## Gates
 
@@ -110,7 +110,7 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 - The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
 - The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
 - The history chart shows one series at a time and opens on the series of the mercury's run. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring. Under the chart, each pairing with counting runs on two instance types gets a note comparing them at the largest run size both ran: the median of each type's run medians at that size and their ratio. A pairing with no size in common gets no note.
-- The runs table and details view name the flags `cap_not_reached`, `few_windows` and `cpu_capped` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
+- The runs table and details view name the flags `cap_not_reached`, `few_windows`, `cpu_capped`, `traced` and `trace_missing` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 
 `make site-preview` builds the page against seven fixture scenarios (no runs, one valid run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 

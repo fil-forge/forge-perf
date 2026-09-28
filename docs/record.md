@@ -6,15 +6,16 @@ The schema sets `additionalProperties: false` on every object and has no free-te
 
 ## What the builder reads
 
-The builder copies named fields from three inputs and reads nothing else.
+The builder copies named fields from four inputs and reads nothing else.
 
 | Input | Written by | What the builder takes |
 |---|---|---|
 | the smelt run directory | `perf-drill.sh run` | `metadata.json`; the one `drill/evidence/drill-*.json`; the count of `failed to put object` lines in `logs/piri-0.log` |
 | `netem/latency.json` | `netem.sh verify pre` and `post` | both passes' summaries, pairs, connects and check lines |
 | `runner.json` | `run.sh` | what only the runner knows, below |
+| the run's `traces/` directory, for a traced run | the trace collector ([runner.md](runner.md)) | the span and trace counts, size and SHA-256 of `traces.jsonl`; the dropped-span counters in `collector-metrics.txt` |
 
-The drill's report, `drill.out`, `stats.csv`, the other service logs, the provider `.env`, and the free-text parts of the evidence (`failures[].detail`, the `facts` map as a whole, `facts.notes`, `downgrades`, `provider`) are never read. From the evidence the builder copies `failures[].code`, a closed set (storage-qualification `internal/evidence/codes.go`), and named numeric facts. From `metadata.json` it never copies `host`, `manifest`, `images`, `suite.tenant`, `suite.config_note`, `suite.argv` or `extra`; it uses `suite.argv`, `extra.forge_perf.run_id` and the `images` labels only to check that the run directory belongs to this run.
+The drill's report, `drill.out`, `stats.csv`, the other service logs, the provider `.env`, `collector.log`, every span's name, attributes and timing, and the free-text parts of the evidence (`failures[].detail`, the `facts` map as a whole, `facts.notes`, `downgrades`, `provider`) are never read. From the evidence the builder copies `failures[].code`, a closed set (storage-qualification `internal/evidence/codes.go`), and named numeric facts. From `metadata.json` it never copies `host`, `manifest`, `images`, `suite.tenant`, `suite.config_note`, `suite.argv` or `extra`; it uses `suite.argv`, `extra.forge_perf.run_id` and the `images` labels only to check that the run directory belongs to this run.
 
 `runner.json` holds:
 
@@ -30,16 +31,17 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `nic` | `allowance_exceeded` deltas, `egress_bytes_per_s_median` and `seconds_above_baseline` from `ethtool -S` and the one-second interface samples |
 | `raw_missing` | the run left no raw tarball: collection failed, a credential appeared in the collected files, or piri's key was never read to check against |
 | `caps` | the CPU caps `campaign.sh --cap` set, as `{"<service>": "<CPUs>"}`, or `{}`. The record takes only whether it is empty: a capped run gets the flag `cpu_capped` and series `calibration`, and the service names and CPUs stay in the raw tarball |
+| `trace` | `{"ratio": "<RATIO>"}` for a traced run, the sampling ratio as a decimal in (0, 1] with at most six places; null, or absent in a runner from before tracing, otherwise |
 
 `scripts/host/record.py` is the builder:
 
 ```
 record.py build --runner runner.json [--run-dir DIR] [--latency netem/latency.json] \
-                --denylist FILE [--forbid FILE] --out record.json
-record.py minimal --runner runner.json --denylist FILE [--forbid FILE] --out record.json
+                [--traces DIR] --denylist FILE [--forbid FILE] --out record.json
+record.py minimal --runner runner.json [--traces DIR] --denylist FILE [--forbid FILE] --out record.json
 ```
 
-Before writing, it checks the record against the schema, the denylist patterns (one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. The denylist file is shared with CI's `grep -E -i`, so its patterns must mean the same to both: the builder refuses a pattern that uses `\<`, `\>` or a `[[:class:]]` bracket, or that Python cannot compile. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. For `build`, exit status 0 means the full record was written and 3 the minimal record. For `minimal`, 0 means the minimal record was written. For both, 1 means nothing was written, because an input could not be read or even the minimal record was refused, and 2 is a usage error. Messages name the check or stage that failed, never an input's value.
+Before writing, it checks the record against the schema, the denylist patterns (one per line, matched without regard to case) and the literal strings in `--forbid`, such as piri's S3 key ID. The denylist file is shared with CI's `grep -E -i`, so its patterns must mean the same to both: the builder refuses a pattern that uses `\<`, `\>` or a `[[:class:]]` bracket, or that Python cannot compile. `build` writes the minimal record below in place of a full record that stops, fails or is refused; `minimal` writes it directly, for a runner whose `build` call died. For `build`, exit status 0 means the full record was written and 3 the minimal record. For `minimal`, 0 means the minimal record was written. For both, 1 means nothing was written, because an input could not be read or even the minimal record was refused, and 2 is a usage error. A `trace.ratio` in `runner.json` that is not a decimal in (0, 1] with at most six places counts as an input that could not be read. `run.sh` passes `--traces $RUN/traces` and `recover.sh` the same directory of the interrupted run; an untraced run ignores it. Messages name the check or stage that failed, never an input's value.
 
 When the drill never ran there is no run directory, and the builder uses `runner.json` and whatever `latency.json` holds. When `extra.forge_perf.run_id` differs from `runner.json`'s `run_id`, `suite.argv` disagrees with `settings`, or a `metadata.json` image's `revision` or `source` differs from `runner.json`'s for the same digest, the builder stops and writes the minimal record below.
 
@@ -123,7 +125,14 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `provenance.images[].revision` | `runner.json` `images[].revision`, when it is 40 hex characters; else null. A run that stops after the pull, such as a boot failure, still records every image's commit |
 | `provenance.images[].source` | `runner.json` `images[].source`, for `under_test` images whose label is a `https://github.com/fil-forge/` URL; else null |
 | `instrument.fingerprint`, `instrument.box_fingerprint` | computed, below |
-| `trace` | constant null until the tracing phase |
+| `trace` | null when `runner.json` has no `trace` |
+| `trace.ratio` | runner `trace.ratio`, the share of new traces the services sample |
+| `trace.traces` | the distinct `traceId` values of the spans in `traces.jsonl` |
+| `trace.spans` | the spans in `traces.jsonl`, one OTLP JSON `ExportTraceServiceRequest` per line. A line that is not one, such as a last line cut short when the collector stopped, adds no spans or traces |
+| `trace.spans_by_service.ingot`, `trace.spans_by_service.sprue`, `trace.spans_by_service.hilt`, `trace.spans_by_service.piri` | the spans whose resource's `service.name` is that name |
+| `trace.spans_by_service.other` | the spans whose resource has any other `service.name`, or none. The record names no service the list does not, so no span text reaches it |
+| `trace.dropped_spans` | the sum over `collector-metrics.txt`, the collector's Prometheus scrape, of every sample of `otelcol_receiver_refused_spans`, `otelcol_receiver_failed_spans`, `otelcol_processor_refused_spans`, `otelcol_processor_dropped_spans`, `otelcol_exporter_send_failed_spans` and `otelcol_exporter_enqueue_failed_spans`, each with or without the `_total` suffix. A counter never incremented may be absent and counts 0. Null when the file is missing or a counter's value is not a number of zero or more. Above 0, the traces are incomplete; the drill's numbers are not affected |
+| `trace.file_bytes`, `trace.file_sha256` | the size and SHA-256 of the whole of `traces.jsonl` as the run left it. The copy in the raw tarball matches them unless the collect step's credential scrub removed a line from it |
 
 The pass summary `rtt`, from one pass of `latency.json`:
 
@@ -148,7 +157,9 @@ A run has drill numbers when its evidence file exists and the drill exited 0 or 
 | `availability_warning` | no; numbers shown and joined to the line |
 | `valid` | yes |
 
-If the builder fails, or stops because the run directory belongs to another run, `record.py` writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record.
+If the builder fails, or stops because the run directory belongs to another run, `record.py` writes a minimal record from `runner.json` alone. It is built as for a run whose drill never ran and whose netem passes never ran: class `no_data`; `runner.json`'s reasons plus `record_build_failed`, and `watchdog_timeout` when `watchdog_fired`; `drill_exit` null and no failure codes; `drill.results` and `drill.requests` null; `latency.target_rtt_ms` and `tolerance_pct` from `config/latency.env` with both passes null; the evidence fields of `provenance.harness` null. Image revisions and sources come from `runner.json` as in a full record, and `trace` from `runner.json` and the `traces/` directory as in a full record.
+
+For a traced run, a `traces.jsonl` that is missing or cannot be read gives `traces`, `spans`, every `spans_by_service` count and `file_bytes` of 0, `file_sha256` null, and the flag `trace_missing`. `dropped_spans` is still read from its own file. Neither changes the class.
 
 ## Triggers
 
@@ -233,6 +244,8 @@ Flags never change the class.
 | `superseded` | `runner.json` `superseded` above 0: the run covers several coalesced sets |
 | `raw_missing` | `runner.json` `raw_missing`: the private raw tarball is missing. When the outbox drops the tarball after the record was built (past its 20 GB cap, or after 24 hours of failed uploads), it adds the flag to the record before uploading it; nothing else in the record changes |
 | `cpu_capped` | `runner.json` `caps` is not empty: `campaign.sh --cap` limited one or more services' CPUs for the falsification check ([DESIGN.md §9](DESIGN.md#9-calibration-and-ceilings)). The record's series is then `calibration`, so the run never lights a gate, and the publish Action rejects the flag in any other series |
+| `traced` | `runner.json` has a `trace`: the services sampled `trace.ratio` of new traces into the collector during the run. Tracing is part of the instrument, so the run's `instrument.fingerprint` differs from an untraced run's on the same settings |
+| `trace_missing` | a traced run whose `traces.jsonl` is missing or cannot be read; its counts are 0 |
 
 A reviewed PR to `data/overrides.json` citing an issue can reclassify a run. Records are never edited.
 
@@ -249,8 +262,11 @@ Both are the SHA-256 of canonical JSON: `json.dumps(obj, sort_keys=True, separat
  "instrument_images": [[repo, digest], ...],
  "settings": drill.settings,
  "target_rtt_us": round(latency.target_rtt_ms * 1000),
- "jitter_us": 0}
+ "jitter_us": 0,
+ "trace_ratio_ppm": round(trace.ratio * 1000000)}   # a traced run only
 ```
+
+The key `trace_ratio_ppm` is present only when `trace` is not null, so an untraced run hashes exactly the inputs above it and keeps the fingerprint it had before tracing existed. A traced run's fingerprint differs from an untraced run's, and from a run traced at another ratio, because tracing is part of the instrument; the span counts and the trace file are outside the fingerprint. The ratio has at most six decimal places, so the integer names it exactly.
 
 Every input exists in every record, including the minimal one, so runs on the same instrument share a fingerprint whether or not their drill wrote evidence. The Go toolchain that builds the drill is outside the list for that reason: `provenance.harness.go_version` comes only from the evidence, and `host/versions.env`, which pins Go with `GOTOOLCHAIN=local`, is inside `instrument_tree`.
 
@@ -264,4 +280,4 @@ The publish Action recomputes both fingerprints and rejects a record whose store
 
 ## Fixtures
 
-`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, a run whose run directory belongs to another run, which ends in the minimal record, and a valid run with CPU caps, which the builder records as series `calibration` with `cpu_capped`. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.
+`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `traces/` for a traced run in the layout the collector writes under `$RUN/traces`, `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, a run whose run directory belongs to another run, which ends in the minimal record, a valid run with CPU caps, which the builder records as series `calibration` with `cpu_capped`, and a valid run traced at ratio 0.1, whose small synthetic `traces.jsonl` has spans from ingot, sprue and piri, from a service outside the list and from one without a name, and whose `collector-metrics.txt` has refused and failed-to-send spans. Span names, attribute values, metric help text and `collector.log` carry the marker too. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.

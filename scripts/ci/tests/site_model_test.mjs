@@ -176,6 +176,15 @@ test("a CPU-capped check run is named beside the outcome and never moves the mer
   assert.equal(M.mercury(d.runs, NOW), null);
 });
 
+test("a traced run is named beside the outcome and still moves the mercury", () => {
+  const traced = run({ flags: ["traced"] });
+  assert.equal(M.flagText(traced), "traced");
+  assert.equal(M.flagText(run({ flags: ["few_windows", "traced", "trace_missing"] })),
+    "under 20 steady windows, traced, trace file missing");
+  const d = index([traced]);
+  assert.equal(M.mercury(d.runs, NOW).run.run_id, traced.run_id);
+});
+
 test("the paired offset is the ratio of each type's median run median", () => {
   const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
   const pair = "pair-20261010-tier2";

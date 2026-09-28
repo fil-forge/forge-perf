@@ -17,6 +17,8 @@
     {"name": "valid with drill exit 1", "set": {"outcome.drill_exit": 1}, "reject": "valid_inconsistent"},
     {"name": "CPU-capped check run in series calibration", "set": {"series": "calibration", "outcome.flags": ["few_windows", "cpu_capped"]}, "reject": null},
     {"name": "CPU-capped run outside series calibration", "set": {"outcome.flags": ["few_windows", "cpu_capped"]}, "reject": "capped_not_calibration"},
+    {"name": "traced run", "set": {"trace": {"ratio": 0.1, "traces": 3, "spans": 8, "spans_by_service": {"ingot": 3, "sprue": 1, "hilt": 0, "piri": 2, "other": 2}, "dropped_spans": 3, "file_bytes": 3627, "file_sha256": "e80284035980218975dd3baad18aaf612df10896ef124ee029ef8711d8166aeb"}, "outcome.flags": ["few_windows", "traced"], "instrument.fingerprint": "68dbac7edd440cf0b2f2a906d00de33a03be51948d4f442fccb9fe236b2a95f5"}, "reject": null},
+    {"name": "traced run whose fingerprint leaves out the ratio", "set": {"trace": {"ratio": 0.1, "traces": 3, "spans": 8, "spans_by_service": {"ingot": 3, "sprue": 1, "hilt": 0, "piri": 2, "other": 2}, "dropped_spans": 3, "file_bytes": 3627, "file_sha256": "e80284035980218975dd3baad18aaf612df10896ef124ee029ef8711d8166aeb"}, "outcome.flags": ["few_windows", "traced"]}, "reject": "fingerprint"},
     {"name": "instrument fingerprint does not recompute", "set": {"drill.settings.workers": 8}, "reject": "fingerprint"},
     {"name": "box fingerprint does not recompute", "set": {"box.kernel": "6.14.0-1016-aws"}, "reject": "fingerprint"}
   ]

@@ -1,0 +1,298 @@
+{
+ "pre": {
+  "pass": "pre",
+  "rtt_ms": 15,
+  "tolerance_pct": 10,
+  "net_subnet": "172.30.0.0/24",
+  "overridden": false,
+  "node_to_central_median_ms": 15.155,
+  "central_to_node_median_ms": 15.32,
+  "intra_group_max_ms": 0.18,
+  "host_to_ingot_ms": 0.06,
+  "pairs": [
+   {
+    "from": "ingot",
+    "to": "upload",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.13,
+    "median_ms": 15.08,
+    "max_ms": 15.48
+   },
+   {
+    "from": "ingot",
+    "to": "hilt",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.16,
+    "median_ms": 15.11,
+    "max_ms": 15.51
+   },
+   {
+    "from": "ingot",
+    "to": "plc",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.190000000000001,
+    "median_ms": 15.14,
+    "max_ms": 15.540000000000001
+   },
+   {
+    "from": "ingot",
+    "to": "swarf",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.22,
+    "median_ms": 15.17,
+    "max_ms": 15.57
+   },
+   {
+    "from": "ingot",
+    "to": "delegator",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.25,
+    "median_ms": 15.2,
+    "max_ms": 15.6
+   },
+   {
+    "from": "ingot",
+    "to": "signing-service",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.280000000000001,
+    "median_ms": 15.23,
+    "max_ms": 15.63
+   },
+   {
+    "from": "piri-0",
+    "to": "upload",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.31,
+    "median_ms": 15.26,
+    "max_ms": 15.66
+   },
+   {
+    "from": "piri-0",
+    "to": "signing-service",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.34,
+    "median_ms": 15.29,
+    "max_ms": 15.69
+   },
+   {
+    "from": "upload",
+    "to": "piri-0",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.370000000000001,
+    "median_ms": 15.32,
+    "max_ms": 15.72
+   },
+   {
+    "from": "ingot",
+    "to": "piri-0",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "ingot",
+    "to": "ingot-postgres",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "upload",
+    "to": "hilt",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "host",
+    "to": "ingot",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   }
+  ],
+  "connects": [
+   {
+    "from": "ingot",
+    "to": "upload",
+    "ok": 10,
+    "connect_median_ms": 15.21,
+    "starttransfer_median_ms": 31.02
+   },
+   {
+    "from": "upload",
+    "to": "piri-0",
+    "ok": 10,
+    "connect_median_ms": 15.34,
+    "starttransfer_median_ms": 30.87
+   }
+  ],
+  "ok": true,
+  "reasons": []
+ },
+ "post": {
+  "pass": "post",
+  "rtt_ms": 15,
+  "tolerance_pct": 10,
+  "net_subnet": "172.30.0.0/24",
+  "overridden": false,
+  "node_to_central_median_ms": 15.155,
+  "central_to_node_median_ms": 15.32,
+  "intra_group_max_ms": 0.18,
+  "host_to_ingot_ms": 0.06,
+  "pairs": [
+   {
+    "from": "ingot",
+    "to": "upload",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.13,
+    "median_ms": 15.08,
+    "max_ms": 15.48
+   },
+   {
+    "from": "ingot",
+    "to": "hilt",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.16,
+    "median_ms": 15.11,
+    "max_ms": 15.51
+   },
+   {
+    "from": "ingot",
+    "to": "plc",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.190000000000001,
+    "median_ms": 15.14,
+    "max_ms": 15.540000000000001
+   },
+   {
+    "from": "ingot",
+    "to": "swarf",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.22,
+    "median_ms": 15.17,
+    "max_ms": 15.57
+   },
+   {
+    "from": "ingot",
+    "to": "delegator",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.25,
+    "median_ms": 15.2,
+    "max_ms": 15.6
+   },
+   {
+    "from": "ingot",
+    "to": "signing-service",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.280000000000001,
+    "median_ms": 15.23,
+    "max_ms": 15.63
+   },
+   {
+    "from": "piri-0",
+    "to": "upload",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.31,
+    "median_ms": 15.26,
+    "max_ms": 15.66
+   },
+   {
+    "from": "piri-0",
+    "to": "signing-service",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.34,
+    "median_ms": 15.29,
+    "max_ms": 15.69
+   },
+   {
+    "from": "upload",
+    "to": "piri-0",
+    "kind": "cross",
+    "received": 20,
+    "mean_ms": 15.370000000000001,
+    "median_ms": 15.32,
+    "max_ms": 15.72
+   },
+   {
+    "from": "ingot",
+    "to": "piri-0",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "ingot",
+    "to": "ingot-postgres",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "upload",
+    "to": "hilt",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   },
+   {
+    "from": "host",
+    "to": "ingot",
+    "kind": "intra",
+    "received": 20,
+    "mean_ms": 0.07,
+    "median_ms": 0.06,
+    "max_ms": 0.18
+   }
+  ],
+  "connects": [
+   {
+    "from": "ingot",
+    "to": "upload",
+    "ok": 10,
+    "connect_median_ms": 15.21,
+    "starttransfer_median_ms": 31.02
+   },
+   {
+    "from": "upload",
+    "to": "piri-0",
+    "ok": 10,
+    "connect_median_ms": 15.34,
+    "starttransfer_median_ms": 30.87
+   }
+  ],
+  "ok": true,
+  "reasons": []
+ }
+}
