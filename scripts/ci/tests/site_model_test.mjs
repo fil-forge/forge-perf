@@ -49,17 +49,56 @@ test("only valid runs count, after overrides", () => {
   assert.equal(M.outcomeText(d.runs[1]), "Marked invalid measurement after review");
 });
 
-test("nightly and campaign runs light gates; the mercury is per-trigger on the persistent box", () => {
+test("nightly and campaign runs light gates; the mercury is the latest per-trigger or nightly run on the persistent box", () => {
   const gates = [measured(1, 0.36e9, "2026-09-01T00:00:00Z")];
   const pt = run({ p5_bytes_per_s: 0.2e9 });
   const nightly = run({ series: "nightly", p5_bytes_per_s: 0.4e9 });
   const campaign = run({ series: "campaign", box: { id: "campaign", tier: 3, instance_type: "m9gd.16xlarge" }, p5_bytes_per_s: 3e9 });
   const d = index([pt, nightly, campaign], gates);
   const merc = M.mercury(d.runs, NOW);
+  assert.equal(merc.run.run_id, nightly.run_id);
+  assert.equal(merc.runs_since, 0);
+  assert.equal(M.litGates(d.runs, d.gates)[0].run.run_id, nightly.run_id);
+  assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.4e9) < 1);
+});
+
+test("a lone nightly run fills the mercury", () => {
+  const nightly = run({ series: "nightly", p5_bytes_per_s: 0.54e9 });
+  const d = index([nightly], [measured(1, 0.52e9, "2026-09-01T00:00:00Z")]);
+  assert.equal(M.mercury(d.runs, NOW).run.run_id, nightly.run_id);
+  assert.equal(M.litGates(d.runs, d.gates)[0].run.run_id, nightly.run_id);
+});
+
+test("the mercury is the latest of per-trigger and nightly, whichever came last", () => {
+  const nightly = run({ series: "nightly", p5_bytes_per_s: 0.4e9 });
+  const pt = run({ p5_bytes_per_s: 0.2e9 });
+  const d = index([nightly, pt], [measured(1, 0.36e9, "2026-09-01T00:00:00Z")]);
+  const merc = M.mercury(d.runs, NOW);
+  assert.equal(merc.run.run_id, pt.run_id);
+  assert.equal(merc.runs_since, 0);
+  assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.36e9) < 1);
+});
+
+test("a nightly marked invalid, or on another box, leaves the mercury on the earlier run", () => {
+  const pt = run({ p5_bytes_per_s: 0.3e9 });
+  const overridden = run({ series: "nightly", p5_bytes_per_s: 0.4e9 });
+  const elsewhere = run({ series: "nightly", box: { id: "spare", tier: 1, instance_type: "m9gd.2xlarge" }, p5_bytes_per_s: 0.5e9 });
+  const d = index([pt, overridden, elsewhere], [unmeasured(1)],
+    [{ run_id: overridden.run_id, class: "invalid", issue: "https://github.com/fil-forge/forge-perf/issues/1" }]);
+  const merc = M.mercury(d.runs, NOW);
   assert.equal(merc.run.run_id, pt.run_id);
   assert.equal(merc.runs_since, 1);
-  assert.equal(M.litGates(d.runs, d.gates)[0].run.run_id, nightly.run_id);
-  assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.36e9) < 1);
+});
+
+test("a campaign run on the persistent box lights a gate but leaves the mercury", () => {
+  const gates = [measured(1, 0.36e9, "2026-09-01T00:00:00Z")];
+  const pt = run({ p5_bytes_per_s: 0.3e9 });
+  const bridge = run({ series: "campaign", pairing_id: "pair-20261001-t1t2", p5_bytes_per_s: 0.4e9 });
+  const d = index([pt, bridge], gates);
+  const merc = M.mercury(d.runs, NOW);
+  assert.equal(merc.run.run_id, pt.run_id);
+  assert.equal(merc.runs_since, 1);
+  assert.equal(M.litGates(d.runs, d.gates)[0].run.run_id, bridge.run_id);
 });
 
 test("a lit gate keeps the ceiling in force when its run happened", () => {

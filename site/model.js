@@ -61,10 +61,14 @@ export function litGates(runs, gates) {
   });
 }
 
+// The mercury is the latest counting per-trigger or nightly run on the
+// persistent box. Campaign runs, including bridge runs on that box, only light gates.
+const MERCURY_SERIES = ["per-trigger", "nightly"];
+
 export function mercury(runs, now) {
   let at = -1;
   runs.forEach((r, i) => {
-    if (counts(r) && r.series === "per-trigger" && r.box.id === PERSISTENT_BOX) at = i;
+    if (counts(r) && MERCURY_SERIES.includes(r.series) && r.box.id === PERSISTENT_BOX) at = i;
   });
   if (at < 0) return null;
   const run = runs[at];
@@ -76,7 +80,7 @@ export function mercury(runs, now) {
 }
 
 // The latest counting run in any live series, for the headline when no
-// per-trigger run on the persistent box counts yet.
+// run moves the mercury yet.
 export function latestCounting(runs) {
   return runs.filter(counts).pop() || null;
 }

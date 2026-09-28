@@ -52,7 +52,7 @@ function thermometer({ gates, lit, merc, top }) {
   const unmeasured = gates.filter((g) => !g.current);
   const Y1 = 24 + 44 * unmeasured.length;
   const y = (v) => Y0 - (Math.min(v, top) / top) * (Y0 - Y1);
-  const desc = [merc ? `p5 ${M.gbps(merc.run.p5_bytes_per_s)} GB/s, median ${M.gbps(merc.run.median_bytes_per_s)} GB/s.` : "No valid run yet."];
+  const desc = [merc ? `p5 ${M.gbps(merc.run.p5_bytes_per_s)} GB/s, median ${M.gbps(merc.run.median_bytes_per_s)} GB/s.` : "No valid per-trigger or nightly run yet."];
   const root = svg("svg", { viewBox: "0 0 240 480", role: "img", class: "thermo" });
   root.append(svg("title", {}, "Ingest rate against three hardware gates"));
   const d = svg("desc");
@@ -99,12 +99,12 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
         ` on ${r.box.instance_type}, ${utc(r.run_started_at)}, ${gb(r.size_bytes)}`),
       h("p", { class: "secondary" }, `${M.ago(merc.age_ms)} ago · ${merc.runs_since} run${merc.runs_since === 1 ? "" : "s"} on the box since`));
   } else {
-    box.append(h("p", { class: "big" }, "No valid per-trigger run yet"));
+    box.append(h("p", { class: "big" }, "No valid per-trigger or nightly run yet"));
     const other = M.latestCounting(runs);
     if (other) {
       box.append(h("p", {}, "Latest valid run ", h("a", { href: `#run=${other.run_id}` }, other.run_id),
         ` (${other.series}, ${other.box.instance_type}): p5 ${M.gbps(other.p5_bytes_per_s)} GB/s. `
-        + `The thermometer moves on per-trigger runs on box ${M.PERSISTENT_BOX}.`));
+        + `The thermometer moves on per-trigger and nightly runs on box ${M.PERSISTENT_BOX}.`));
     }
     const last = runs[runs.length - 1];
     box.append(last
@@ -356,6 +356,11 @@ async function main() {
   const lit = M.litGates(d.runs, d.gates);
   const view = { ...d, merc, lit, top: M.scaleTop(d.gates, merc) };
   $("#summary").replaceChildren(h("div", { class: "thermo-wrap" }, thermometer(view)), headline(view));
+  // The history opens on the series of the run the mercury shows.
+  if (merc) {
+    state.series = merc.run.series;
+    for (const b of tabs.children) b.setAttribute("aria-pressed", String(b.value === state.series));
+  }
   drawHistory();
   $("#runs").replaceChildren(table());
   let width = 0;
