@@ -188,10 +188,10 @@ The hold is a file on the root volume, so it survives a reboot. It stops dispatc
 `run.sh` runs the stack once against one set, measures it, records the result and wipes. Every run takes `/run/forge-perf/run.lock` with `flock -n`; a second instance exits 0 at once. `forge-perf-run.service` runs it on the box.
 
 ```
-run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--until STEP]
+run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--trace RATIO] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size` and `duration` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it.
+Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size`, `duration`, `caps` and `trace_ratio` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it. `--trace` traces the run ([Tracing](#tracing)).
 
 A set is the JSON the poller resolves:
 
@@ -206,7 +206,7 @@ It needs a digest for every line of `config/images.tracked`. A set without `smel
 
 ### Before the first step
 
-`run.sh` refuses to start, with exit status 2 and no record, when there is no `config/settings/<instance type>.env` for the type instance metadata reports, when `WORKERS` is empty there and no `--workers` is given, or when the set or a drill setting cannot be read. A run taken from `pending.json` that refuses to start moves the file to `pending.json.rejected`, so the next poll does not start it again. Otherwise it writes `runner.json` (fields in [record.md](record.md#what-the-builder-reads)) to the state directory, then `current.json` with phase `preflight`, and replaces `last-started.json` with the set. The run ID is `<box>-<yyyymmdd>t<hhmmss>z` of the moment the run starts.
+`run.sh` refuses to start, with exit status 2 and no record, when there is no `config/settings/<instance type>.env` for the type instance metadata reports, when `WORKERS` is empty there and no `--workers` is given, when the set or a drill setting cannot be read, or when the trace ratio is malformed. A run taken from `pending.json` that refuses to start moves the file to `pending.json.rejected`, so the next poll does not start it again. Otherwise it writes `runner.json` (fields in [record.md](record.md#what-the-builder-reads)) to the state directory, then `current.json` with phase `preflight`, and replaces `last-started.json` with the set. The run ID is `<box>-<yyyymmdd>t<hhmmss>z` of the moment the run starts.
 
 ### Steps
 
@@ -217,7 +217,7 @@ Each step runs its slow commands under `timeout` with the budget below, and ever
 | preflight | clock synchronized (`timedatectl show -p NTPSynchronized --value` prints `yes`); CPU with `sha2`; `modprobe sch_netem`; Docker 25 or newer; every box fact the record schema requires was read (instance metadata, Docker and Compose versions, cores, memory, the instance-store model, size and filesystem); `git status --porcelain` of the forge-perf checkout empty; on a persistent box, `state/updated-rev`, when present, equal to the checkout's `HEAD`; no container, volume, `forge-network` or object in piri's six buckets, or else one wipe and a second look; piri's S3 key from SSM to `/run/forge-perf/secrets/piri-s3.env` | wipe 30 min | `preflight_failed`, `instrument_modified`, `dirty_start` (the run goes on), `s3_unreachable`, `secrets_unavailable` |
 | checkout | fetch both mirrors; require both SHAs with `git cat-file -e <sha>^{commit}`; check out smelt and the harness in the work tree; check that smelt has the settings a run needs; build the drill (`GOWORK=off go build -o bin/drill ./cmd/drill`, after `go mod download`) | fetch 10 min each, modules 15 min, build 15 min | `mirror_fetch_failed`, `smelt_unreachable`, `harness_unreachable`, `go_module_fetch_failed`, `harness_build_failed` |
 | images | render `config/smelt-manifest.yml.tmpl`; `make generate`; `docker compose config --images` must list only pinned references; piri-0 must get `FORGE_PERF_PIRI_S3_ENDPOINT` and `FORGE_PERF_PIRI_BUCKET_PREFIX`, with no `piri-minio` service, since a smelt that predates the manifest's `storage.s3` ignores it; pull each pinned image that `docker image inspect` does not find, four at a time; copy each image's `org.opencontainers.image.revision` and `org.opencontainers.image.source` labels into `runner.json`, null where a label is absent; map each image to its compose services in `compose-images.json`, which holds only each service's image and piri's S3 target, since the interpolated model carries piri's key | generate 10 min, pull 20 min | `image_pull_failed`, `runner_error` |
-| boot | `current.json` phase `boot`; `docker network create --subnet $NET_SUBNET forge-network` (`config/latency.env`); `make up`, which waits up to 600 s for health | 15 min | `stack_boot_failed` |
+| boot | `current.json` phase `boot`; `docker network create --subnet $NET_SUBNET forge-network` (`config/latency.env`); for a traced run, the trace collector ([Tracing](#tracing)); `make up`, which waits up to 600 s for health; for a traced run, the collector still running | 15 min | `stack_boot_failed` |
 | setup | `perf-drill.sh setup` with `INGOT_URL=http://<ingot's forge-network address>` (no `:80`: the drill's S3 client signs the port, and hilt's SigV4 check drops it), which mints the drill's key and stores and reads back 4 MiB through ingot; then, for a run with caps ([Campaigns](#campaigns)), `docker update --cpus` on each capped service, checked through `HostConfig.NanoCpus` | 10 min | `setup_failed`, `runner_error` (a cap not applied) |
 | latency | `netem.sh apply`, then `netem.sh verify pre` (docs/DESIGN.md §5). A failed check (exit 1) does not stop the run: the drill runs, and the record is `invalid` from the check lines in `netem/latency.json` | 5 min each | `runner_error` (apply failed, or verify exited 2) |
 | drill | `current.json` phase `drill`; `sync` and drop the page cache; `ethtool -S` of the primary interface; `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min, with one variable per drill flag from the settings file, `LABEL=<run_id>`, `CONFIG_NOTE=forge-perf/<run_id>` and `PERF_EXTRA_METADATA={"forge_perf": {"run_id", "series"}}`; meanwhile the interface's transmitted bytes every second and the NVMe's free space every 30 seconds; then `ethtool -S` again. `runner.json` gets `nic` (the five allowance counters' deltas, the median egress rate, and the seconds above `BASELINE_BYTES_PER_S`) and `watchdog_fired` when the `timeout` fired. The drill's own exit status goes to `metadata.json`, which the record reads | `DURATION` + 30 min | `disk_low` (under 2 GB free, the run goes on); `watchdog_timeout` in the record |
@@ -225,7 +225,7 @@ Each step runs its slow commands under `timeout` with the budget below, and ever
 
 ### Record, upload and wipe
 
-Every run that started ends with these four steps, whether a step stopped it or not. They run without stopping at a failure, so a run always reaches the wipe.
+Every run that started ends with these four steps, whether a step stopped it or not, after a traced run's collector has stopped ([Tracing](#tracing)). They run without stopping at a failure, so a run always reaches the wipe.
 
 | Step | What it does | Budget |
 |---|---|---|
@@ -247,11 +247,12 @@ Exit status 0 means the run was recorded and wiped, whatever its class, or reach
 | File | Holds |
 |---|---|
 | `config/images.tracked` | the smelt variable and `repo:tag` of each image under test; the set supplies the digest |
-| `config/images.lock` | the smelt variable, `repo:tag` and index digest of each third-party image, and the netem sidecar |
+| `config/images.lock` | the smelt variable, `repo:tag` and index digest of each third-party image, the netem sidecar and the trace collector |
+| `config/otel-collector.yaml` | the trace collector's configuration |
 | `config/harness.conf` | `SQ_REPO`; `SQ_PIN`, the harness commit while harness main cannot run the capped drill; `SQ_AUTH`, the harness credential |
 | `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, a smelt commit to hold runs at (empty: smelt main); `MANIFEST_NAME` |
 | `config/smelt-manifest.yml.tmpl` | one piri node on Postgres with its blobs in S3; `@ENDPOINT@`, `@BUCKET_PREFIX@` and `@INSECURE@` come from `config/piri-s3.env` and `box.conf` |
-| `config/settings/<instance type>.env` | `BOX_TIER`, `BASELINE_BYTES_PER_S`, the size and duration per kind of run, and one smelt variable per drill flag; `WORKERS` stays empty until calibration freezes it |
+| `config/settings/<instance type>.env` | `BOX_TIER`, `BASELINE_BYTES_PER_S`, the size and duration per kind of run, one smelt variable per drill flag, and `TRACE_RATIO`; `WORKERS` stays empty until calibration freezes it |
 | `config/launch.conf` | `SERIES_LIVE` |
 
 Every image variable is exported as `<repo>@sha256:<digest>`, so each compose call of the run, smelt's scripts included, sees the same images. `run.sh` also exports `PIRI_INDEXER=off`, empty `SPRUE_INDEXER_ENDPOINT` and `SPRUE_INDEXER_DID`, `SMELT_WORKSPACE=0`, `SMELT_MANIFEST`, piri's key as `SMELT_PIRI_S3_ACCESS_KEY_ID` and `SMELT_PIRI_S3_SECRET_ACCESS_KEY`, and `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` under `/run/forge-perf/aws`, where `s3-key.sh` writes the drill's key. `AWS_REGION` is the box's region (`FORGE_PERF_REGION`, default `us-east-2`) for the host's own calls; smelt's scripts run without it and without any `AWS_ENDPOINT_URL` or `AWS_ACCESS_KEY_ID`, since the drill's profile carries ingot's own. On the box Go uses `GOCACHE` and `GOMODCACHE` under `/var/cache/forge-perf/go` with `GOTOOLCHAIN=local`.
@@ -272,6 +273,35 @@ smelt is public. The harness credential is `SQ_AUTH` in `config/harness.conf`; `
 
 The default is `app`, set up as in [operations.md](operations.md#the-harness-credential-through-a-github-app). The deploy key works only where the organization allows deploy keys, and fil-one does not. Either credential lives under `/run/forge-perf/secrets` for the run and goes with the wipe.
 
+## Tracing
+
+A traced run samples a share of the drill's requests end to end, from ingot through sprue, hilt and piri, and keeps the spans in the run's private raw tarball. The ratio is `--trace RATIO`, a pending run's `trace_ratio` (from `campaign.sh --trace`), or the settings file's `TRACE_RATIO`, in that order. It is a decimal in (0, 1] with at most six decimal places, such as `0.1`; empty means untraced, the default in every committed settings file. A malformed ratio refuses the run with exit status 2. A traced run keeps its series. `runner.json` carries `"trace": {"ratio": "0.1"}`, or `"trace": null` for an untraced run.
+
+In the boot step, after `forge-network` exists and before `make up`, `run.sh` starts the collector:
+
+```
+docker run -d --name forge-perf-otel --network forge-network --network-alias otel-collector \
+  --cpus 2 --memory 2g -e FORGE_PERF_RUN_ID=<run_id> -v $RUN/traces:/traces \
+  -v config/otel-collector.yaml:/etc/forge-perf/otel-collector.yaml:ro \
+  $OTEL_COLLECTOR_IMAGE --config /etc/forge-perf/otel-collector.yaml
+```
+
+The image is otelcol-contrib, pinned in `config/images.lock` by the digest of its multi-platform index; Every run, traced or not, pulls the image when the box lacks it and lists it in `runner.json`, mapped to the service `otel-collector` for a traced run and to none otherwise. `$RUN/traces` belongs to the image's user, 10001, or is world-writable on a laptop. The collector is not a smelt service, so netem never delays it. It receives OTLP on :4318 (HTTP) and :4317 (gRPC), stamps `forge_perf.run_id` on every span's resource, and writes one OTLP JSON `ExportTraceServiceRequest` per line to `$RUN/traces/traces.jsonl`, with no rotation and no compression. Rotation would drop the start of the drill; compression would hide a credential from `collect.sh`'s check. `memory_limiter` refuses spans before the container's 2 GB limit. `run.sh` then exports, for smelt to pass to the services:
+
+| Variable | Value |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_ENDPOINT` | `http://otel-collector:4318`; smelt reads the second and hands it to the services as the first |
+| `OTEL_TRACES_SAMPLER_ARG` | the ratio; ingot samples at it, and the services it calls follow ingot's decision |
+| `OTEL_RESOURCE_ATTRIBUTES` | `forge_perf.run_id=<run_id>` |
+
+An untraced run starts no collector and exports none of them. A collector that has stopped by the time `make up` returns stops the run with `stack_boot_failed`.
+
+After the drill, before collect, whether a step stopped the run or not, `run.sh` waits 10 seconds (`FORGE_PERF_TRACE_SETTLE_S`) for the services' last batches, writes `$RUN/traces/collector-metrics.txt` from `http://otel-collector:8888/metrics` through a netshoot container on `forge-network`, stops the collector with `docker stop -t 60` so the file exporter flushes and closes the file, writes `docker logs` to `$RUN/traces/collector.log`, and removes the container. Each part is best effort. The collect step puts `traces/` into the raw tarball with the rest of the run directory. Its scrub drops every line that matches `access_key_id` or `secret_access_key`, and one line of `traces.jsonl` is a whole batch of spans, so a service that records such an attribute on a span loses that batch from the tarball. No service records one today. The public record carries only counts and a hash ([record.md](record.md)).
+
+`recover.sh` stops a leftover `forge-perf-otel` with the same minute's grace before the other containers and writes its log to the run's `traces/` when that directory exists. `wipe.sh` removes the container with the rest of the stack, on the box and in skip mode.
+
+`--until` leaves the collector running with the stack; `wipe.sh` removes both.
+
 ## Campaigns
 
 `campaign.sh` runs one set several times, each run through `forge-perf-run.service`, so every run keeps the unit's time limit, its record and its wipe.
@@ -279,7 +309,7 @@ The default is `app`, set up as in [operations.md](operations.md#the-harness-cre
 ```
 campaign.sh                                    # a campaign box, from forge-perf-campaign.service
 campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE] [--duration DURATION] [--pairing ID]
-            [--cap SERVICE=CPUS[,SERVICE=CPUS...]]
+            [--cap SERVICE=CPUS[,SERVICE=CPUS...]] [--trace RATIO]
 ```
 
 For each run it writes `pending.json` with `kind: campaign`, the set, and the workers, size, duration and pairing ID it was given, under `poll.lock`, then runs `systemctl start --wait forge-perf-run.service`. It removes the run's `last-run.json` and any campaign `pending.json` left behind, so the poller neither retries a campaign's run nor finds one after the campaign. One workers value, or none, runs N times as series `campaign`; a comma list runs N rounds over it, reversed every other round, as series `calibration`. A pairing ID (`pair-<yyyymmdd>-<id>`) makes each record's trigger `pairing`. `SERIES_LIVE=0` still turns every series into `calibration`.
@@ -291,6 +321,13 @@ campaign.sh --set calibration/sets/cal-1.json --runs 3 --cap ingot=1.0,piri-0=1.
 ```
 
 Each `SERVICE` is a compose service that `config/groups.conf` lists, named once, and each `CPUS` a positive decimal. The caps go into every run's `pending.json` as `"caps": {"ingot": "1.0", "piri-0": "1.0"}`. After setup, before `netem.sh apply`, `run.sh` runs `docker update --cpus <CPUS>` on each service's container and reads back `HostConfig.NanoCpus`; a failed update or a value that does not match stops the run with `runner_error`. `docker update` restarts nothing, and `netem.sh apply` records start times and addresses after it, so the post-check sees no change. `runner.json` keeps the caps for the raw tarball. The record carries only the flag `cpu_capped`, and a capped run is series `calibration` whatever the workers or `SERIES_LIVE` say, so it never lights a gate or moves the mercury. `--cap` runs only by hand on a held persistent box; `campaign.json` takes no caps, and `campaign.sh` refuses one that names them.
+
+`--trace RATIO` traces every run of the campaign at RATIO, checked as `run.sh` checks it and written into each `pending.json` as `"trace_ratio": "0.1"`. The runs keep their series. The overhead check compares traced and untraced runs of the same set:
+
+```
+campaign.sh --set calibration/sets/cal-1.json --runs 3 --pairing pair-20261001-t1 --trace 0.1
+campaign.sh --set calibration/sets/cal-1.json --runs 3 --pairing pair-20261001-t2
+```
 
 On a campaign box (`FORGE_PERF_MODE=campaign`) it takes no arguments and reads `/etc/forge-perf/campaign.json`, which the box's user data writes:
 

@@ -17,3 +17,7 @@ MINIO_IMAGE           ghcr.io/fil-forge/minio:RELEASE.2025-10-15T17-29-55Z sha25
 # install the qdiscs, probe round trips and run iperf3. smelt does not read
 # this variable; netem.sh does.
 NETSHOOT_IMAGE        nicolaka/netshoot:v0.16                              sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+
+# The trace collector scripts/host/run.sh starts beside the stack for a traced
+# run (config/otel-collector.yaml). smelt does not read this variable.
+OTEL_COLLECTOR_IMAGE  otel/opentelemetry-collector-contrib:0.161.0         sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1

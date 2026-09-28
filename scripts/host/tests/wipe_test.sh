@@ -33,6 +33,7 @@ case "$1 ${2:-}" in
   "rm -f"*) shift 2; for id; do drop "$id" "$D/containers"; done ;;
   "stop -t") [ ! -e "$D/stop-fails" ] || { echo "docker stop: daemon busy" >&2; exit 1; } ;;
   "logs --timestamps") echo "2026-10-01T20:01:00Z up $3"; echo "2026-10-01T20:01:01Z access_key_id: AKIAFAKE" ;;
+  "logs "*) echo "collector log $2" ;;
   "inspect --format") awk -v id="$4" '$1 == id { print "/" $2 }' "$D/containers" ;;
   "volume ls")
     f="$(filter "$@")"
@@ -189,6 +190,16 @@ EOF
 FORGE_PERF_HOST_OPS=skip "$host/wipe.sh" >/dev/null 2>&1
 has "$D/aws.log" "--endpoint-url http://localhost:9000 --region us-east-2 s3 rm s3://pfx-pdp"
 echo "ok: the piri endpoint and credentials come from config"
+
+# A traced run's collector, forge-perf-otel, goes with the stack on the box
+# and in skip mode.
+for mode in "" skip; do
+  setup
+  echo "c5 forge-perf-otel -" >>"$D/containers"
+  FORGE_PERF_HOST_OPS="$mode" "$host/wipe.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "wipe ($mode) failed"; }
+  lacks "$D/containers" "forge-perf-otel"
+done
+echo "ok: the wipe removes a leftover trace collector, on the box and in skip mode"
 
 # --- recover ------------------------------------------------------------------------
 setup
@@ -417,6 +428,26 @@ echo 2 >"$work/box/state/recover-attempts"
 "$host/recover.sh" >/dev/null 2>&1
 [ ! -e "$work/box/state/recover-attempts" ] || fail "stale attempt count kept"
 echo "ok: recovery without current.json clears a stale attempt count"
+
+# A traced run a reboot interrupted: the collector stops with a minute to
+# flush before the other containers, its log joins the run's traces/, and the
+# wipe removes it.
+setup
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+mkdir -p "$work/box/nvme/work/run/traces"
+echo '{"resourceSpans":[]}' >"$work/box/nvme/work/run/traces/traces.jsonl"
+echo "c5 forge-perf-otel -" >>"$D/containers"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$current"
+touch "$D/s3-down"
+recover_ok "a traced run"
+[ "$(grep -n 'stop -t' "$D/log" | head -1 | cut -d: -f2-)" = "docker stop -t 60 c5" ] ||
+  fail "the collector was not stopped first: $(grep 'stop -t' "$D/log")"
+zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -xOf - ./run/traces/collector.log >"$work/log"
+has "$work/log" "collector log c5"
+zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/traces.jsonl ||
+  fail "traces.jsonl not in the tarball"
+count "$D/containers" 0
+echo "ok: recovery stops a traced run's collector first, keeps its log and traces, and wipes it"
 
 # A reboot after the drill started: the record blames the interrupt, not the runner.
 setup

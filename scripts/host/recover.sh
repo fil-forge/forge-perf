@@ -4,8 +4,9 @@
 #   recover.sh     run by forge-perf-recover.service at boot, before any poll
 #
 # Reads $FORGE_PERF_STATE_DIR/current.json ({run_id, phase, run_dir}). With no
-# current.json it only flushes the outbox. Otherwise, in order: stop every
-# container Docker restarted; for a run whose phase comes before `recorded`
+# current.json it only flushes the outbox. Otherwise, in order: stop a traced
+# run's collector, forge-perf-otel, with a minute to flush, and keep its log
+# in the run's traces/; stop every container Docker restarted; for a run whose phase comes before `recorded`
 # (preflight, boot, drill, or a phase it does not know), collect each
 # container's `docker logs --timestamps` and the run directory into the raw
 # tarball and write a no_data record with reason drill_interrupted to the
@@ -149,6 +150,14 @@ record="$FORGE_PERF_OUTBOX/$run_id.json"
 forbid="$FORGE_PERF_RUNTIME/secrets/recover-forbid"
 
 step "stop containers"
+# The collector writes traces.jsonl until it stops; the wipe removes it.
+otel="$(docker ps -aq --filter name=^forge-perf-otel)"
+if [ -n "$otel" ]; then
+  docker stop -t 60 "$otel" >/dev/null || echo "recover: the trace collector did not stop cleanly" >&2
+  if [ -n "$run_dir" ] && [ -d "$run_dir/traces" ]; then
+    docker logs "$otel" >"$run_dir/traces/collector.log" 2>&1 || echo "recover: no trace collector log" >&2
+  fi
+fi
 ids="$(stack_containers)"
 # shellcheck disable=SC2086 # container IDs
 [ -z "$ids" ] || docker stop -t 30 $ids >/dev/null ||

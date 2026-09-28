@@ -191,6 +191,23 @@ for bad in ingot ingot=0 ingot=0.0 ingot=-1 ingot=1.5x ingot=.5 nosuch=1 ingot=1
 done
 echo "ok: --cap puts validated caps in every run and makes it calibration; malformed caps are refused"
 
+# --trace: every run carries the ratio as a string and keeps its series.
+rm -f "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 2 --trace 0.1
+[ "$(runs '"\(.series)/\(.trace_ratio)"')" = "campaign/0.1 campaign/0.1" ] || fail "traced $(cat "$D/runs.log")"
+grep -q "traced at 0.1" "$work/out" || fail "no word of the ratio"
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 1 --trace 1
+[ "$(runs .trace_ratio)" = 1 ] || fail "ratio 1 $(cat "$D/runs.log")"
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 1
+[ "$(runs 'has("trace_ratio")')" = false ] || fail "an untraced run $(cat "$D/runs.log")"
+for bad in 0 0.0 1.5 .1 abc 1e-1 -0.1 "0.1 " 0.1234567; do
+  campaign 1 --set "$work/set.json" --runs 1 --trace "$bad"
+  grep -q -- "--trace takes a decimal in (0, 1]" "$work/out" || fail "--trace '$bad' accepted"
+done
+echo "ok: --trace puts a validated ratio in every run and keeps the series"
+
 setup campaign
 conf '.caps = {"ingot": "1.0"}'
 campaign 1

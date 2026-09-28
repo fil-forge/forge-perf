@@ -3,7 +3,7 @@
 # for every tracked image (docs/runner.md, "A run").
 #
 #   run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE]
-#          [--duration DURATION] [--until STEP]
+#          [--duration DURATION] [--trace RATIO] [--until STEP]
 #
 # Without --set it takes the run the poller left in
 # $FORGE_PERF_STATE_DIR/pending.json. With --set it runs that set as a manual
@@ -12,8 +12,11 @@
 # series calibration. --workers, --size and --duration override the settings
 # file. A campaign's pending run can carry CPU caps (campaign.sh --cap), which
 # setup applies with `docker update --cpus`; a capped run is series
-# calibration. The steps are preflight, checkout, images, boot, setup, latency, drill
-# and check; then every run that started, whether a step stopped it or not, is
+# calibration. --trace RATIO, a pending run's trace_ratio (campaign.sh --trace)
+# or the settings file's TRACE_RATIO, in that order, traces the run: a
+# collector runs beside the stack and the services sample RATIO of requests
+# (docs/runner.md, "Tracing"). The steps are preflight, checkout, images,
+# boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
 #
@@ -21,7 +24,7 @@
 # reached --until, or another run holds the lock; 1 a step stopped the run, or
 # the record or the wipe failed, and runner.json names the reason; 2 the run
 # did not start (usage, no settings for this instance type, WORKERS empty, an
-# unusable set); 130 or 143 a stop request, after the record and the wipe.
+# unusable set, a malformed trace ratio); 130 or 143 a stop request, after the record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
 # pending.json.rejected, so the next poll does not start it again.
 #
@@ -48,8 +51,11 @@ refuse() {
   exit 2
 }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
+# ratio_ok RATIO: a trace sampling ratio, a decimal in (0, 1] such as 0.1 or 1,
+# with at most six decimal places, the finest ratio record.py accepts.
+ratio_ok() { [[ "$1" =~ ^(0\.[0-9]*[1-9][0-9]*|1(\.0+)?)$ ]] && ! [[ "$1" =~ \.[0-9]{7} ]]; }
 
-set_file="" series="" workers="" size="" duration="" until=""
+set_file="" series="" workers="" size="" duration="" until="" trace=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
@@ -58,12 +64,14 @@ while [ $# -gt 0 ]; do
     --workers) workers="$2" ;;
     --size) size="$2" ;;
     --duration) duration="$2" ;;
+    --trace) trace="$2" ;;
     --until) until="$2" ;;
     *) usage ;;
   esac
   shift 2
 done
 [ -z "$until" ] || grep -qw -- "$until" <<<"$STEPS" || refuse "--until takes one of: $STEPS"
+[ -z "$trace" ] || ratio_ok "$trace" || refuse "--trace takes a decimal in (0, 1], such as 0.1"
 
 runner_init
 mkdir -p "$FORGE_PERF_RUNTIME" "$FORGE_PERF_STATE_DIR"
@@ -131,6 +139,11 @@ else
   for v in workers size duration; do
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
   done
+  if [ -z "$trace" ]; then
+    trace="$(jq -re '.trace_ratio // "" | strings' <<<"$pending")" ||
+      refuse "pending.json has a trace_ratio that is not a decimal in (0, 1]"
+    [ -z "$trace" ] || ratio_ok "$trace" || refuse "pending.json has a trace_ratio that is not a decimal in (0, 1]"
+  fi
 fi
 set_json="$(jq -c --arg smelt "${SMELT_REF:-}" --arg pin "${SQ_PIN:-}" '
   def orempty: if . == "" then null else . end;
@@ -153,6 +166,9 @@ grep -qxE 'per-trigger|nightly|campaign|calibration' <<<"$series" || refuse "unk
 # A capped run is the falsification check: it never lights a gate.
 [ "$caps" = '{}' ] || series=calibration
 
+# A traced run keeps its series; the record says it was traced.
+trace="${trace:-${TRACE_RATIO:-}}"
+[ -z "$trace" ] || ratio_ok "$trace" || refuse "TRACE_RATIO in $settings is not empty or a decimal in (0, 1]"
 WORKERS="${workers:-${WORKERS:-}}"
 [[ "$WORKERS" =~ ^[1-9][0-9]*$ ]] || refuse "WORKERS is empty in $settings and no --workers was given"
 if [ "$kind" = nightly ]; then
@@ -206,6 +222,9 @@ export AWS_REGION="${FORGE_PERF_REGION:-us-east-2}" AWS_CONFIG_FILE="$FORGE_PERF
 export AWS_SHARED_CREDENTIALS_FILE="$FORGE_PERF_RUNTIME/aws/credentials" GIT_TERMINAL_PROMPT=0
 export SMELT_WORKSPACE=0 STORAGE_QUALIFICATION_DIR="$SQ" GOWORK=off
 export PIRI_INDEXER=off SPRUE_INDEXER_ENDPOINT='' SPRUE_INDEXER_DID=''
+# Only a traced run's collector_start sets these; a caller's own would reach
+# the services of an untraced run.
+unset OTEL_ENDPOINT OTEL_EXPORTER_OTLP_ENDPOINT OTEL_TRACES_SAMPLER_ARG OTEL_RESOURCE_ATTRIBUTES
 go_cache="${FORGE_PERF_GO_CACHE-/var/cache/forge-perf/go}"
 if [ -n "$go_cache" ]; then
   export GOCACHE="$go_cache/build" GOMODCACHE="$go_cache/mod" GOTOOLCHAIN=local
@@ -560,8 +579,9 @@ step_images() {
     '.piri_s3 == {PIRI_S3_ENDPOINT: $e, PIRI_S3_BUCKET_PREFIX: $p} and (.services | has("piri-minio") | not)' \
     "$RUN/compose-images.json" >/dev/null ||
     stop runner_error "smelt $smelt_sha does not point piri-0 at $FORGE_PERF_PIRI_S3_ENDPOINT/$FORGE_PERF_PIRI_BUCKET_PREFIX*"
-  rj --slurpfile c "$RUN/compose-images.json" '.images |= map(. as $i | .services =
+  rj --slurpfile c "$RUN/compose-images.json" --arg trace "$trace" '.images |= map(. as $i | .services =
     if $i.variable == "NETSHOOT_IMAGE" then ["netem"]
+    elif $i.variable == "OTEL_COLLECTOR_IMAGE" then (if $trace == "" then [] else ["otel-collector"] end)
     else [$c[0].services | to_entries[] | select(.value.image == $i.repo + "@" + $i.digest) | .key] | sort end)'
 
   printf '%s\n' "${pinned[@]}" | awk '{ print $1, $2 ":" $3, $4 }' >"$state/images.pinned"
@@ -592,8 +612,50 @@ step_boot() {
   set_phase boot
   docker network create --driver bridge --subnet "$net_subnet" forge-network >/dev/null ||
     stop stack_boot_failed "cannot create forge-network on $net_subnet"
+  [ -z "$trace" ] || collector_start
   within 900 stack_boot_failed "${SMELT_ENV[@]}" make -C "$SMELT" up
+  if [ -n "$trace" ]; then
+    [ "$(docker inspect -f '{{.State.Running}}' "$collector" 2>/dev/null)" = true ] ||
+      stop stack_boot_failed "the trace collector stopped while the stack booted; its log is in traces/collector.log"
+  fi
   rj --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.time.stack_up_at = $t'
+}
+
+# collector_start: the trace collector on forge-network under the alias
+# otel-collector, writing into $RUN/traces, and the variables smelt passes to
+# the services. It is not a smelt service, so netem never delays it. smelt
+# reads the endpoint as OTEL_ENDPOINT and hands it to the services as
+# OTEL_EXPORTER_OTLP_ENDPOINT; both are set.
+collector=forge-perf-otel
+collector_start() {
+  mkdir -p "$RUN/traces"
+  # The image runs as 10001 (its Config.User). A laptop's user cannot chown.
+  chown 10001:10001 "$RUN/traces" 2>/dev/null || chmod 0777 "$RUN/traces"
+  docker run -d --name "$collector" --network forge-network --network-alias otel-collector \
+    --cpus 2 --memory 2g -e "FORGE_PERF_RUN_ID=$run_id" -v "$RUN/traces:/traces" \
+    -v "$cfg/otel-collector.yaml:/etc/forge-perf/otel-collector.yaml:ro" \
+    "$OTEL_COLLECTOR_IMAGE" --config /etc/forge-perf/otel-collector.yaml >/dev/null ||
+    stop stack_boot_failed "cannot start the trace collector"
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 OTEL_ENDPOINT=http://otel-collector:4318
+  export OTEL_TRACES_SAMPLER_ARG="$trace" OTEL_RESOURCE_ATTRIBUTES="forge_perf.run_id=$run_id"
+}
+
+# collector_close: after the drill, before collect. The services export
+# their last batches within seconds (the SDKs' default delay is 5 s), so it
+# waits, scrapes the collector's counters from a container on forge-network,
+# stops it with a minute to flush and close traces.jsonl, keeps its log and
+# removes it. Each part is best effort; the record reads what is there.
+collector_close() {
+  [ -n "$trace" ] && [ -d "$RUN/traces" ] && docker inspect "$collector" >/dev/null 2>&1 || return 0
+  step "traces"
+  sleep "${FORGE_PERF_TRACE_SETTLE_S:-10}"
+  docker run --rm --network forge-network "$NETSHOOT_IMAGE" \
+    curl -sf --max-time 20 http://otel-collector:8888/metrics >"$RUN/traces/collector-metrics.txt" ||
+    { echo "run.sh: cannot scrape the trace collector's metrics" >&2; rm -f "$RUN/traces/collector-metrics.txt"; }
+  timeout --kill-after=10 90 docker stop -t 60 "$collector" >/dev/null ||
+    echo "run.sh: the trace collector did not stop cleanly; traces.jsonl may end in a partial line" >&2
+  docker logs "$collector" >"$RUN/traces/collector.log" 2>&1 || echo "run.sh: no trace collector log" >&2
+  docker rm -f "$collector" >/dev/null || echo "run.sh: the wipe removes the trace collector" >&2
 }
 
 step_setup() {
@@ -770,6 +832,7 @@ close_out() {
     wait "$drill_pid"
   fi
 
+  collector_close
   step "collect"
   mkdir -p "$FORGE_PERF_OUTBOX" "$SECRETS"
   [ ! -d "$RUN" ] || q host_read journalctl -u forge-perf-run --since "@$started_epoch" --no-pager >"$RUN/journal.txt"
@@ -861,7 +924,8 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
   --argjson changed "$changed" --argjson superseded "$superseded" --argjson box "$(box_facts)" \
   --arg started "$started" --argjson settings "$settings_json" \
   --arg fp "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" --arg tree "$(instrument_tree)" \
-  --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" '
+  --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" \
+  --arg trace "$trace" '
   {run_id: $run_id, series: $series, pairing_id: $pairing, trigger: {reason: $reason, changed: $changed},
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
@@ -870,7 +934,8 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
-   raw_missing: false, caps: $caps}' >"$state/runner.json.tmp"
+   raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end)}' \
+  >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
 stop_requested="" drill_pid="" sampler="" nic_if="" record_class=""
 trap finish EXIT
