@@ -120,7 +120,7 @@ bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
   --restore-scale 0.25 --enforce-floor=false --progress 30s --keep-objects
 ```
 
-- `--stop-ingest-at` is 100GB per trigger and 350GB nightly on tier 1; tier 1's nightly moves to 500GB once ingot's spool frees space (§10). Tier 2 takes 500GB per trigger and 1200GB nightly, so at about 2 GB/s its runs score about 8 and 20 windows. `--duration` is 1h per trigger and 4h nightly, enough for 100 GB above 0.028 GB/s and 350 GB above 0.024 GB/s, and on tier 2 for 500 GB above 0.14 GB/s and 1,200 GB above 0.083 GB/s. At 0.1 to 0.5 GB/s a tier 1 trigger run takes 10 to 30 minutes **[est]**.
+- `--stop-ingest-at` is 100GB per trigger and 350GB nightly on tier 1; tier 1's nightly moves to 500GB once ingot's spool frees space (§10). Tier 2 takes 500GB per trigger and 1200GB nightly; at 64 workers a trigger run scored 14 to 15 windows in the sweep, and a nightly scores about 40. `--duration` is 1h per trigger and 4h nightly, enough for 100 GB above 0.028 GB/s and 350 GB above 0.024 GB/s, and on tier 2 for 500 GB above 0.14 GB/s and 1,200 GB above 0.083 GB/s. At 0.1 to 0.5 GB/s a tier 1 trigger run takes 10 to 30 minutes **[est]**.
 - `--ramp 10s`: with fixed workers the ramp only delays measurement while its bytes count toward the cap (`storage-qualification/internal/drill/drill.go:604-627`).
 - `--rate-target 6GB` is above every tier's ceiling. The drill paces restores from the same rate (`storage-qualification/internal/drill/drill.go:178-179`), so one value keeps the workload equal across tiers.
 - `--accounts 64 --restore-scale 0.25` are the import profile's own values (`storage-qualification/internal/drill/profile.go:126`). `--keep-objects` skips the drill's sweep; the wipe deletes everything.
@@ -268,7 +268,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 
 1. `hold.sh main on`. `scripts/operator/set-from-record.sh <run_id>` writes the set of the run that lit gate 1 to `calibration/sets/tier2-bridge.json`; run `campaign.sh --set <file> --runs 3 --pairing <id>` at both sizes.
 2. Merge a PR setting `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars` and adding `config/settings/m9gd.8xlarge.env` with `WORKERS` empty. After approval, `deploy.yml` stops, modifies and starts the same instance.
-3. Check the new NVMe, sweep workers at 1×, 2× and 4× the tier 1 value, freeze `WORKERS` in a PR, repeat the paired runs at the tier 1 sizes, release the hold. The page shows the box change and the offset between paired medians; past values never change.
+3. Check the new NVMe, sweep workers upward from the tier 1 value until the rate levels off, freeze `WORKERS` in a PR at a realistic concurrency no higher than the winner (tier 2: 64, where the sweep levelled off at 256), repeat the paired runs at the tier 1 sizes, release the hold. The page shows the box change and the offset between paired medians; past values never change.
 
 **A tier 3 campaign:** commit a set and dispatch `campaign.yml` (`instance_type`, `hours` from 1 to 24, `set`, `runs`, `size`, `workers`, `duration`, `mode`). The box sweeps workers when given a list, runs the set, uploads and powers off, and schedules its own poweroff at its `ExpiresAt` tag. A `down` dispatch or the hourly reaper destroys it; the reaper takes any forge-perf instance other than `main` that is past `ExpiresAt` or stopped for an hour. A forgotten 12-hour campaign costs at most $52.
 
