@@ -223,7 +223,7 @@ Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is
 
 A static site in `site/`, with Observable Plot and d3 vendored:
 
-1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` runs never do. With no valid run, the headline gives the latest run's class and reason.
+1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason.
 2. History, one series at a time: p5 line, dashed median, gate lines, markers for instrument and box changes.
 3. The runs table, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text.
 4. How it is measured: the method, the workload (the drill's import profile, ~128 MiB objects) and the gaps from §2.
