@@ -1,0 +1,469 @@
+{
+  "best_mean_median_bytes_per_s": 1660964903.0083332,
+  "best_mean_p5_bytes_per_s": 1530211325.3833332,
+  "box": "main",
+  "instance_type": "m9gd.8xlarge",
+  "kind": "workers",
+  "margin": 0.05,
+  "runs": [
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1014837196.6333333,
+      "ingest_p5_bytes_per_s": 651568680.4333333,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t122704z",
+      "run_started_at": "2026-09-28T12:27:04Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 32
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1018493153.7,
+      "ingest_p5_bytes_per_s": 861454808.7,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t123918z",
+      "run_started_at": "2026-09-28T12:39:18Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 64
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1327012516.1,
+      "ingest_p5_bytes_per_s": 1118999270.1,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t125044z",
+      "run_started_at": "2026-09-28T12:50:44Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 128
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1311282308,
+      "ingest_p5_bytes_per_s": 1179478585.8,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t130035z",
+      "run_started_at": "2026-09-28T13:00:35Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 128
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1010351207.1,
+      "ingest_p5_bytes_per_s": 860481813.0333333,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t131028z",
+      "run_started_at": "2026-09-28T13:10:28Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 64
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1017308539.8666667,
+      "ingest_p5_bytes_per_s": 638596683.4,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t132207z",
+      "run_started_at": "2026-09-28T13:22:07Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 32
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1684103580.4333334,
+      "ingest_p5_bytes_per_s": 1566758641.5333333,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t141945z",
+      "run_started_at": "2026-09-28T14:19:45Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 256
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1546536542.1666667,
+      "ingest_p5_bytes_per_s": 1460985153.8,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t142822z",
+      "run_started_at": "2026-09-28T14:28:22Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 256
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1605348402.0666666,
+      "ingest_p5_bytes_per_s": 1497395379.6666667,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t143809z",
+      "run_started_at": "2026-09-28T14:38:09Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 512
+    },
+    {
+      "class": "valid",
+      "flags": [
+        "few_windows",
+        "nic_allowance_exceeded"
+      ],
+      "ingest_median_bytes_per_s": 1716581403.95,
+      "ingest_p5_bytes_per_s": 1563027271.1,
+      "provenance": {
+        "forge_perf_sha": "a62da4dbd0d8aa4111008aadc480628dd16d02de",
+        "harness_sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152",
+        "images": {
+          "amazon/dynamodb-local": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+          "ghcr.io/fil-forge/delegator": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+          "ghcr.io/fil-forge/did-method-plc": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+          "ghcr.io/fil-forge/filecoin-localdev": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+          "ghcr.io/fil-forge/guppy": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+          "ghcr.io/fil-forge/hilt": "sha256:94ddb1ec527a9d82abf4f54804614dbf192c6b06588336c696d101d3be91acff",
+          "ghcr.io/fil-forge/indexing-service": "sha256:f3ef45100e91a474bd8a219a9c2bbe73810a96a2e633741ab4676e57536a826a",
+          "ghcr.io/fil-forge/ingot": "sha256:a9131d2f212bd99ffce73d8706674b06475609457daae12ffb7181fa434fb0f9",
+          "ghcr.io/fil-forge/minio": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+          "ghcr.io/fil-forge/piri": "sha256:b48e32196f9773a61955195a68a222656ddeb8d65a19b83ac8313565c77065ca",
+          "ghcr.io/fil-forge/piri-signing-service": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+          "ghcr.io/fil-forge/sprue": "sha256:1b0a8bc8b2b80ff1781cc0294d9de902d41923e3b2abff20132079e9dbddff8c",
+          "ghcr.io/fil-forge/storetheindex": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+          "ghcr.io/fil-forge/swarf": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf",
+          "nicolaka/netshoot": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+          "openbao/openbao": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+          "postgres": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+          "redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+          "rnwood/smtp4dev": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537"
+        },
+        "smelt_sha": "e8950ac1b66d894cbd65580ea0f1f11ea8e0f1ea"
+      },
+      "reasons": [],
+      "run_id": "main-20260928t144648z",
+      "run_started_at": "2026-09-28T14:46:48Z",
+      "stop_ingest_at_bytes": 500000000000,
+      "workers": 512
+    }
+  ],
+  "stop_ingest_at_bytes": 500000000000,
+  "values": [
+    {
+      "disqualifying_run_ids": [],
+      "mean_median_bytes_per_s": 1016072868.25,
+      "mean_p5_bytes_per_s": 645082681.9166666,
+      "qualified": true,
+      "run_ids": [
+        "main-20260928t122704z",
+        "main-20260928t132207z"
+      ],
+      "workers": 32
+    },
+    {
+      "disqualifying_run_ids": [],
+      "mean_median_bytes_per_s": 1014422180.4000001,
+      "mean_p5_bytes_per_s": 860968310.8666667,
+      "qualified": true,
+      "run_ids": [
+        "main-20260928t123918z",
+        "main-20260928t131028z"
+      ],
+      "workers": 64
+    },
+    {
+      "disqualifying_run_ids": [],
+      "mean_median_bytes_per_s": 1319147412.05,
+      "mean_p5_bytes_per_s": 1149238927.9499998,
+      "qualified": true,
+      "run_ids": [
+        "main-20260928t125044z",
+        "main-20260928t130035z"
+      ],
+      "workers": 128
+    },
+    {
+      "disqualifying_run_ids": [],
+      "mean_median_bytes_per_s": 1615320061.3000002,
+      "mean_p5_bytes_per_s": 1513871897.6666665,
+      "qualified": true,
+      "run_ids": [
+        "main-20260928t141945z",
+        "main-20260928t142822z"
+      ],
+      "workers": 256
+    },
+    {
+      "disqualifying_run_ids": [],
+      "mean_median_bytes_per_s": 1660964903.0083332,
+      "mean_p5_bytes_per_s": 1530211325.3833332,
+      "qualified": true,
+      "run_ids": [
+        "main-20260928t143809z",
+        "main-20260928t144648z"
+      ],
+      "workers": 512
+    }
+  ],
+  "winner": 256
+}
