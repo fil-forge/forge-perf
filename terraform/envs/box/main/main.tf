@@ -23,7 +23,7 @@ module "constants" {
 }
 
 variable "instance_type" {
-  description = "The tier: m9gd.2xlarge now, m9gd.8xlarge once gate 1 lights."
+  description = "The tier: m9gd.8xlarge since gate 1 lit on 2026-09-28, m9gd.2xlarge before."
   type        = string
 }
 

@@ -37,7 +37,7 @@ smelt's ingot also follows swarf's revocation firehose and reaches OpenBao over 
 
 ## 3. The box and its tiers
 
-One persistent box runs in the dev account (654654381893, us-east-2): tier 1 now, resized to tier 2 in place when gate 1 lights. Tier 3 exists only during campaigns: a short-lived box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
+One persistent box runs in the dev account (654654381893, us-east-2): tier 2, resized in place from tier 1 after gate 1 lit on 2026-09-28. Tier 3 exists only during campaigns: a short-lived box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
 
 | Tier | Type | Cores | Memory | Instance store (4 KiB read/write IOPS) | Network | On-demand |
 |---|---|---|---|---|---|---|
@@ -45,7 +45,7 @@ One persistent box runs in the dev account (654654381893, us-east-2): tier 1 now
 | 2 | m9gd.8xlarge | 32 | 128 GiB | 1,900 GB (698k / 349k) | 17 Gbps | ~$1,468/month |
 | 3 | m9gd.16xlarge | 64 | 256 GiB | 3,800 GB (1.40M / 698k) | 34 Gbps | $4.02/hour, campaigns only |
 
-Tier 1 costs $395 a month **[est]** with storage, IPv4 and S3 requests. An AWS budget on the `Project` tag alerts on overspend.
+Tier 1 costs $395 a month **[est]** with storage, IPv4 and S3 requests, and tier 2 about $1,500 **[est]**. An AWS budget on the `Project` tag alerts on overspend.
 
 The instrument is everything that measures the Forge images: box type, AMI, kernel, Docker, smelt, the harness, the third-party images and forge-perf itself. Each change to it is a reviewed PR and a marker on the page.
 
@@ -120,7 +120,7 @@ bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
   --restore-scale 0.25 --enforce-floor=false --progress 30s --keep-objects
 ```
 
-- `--stop-ingest-at` is 100GB per trigger. The nightly is 350GB on tier 1 and 500GB on tier 2; tier 1 moves to 500GB once ingot's spool frees space (§10). `--duration` is 1h per trigger and 4h nightly, enough for 100 GB above 0.028 GB/s and 350 GB above 0.024 GB/s. At 0.1 to 0.5 GB/s a tier 1 trigger run takes 10 to 30 minutes **[est]**.
+- `--stop-ingest-at` is 100GB per trigger and 350GB nightly on tier 1; tier 1's nightly moves to 500GB once ingot's spool frees space (§10). Tier 2 takes 500GB per trigger and 1200GB nightly, so at about 2 GB/s its runs score about 8 and 20 windows. `--duration` is 1h per trigger and 4h nightly, enough for 100 GB above 0.028 GB/s and 350 GB above 0.024 GB/s, and on tier 2 for 500 GB above 0.14 GB/s and 1,200 GB above 0.083 GB/s. At 0.1 to 0.5 GB/s a tier 1 trigger run takes 10 to 30 minutes **[est]**.
 - `--ramp 10s`: with fixed workers the ramp only delays measurement while its bytes count toward the cap (`storage-qualification/internal/drill/drill.go:604-627`).
 - `--rate-target 6GB` is above every tier's ceiling. The drill paces restores from the same rate (`storage-qualification/internal/drill/drill.go:178-179`), so one value keeps the workload equal across tiers.
 - `--accounts 64 --restore-scale 0.25` are the import profile's own values (`storage-qualification/internal/drill/profile.go:126`). `--keep-objects` skips the drill's sweep; the wipe deletes everything.
@@ -170,7 +170,7 @@ The wipe, in order:
 
 The wipe never stops Docker, so it can run inside a unit ordered after Docker.
 
-smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`smelt/scripts/perf-drill.sh:307-324`). With piri's blobs in S3 only the spool grows, and it keeps every ingested byte until ingot's spool cleanup lands (fil-forge/ingot#48). `DISK_FACTOR=1.25` covers spool, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 500 GB needs 625 GB. The first 100 GB run checks the factor against `du` of the volumes, and a run whose free space falls under 2 GB ends `invalid` (`disk_low`).
+smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`smelt/scripts/perf-drill.sh:307-324`). With piri's blobs in S3 only the spool grows, and it keeps every ingested byte until ingot's spool cleanup lands (fil-forge/ingot#48). `DISK_FACTOR=1.25` covers spool, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 1,200 GB needs 1,500 GB of about 1,863 GB **[est]** on the 1,900 GB drive. The first 100 GB run checks the factor against `du` of the volumes, and a run whose free space falls under 2 GB ends `invalid` (`disk_low`).
 
 ## 7. Results and the page
 
@@ -268,7 +268,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 
 1. `hold.sh main on`. `scripts/operator/set-from-record.sh <run_id>` writes the set of the run that lit gate 1 to `calibration/sets/tier2-bridge.json`; run `campaign.sh --set <file> --runs 3 --pairing <id>` at both sizes.
 2. Merge a PR setting `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars` and adding `config/settings/m9gd.8xlarge.env` with `WORKERS` empty. After approval, `deploy.yml` stops, modifies and starts the same instance.
-3. Check the new NVMe, sweep workers at 1×, 2× and 4× the tier 1 value, freeze `WORKERS` in a PR, repeat the paired runs, release the hold. The page shows the box change and the offset between paired medians; past values never change.
+3. Check the new NVMe, sweep workers at 1×, 2× and 4× the tier 1 value, freeze `WORKERS` in a PR, repeat the paired runs at the tier 1 sizes, release the hold. The page shows the box change and the offset between paired medians; past values never change.
 
 **A tier 3 campaign:** commit a set and dispatch `campaign.yml` (`instance_type`, `hours` from 1 to 24, `set`, `runs`, `size`, `workers`, `duration`, `mode`). The box sweeps workers when given a list, runs the set, uploads and powers off, and schedules its own poweroff at its `ExpiresAt` tag. A `down` dispatch or the hourly reaper destroys it; the reaper takes any forge-perf instance other than `main` that is past `ExpiresAt` or stopped for an hour. A forgotten 12-hour campaign costs at most $52.
 
@@ -296,7 +296,6 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 | Question | Behavior until decided |
 |---|---|
 | Should only runs with 20 or more steady windows light a gate? A 100 GB run at gate 1 has about 6. | any valid run lights a gate |
-| Scale the per-trigger size with the tier? | 100 GB on every tier |
 | Can an `availability_warning` run light a gate? | no |
 | Can a tier 1 run above the NIC baseline light gate 1? | yes, flagged |
 | Keep the stack after an integrity failure? | wiped |

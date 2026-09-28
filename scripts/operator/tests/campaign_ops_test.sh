@@ -17,7 +17,10 @@ mkdir -p "$tree/scripts" "$tree/calibration" "$tree/terraform/envs/box/main"
 cp -R "$repo/scripts/operator" "$tree/scripts/"
 cp -R "$repo/config" "$tree/"
 cp -R "$repo/calibration/sets" "$tree/calibration/"
-cp "$repo/terraform/envs/box/main/terraform.tfvars" "$tree/terraform/envs/box/main/"
+# The reaper tests check fake boxes against tier 1's type, so a resize in the
+# repo leaves them alone.
+sed 's/^instance_type = .*/instance_type = "m9gd.2xlarge"/' "$repo/terraform/envs/box/main/terraform.tfvars" \
+  >"$tree/terraform/envs/box/main/terraform.tfvars"
 export WORK="$work"
 
 cat >"$work/bin/aws" <<'STUB'

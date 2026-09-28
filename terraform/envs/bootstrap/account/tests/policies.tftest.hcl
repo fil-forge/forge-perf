@@ -300,7 +300,7 @@ run "policies" {
   }
 
   assert {
-    condition     = aws_budgets_budget.forge_perf_monthly.limit_amount == "600"
+    condition     = aws_budgets_budget.forge_perf_monthly.limit_amount == "1600"
     error_message = "the budget takes its amount from terraform.tfvars"
   }
 }
