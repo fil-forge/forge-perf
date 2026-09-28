@@ -145,6 +145,9 @@ export function history(runs, series) {
 
 // For each pairing with counting runs on two instance types, the median of
 // each type's run medians and their ratio, the incoming type over the first.
+// A pairing compares its two instance types at the largest run size both ran,
+// so a short run that ends inside the faster box's start-up burst does not
+// skew the offset. A pairing with no size in common gets no offset.
 export function pairedOffsets(runs) {
   const pairs = new Map();
   for (const r of runs) {
@@ -152,15 +155,23 @@ export function pairedOffsets(runs) {
     if (!pairs.has(r.pairing_id)) pairs.set(r.pairing_id, new Map());
     const types = pairs.get(r.pairing_id);
     if (!types.has(r.box.instance_type)) types.set(r.box.instance_type, []);
-    types.get(r.box.instance_type).push(r.median_bytes_per_s);
+    types.get(r.box.instance_type).push(r);
   }
+  const sizeOf = (r) => r.size_bytes ?? null;
   const out = [];
   for (const [pairing_id, types] of pairs) {
     if (types.size !== 2) continue;
     const [[from, a], [to, b]] = [...types];
-    const fromMedian = median(a), toMedian = median(b);
-    out.push({ pairing_id, from, to, from_median: fromMedian, to_median: toMedian,
-               from_runs: a.length, to_runs: b.length, ratio: toMedian / fromMedian });
+    const fromSizes = new Set(a.map(sizeOf));
+    const shared = [...new Set(b.map(sizeOf))].filter((s) => fromSizes.has(s));
+    if (!shared.length) continue;
+    const known = shared.filter((s) => s != null);
+    const size = known.length ? Math.max(...known) : null;
+    const at = (rs) => rs.filter((r) => sizeOf(r) === size).map((r) => r.median_bytes_per_s);
+    const fromMedians = at(a), toMedians = at(b);
+    const fromMedian = median(fromMedians), toMedian = median(toMedians);
+    out.push({ pairing_id, from, to, size_bytes: size, from_median: fromMedian, to_median: toMedian,
+               from_runs: fromMedians.length, to_runs: toMedians.length, ratio: toMedian / fromMedian });
   }
   return out;
 }

@@ -190,7 +190,7 @@ function drawHistory() {
   host.append(chart);
   if (strip.length) host.append(h("p", { class: "note" }, "✕ below the time axis: failed and no-data runs, whose rates are absent or untrustworthy."));
   for (const o of M.pairedOffsets(rows)) {
-    host.append(h("p", { class: "note" }, `Paired runs ${o.pairing_id}: median ${M.gbps(o.to_median)} GB/s on ${o.to} `
+    host.append(h("p", { class: "note" }, `Paired runs ${o.pairing_id}${o.size_bytes != null ? ` at ${gb(o.size_bytes)}` : ""}: median ${M.gbps(o.to_median)} GB/s on ${o.to} `
       + `(${o.to_runs} run${o.to_runs === 1 ? "" : "s"}) against ${M.gbps(o.from_median)} GB/s on ${o.from} `
       + `(${o.from_runs} run${o.from_runs === 1 ? "" : "s"}), ${o.ratio.toFixed(2)}×.`));
   }

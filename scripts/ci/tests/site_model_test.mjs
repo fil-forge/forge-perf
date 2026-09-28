@@ -194,6 +194,32 @@ test("the paired offset is the ratio of each type's median run median", () => {
   assert.ok(Math.abs(o.ratio - 1.03 / 0.34) < 1e-9);
 });
 
+test("the paired offset compares the largest run size both types ran", () => {
+  const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
+  const pair = "pair-20261011-t1t2";
+  const at = (size_bytes, median_bytes_per_s, box) => run({ pairing_id: pair, size_bytes, median_bytes_per_s, ...(box ? { box } : {}) });
+  const d = index([
+    at(100e9, 0.58e9), at(100e9, 0.59e9), at(100e9, 0.57e9),
+    at(350e9, 0.58e9), at(350e9, 0.58e9), at(350e9, 0.576e9),
+    at(100e9, 2.03e9, big), at(100e9, 2.0e9, big), at(100e9, 1.87e9, big),
+    at(350e9, 1.016e9, big), at(350e9, 1.024e9, big), at(350e9, 0.985e9, big),
+    at(500e9, 1.0e9, big),
+  ]);
+  const [o, ...rest] = M.pairedOffsets(d.runs);
+  assert.equal(rest.length, 0);
+  assert.deepEqual([o.size_bytes, o.from_runs, o.to_runs], [350e9, 3, 3]);
+  assert.equal(o.from_median, 0.58e9);
+  assert.equal(o.to_median, 1.016e9);
+  assert.ok(Math.abs(o.ratio - 1.016 / 0.58) < 1e-9);
+});
+
+test("a pairing with no run size in common gets no offset", () => {
+  const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
+  const d = index([run({ pairing_id: "pair-apart", size_bytes: 100e9 }),
+    run({ pairing_id: "pair-apart", size_bytes: 350e9, box: big })]);
+  assert.deepEqual(M.pairedOffsets(d.runs), []);
+});
+
 test("the latest counting run can come from a series other than per-trigger", () => {
   const d = index([run(), run({ series: "nightly" }), run({ series: "calibration" }), run({ class: "failed" })]);
   assert.equal(M.latestCounting(d.runs).series, "nightly");
