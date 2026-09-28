@@ -1,0 +1,9 @@
+# Images the operator scripts run on an operator's own machine, pinned by
+# digest. None of them runs on a box, so they are not part of the instrument
+# and stay out of config/images.lock. One image per line, in that file's
+# format: the name traces.sh looks up, repo:tag, and the digest of the
+# multi-platform index, so the same line serves arm64 and amd64 machines.
+
+# Jaeger v2 all-in-one for traces.sh --jaeger: the UI and an OTLP receiver
+# with in-memory storage.
+JAEGER_IMAGE  jaegertracing/jaeger:2.21.0  sha256:3d0ac795ff98aa04d1be04311d2dac6c25b4bfc8322dc02e53bc5b170c5018c3

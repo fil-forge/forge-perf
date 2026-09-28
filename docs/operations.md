@@ -418,6 +418,23 @@ When a valid run's p5 reaches gate 1:
 2. Merge a pull request that sets `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars`, adds `config/settings/m9gd.8xlarge.env` with `WORKERS` empty, and raises `budget_monthly_usd` in `terraform/envs/bootstrap/account/terraform.tfvars` to 1600, since tier 2 costs about $1,500 a month and the $600 forecast alert would fire every month. Apply the bootstrap root as in "The bootstrap root" above. Approve `apply-box-main` once the box is idle ("The persistent box" above). The provider stops, modifies and starts the same instance, and the instance store comes back blank. Then run `scripts/operator/box-update.sh main`, so the held box's checkout has `config/settings/m9gd.8xlarge.env`; without it `run.sh` refuses every run.
 3. Check the new drive (`findmnt /var/lib/docker/volumes`), then sweep workers at 1×, 2× and 4× the tier 1 value with `campaign.sh --set … --runs 1 --workers <a>,<b>,<c>`, extend the sweep until the rate levels off, freeze a realistic value no higher than the winner in a pull request, repeat the paired runs of step 1 with the same pairing ID and the same sizes (add `--size 100GB` to the first command, since the new type's per-trigger size differs), and `hold.sh main off`. The page marks the box change and the offset between paired medians; past values never change.
 
+## Reading a run's traces
+
+A traced run (`campaign.sh --trace RATIO`, or `TRACE_RATIO` in the type's settings file) keeps its spans in the raw tarball under `run/traces/`: the collector's `traces.jsonl`, one OTLP JSON export request per line, with `collector-metrics.txt` and `collector.log` beside it. The record carries only counts. Reading the spans takes operator credentials for the dev account, since the results role cannot read `raw/`:
+
+```sh
+scripts/operator/traces.sh <run_id>                  # to local/traces/<run_id>/
+scripts/operator/traces.sh <run_id> --out DIR --jaeger
+```
+
+The script copies `s3://forge-perf-results-654654381893/raw/<box>/<run_id>/raw.tar.zst`, extracts only `traces/` to `local/traces/<run_id>/traces/`, which git ignores, and prints the summary from `scripts/operator/trace-summary.py`. A tarball without `traces/` belongs to an untraced run.
+
+The summary's first table has a row per service and span name: count, p50, p95, p99 and total duration. ingot's `bucket.lock` and the Postgres pool waits (`pool.acquire`) come first, the rest by total time. Below it, each wait and the five spans with the most total time get a table per 10 seconds of span start, counted from the first span, so a stage that saturates after the first 30 seconds shows as durations that rise in the later rows. A line that does not parse, usually the last one of a run the box rebooted during, is counted and skipped. `trace-summary.py DIR/traces/traces.jsonl --bucket SECONDS --top N` changes the bucket width and the number of spans bucketed.
+
+`--jaeger` then runs Jaeger v2 all-in-one, pinned in `scripts/operator/images.lock`, as container `forge-perf-jaeger` listening on 127.0.0.1 only (UI on 16686, OTLP HTTP on 4318). It POSTs each line of `traces.jsonl` to `/v1/traces` and prints the UI's address, http://127.0.0.1:16686/. The UI searches the last hour by default; set Lookback to cover the run's date. The spans live in the container's memory: `docker rm -f forge-perf-jaeger` discards them, and the next `--jaeger` replaces the container.
+
+Traces hold the drill's bucket names, object keys and SQL, and are private like the rest of the raw tarball. Keep them under `local/` or outside the repository, and never paste them into an issue or a pull request.
+
 ## Rotating secrets
 
 | Secret | Where | Rotation |
