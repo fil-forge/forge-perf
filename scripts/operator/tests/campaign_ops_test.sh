@@ -66,9 +66,10 @@ jq -e --arg sha "$sha" '. == {instance_type: "m9gd.2xlarge", expires_at: "2026-0
   duration: "30m"}}' "$work/out" >/dev/null || fail "variables"
 inputs 0 WORKERS="16, 32,64" HOURS=5
 [ "$(jq -c .campaign.workers "$work/out")" = "[16,32,64]" ] || fail "a workers list"
+sed 's/^WORKERS=.*/WORKERS=/' "$repo/config/settings/m9gd.2xlarge.env" >"$tree/config/settings/m9gd.2xlarge.env"
 inputs 1 WORKERS=
 grep -q "has no WORKERS yet" "$work/out" || fail "no workers, and none in the settings file"
-sed 's/^WORKERS=$/WORKERS=32/' "$repo/config/settings/m9gd.2xlarge.env" >"$tree/config/settings/m9gd.2xlarge.env"
+sed 's/^WORKERS=.*/WORKERS=32/' "$repo/config/settings/m9gd.2xlarge.env" >"$tree/config/settings/m9gd.2xlarge.env"
 inputs 0 WORKERS=
 [ "$(jq -c .campaign.workers "$work/out")" = "[]" ] || fail "no workers"
 inputs 0 DURATION=240m HOURS=6

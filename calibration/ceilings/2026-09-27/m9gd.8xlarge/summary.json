@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-27",
+  "instance_type": "m9gd.8xlarge",
+  "quick": false,
+  "forge_perf_sha": "f9c86eabdc1681803444c1cca73b70b2be7376fe",
+  "window_seconds": 30,
+  "statistic": "p5 and median of 30 s windows over the sustained segment",
+  "units": "bytes/s",
+  "s3_put": {
+    "p5": 2083730227.2,
+    "median": 2096033518.9333334,
+    "windows": 50,
+    "workers": 256,
+    "object_bytes": 134217728,
+    "sustained_from_s": 300,
+    "burst_ended_s": null,
+    "errors": 0,
+    "flags": [],
+    "minio_go": "v7.3.0",
+    "method": "cmd/s3-ceiling: minio-go PutObject, non-seekable body, TLS, piri key, pdp bucket"
+  },
+  "nvme_write": {
+    "p5": 2369765068.8,
+    "median": 2370499037.866667,
+    "windows": 21,
+    "device_bytes": 1900000000000,
+    "limited_by_fs": false,
+    "pass2_median": 2370524910.9333334,
+    "fs_median": 2370477124.2666664,
+    "method": "fio after blkdiscard, 1 MiB, QD32 x 4 jobs, O_DIRECT, whole device"
+  },
+  "combined": {
+    "s3_put_median": 2097711240.5333333,
+    "nvme_median": 2370551483.7333336
+  },
+  "ceiling": 2083730227.2,
+  "limited_by": "s3_put"
+}

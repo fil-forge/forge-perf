@@ -1,0 +1,36 @@
+{
+  "p5": 4187033873.0666666,
+  "median": 4198218683.733333,
+  "windows": 50,
+  "workers": 512,
+  "object_bytes": 134217728,
+  "sustained_from_s": 300,
+  "burst_ended_s": null,
+  "phases": [
+    {
+      "workers": 512,
+      "start_s": 0,
+      "end_s": 1800,
+      "median": 4198218683.733333
+    },
+    {
+      "workers": 256,
+      "start_s": 1800,
+      "end_s": 2400,
+      "median": 4195981721.6
+    },
+    {
+      "workers": 1024,
+      "start_s": 2400,
+      "end_s": 3000,
+      "median": 4209403494.4
+    }
+  ],
+  "objects": 93363,
+  "errors": 0,
+  "flags": [],
+  "minio_go": "v7.3.0",
+  "endpoint": "s3.us-east-2.amazonaws.com",
+  "bucket": "forge-perf-piri-campaign-654654381893-piri-0-pdp",
+  "units": "bytes/s"
+}

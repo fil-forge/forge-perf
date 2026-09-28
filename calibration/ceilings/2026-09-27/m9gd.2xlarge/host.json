@@ -1,0 +1,14 @@
+{
+  "instance_type": "m9gd.2xlarge",
+  "instance_id": "i-0f5e62f310c23f370",
+  "availability_zone": "us-east-2a",
+  "ami_id": "ami-03e774c3214166a53",
+  "kernel": "7.0.0-1012-aws",
+  "vcpus": 8,
+  "nic": "ens35",
+  "ena_driver": "ena 7.0.0-1012-aws",
+  "fio": "fio-3.36",
+  "go": "go1.26.8",
+  "minio_go": "v7.3.0",
+  "forge_perf_sha": "1ab79e3b8b8b037d61e8dbd677147befb9f477ba"
+}

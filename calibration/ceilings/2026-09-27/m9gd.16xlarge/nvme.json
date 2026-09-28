@@ -1,0 +1,32 @@
+{
+  "device": "/dev/nvme0n1",
+  "device_bytes": 3800000000000,
+  "quick": false,
+  "fs_file_bytes": 1422322040832,
+  "fs_seconds": 300,
+  "pass1": {
+    "median": 4741085098.666666,
+    "p5": 4740753442.133333,
+    "seconds": 648,
+    "units": "bytes/s",
+    "windows": 20
+  },
+  "pass2": {
+    "median": 4741129506.133333,
+    "p5": 4740298683.733334,
+    "seconds": 704,
+    "units": "bytes/s",
+    "windows": 22
+  },
+  "fs": {
+    "median": 4740989337.6,
+    "p5": 4739093265.066667,
+    "seconds": 299,
+    "units": "bytes/s",
+    "windows": 8
+  },
+  "limited_by_fs": false,
+  "p5": 4740753442.133333,
+  "median": 4741085098.666666,
+  "windows": 20
+}

@@ -1,0 +1,24 @@
+{
+  "p5": 4184237670.4,
+  "median": 4197100202.6666665,
+  "windows": 19,
+  "workers": 512,
+  "object_bytes": 134217728,
+  "sustained_from_s": 30,
+  "burst_ended_s": null,
+  "phases": [
+    {
+      "workers": 512,
+      "start_s": 0,
+      "end_s": 600,
+      "median": 4197100202.6666665
+    }
+  ],
+  "objects": 18515,
+  "errors": 0,
+  "flags": [],
+  "minio_go": "v7.3.0",
+  "endpoint": "s3.us-east-2.amazonaws.com",
+  "bucket": "forge-perf-piri-campaign-654654381893-piri-0-pdp",
+  "units": "bytes/s"
+}
