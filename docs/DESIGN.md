@@ -14,13 +14,13 @@ The one measurement so far comes from a laptop (50 GB cap, 10-second windows, pi
 
 ## 2. The topology modeled
 
-The box models a production appliance at a storage provider's site about 15 ms round trip from AWS us-east-2 (Ohio), where the central services run. The appliance's blob storage is the provider's HDD-backed S3 service at the same site.
+The box models a production appliance at a storage provider's site about 25 ms round trip from AWS us-east-2 (Ohio), where the central services run. The appliance's blob storage is the provider's HDD-backed S3 service at the same site.
 
 | Production | On the box |
 |---|---|
 | Appliance NVMe: OS, Postgres, ingot spool, Docker | Instance-store NVMe holds every Docker volume |
 | Provider S3 behind piri, same site | AWS S3 in us-east-2 through a gateway endpoint, no added delay |
-| Central services in Ohio | Same host, 15 ms round trip added between node and central containers |
+| Central services in Ohio | Same host, 25 ms round trip added between node and central containers |
 | S3 clients at the appliance's site | Drill on the same host, Docker bridge to ingot, no added delay |
 | No indexer or IPNI on dev and staging | piri's indexer and IPNI announce settings removed; sprue's indexer cleared |
 
@@ -127,7 +127,7 @@ bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
 
 ## 5. Latency simulation
 
-A fixed 15 ms round trip, with no jitter and no bandwidth cap, separates the node group from the central group. netem, the Linux kernel's delay-and-loss queueing discipline, runs in each node container's network namespace and delays only packets addressed to central containers.
+A fixed 25 ms round trip, with no jitter and no bandwidth cap, separates the node group from the central group. netem, the Linux kernel's delay-and-loss queueing discipline, runs in each node container's network namespace and delays only packets addressed to central containers.
 
 | Group (`config/groups.conf`) | Services | Treatment |
 |---|---|---|
@@ -140,13 +140,13 @@ A service in no list stops the run. `netem.sh apply` runs a pinned netshoot side
 
 ```sh
 tc qdisc add dev "$dev" root handle 1: prio bands 4 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-tc qdisc add dev "$dev" parent 1:4 handle 40: netem delay 15ms limit 100000
+tc qdisc add dev "$dev" parent 1:4 handle 40: netem delay 25ms limit 100000
 tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip dst <central-ip>/32 flowid 1:4
 ```
 
 The all-zero priomap keeps unfiltered traffic in band 1. Delaying node egress adds one round trip to every exchange across the boundary, handshakes included. Healthchecks and Docker's DNS stay on loopback, undelayed.
 
-`netem.sh verify` runs before and after the drill. Across the boundary, in both directions, the median of 20 pings per pair and the median of 10 TCP connects must fall between 13.5 and 16.5 ms; within a group, and from the host to ingot, the median stays under 1 ms. A container that is gone or not running fails the check, and its probes are skipped. Afterwards the qdiscs must be present, and central addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) can return on an address the filter no longer matches. Calibration also moves 1 GiB from ingot to piri-0 with and without the qdisc; the rates must agree within 5%.
+`netem.sh verify` runs before and after the drill. Across the boundary, in both directions, the median of 20 pings per pair and the median of 10 TCP connects must fall between 22.5 and 27.5 ms; within a group, and from the host to ingot, the median stays under 1 ms. A container that is gone or not running fails the check, and its probes are skipped. Afterwards the qdiscs must be present, and central addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) can return on an address the filter no longer matches. Calibration also moves 1 GiB from ingot to piri-0 with and without the qdisc; the rates must agree within 5%.
 
 ## 6. Storage and the wipe
 

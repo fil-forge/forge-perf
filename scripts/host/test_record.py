@@ -3,6 +3,7 @@
     cd scripts/host && python3 -m unittest -v test_record
 """
 
+import ipaddress
 import json
 import os
 import shutil
@@ -17,6 +18,9 @@ import record
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
 MARKER = "FIXTURE-FREE-TEXT"
+# The latency config the fixtures were recorded under. Cases pin it, so a
+# change to config/latency.env leaves their expected records alone.
+FIXTURE_LATENCY_ENV = "RTT_MS=15\nRTT_TOLERANCE_PCT=10\nNET_SUBNET=172.30.0.0/24\n"
 
 
 def load(path):
@@ -37,6 +41,8 @@ class Case:
         test.addCleanup(shutil.rmtree, self.dir)
         shutil.copytree(FIXTURES / name, self.dir / "case")
         self.case = self.dir / "case"
+        self.latency_env = self.dir / "latency.env"
+        self.latency_env.write_text(FIXTURE_LATENCY_ENV, encoding="utf-8")
         self.expected = load(self.case / "expected.json")
         self.denylist = self.dir / "denylist"
         self.denylist.write_text("does-not-occur-anywhere\n", encoding="utf-8")
@@ -54,14 +60,24 @@ class Case:
     def build(self):
         latency = self.case / "netem" / "latency.json"
         return record.build(load(self.case / "runner.json"), self.case / "run",
-                            load(latency) if latency.exists() else None, record.read_env(record.LATENCY_ENV))
+                            load(latency) if latency.exists() else None, record.read_env(self.latency_env))
 
     def cli(self, *extra, command="build"):
         args = [sys.executable, str(HERE / "record.py"), command, "--runner", str(self.case / "runner.json"),
                 "--run-dir", str(self.case / "run"), "--latency", str(self.case / "netem" / "latency.json"),
+                "--latency-env", str(self.latency_env),
                 "--denylist", str(self.denylist), "--out", str(self.out), *extra]
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         return subprocess.run(args, capture_output=True, text=True, env=env)
+
+
+class LatencyConfig(unittest.TestCase):
+    def test_the_repo_latency_env_has_positive_targets_and_a_subnet(self):
+        # Cases pin their own copy, so this is the one test of the real file.
+        env = record.read_env(record.LATENCY_ENV)
+        self.assertGreater(record.number(env["RTT_MS"]), 0)
+        self.assertGreater(record.number(env["RTT_TOLERANCE_PCT"]), 0)
+        ipaddress.ip_network(env["NET_SUBNET"])
 
 
 class Fixtures(unittest.TestCase):
@@ -217,8 +233,9 @@ class Fingerprints(unittest.TestCase):
             env = dict(os.environ, PYTHONHASHSEED=seed, PYTHONDONTWRITEBYTECODE="1")
             subprocess.run([sys.executable, str(HERE / "record.py"), "build", "--runner",
                             str(case.case / "runner.json"), "--run-dir", str(case.case / "run"), "--latency",
-                            str(case.case / "netem" / "latency.json"), "--denylist", str(case.denylist),
-                            "--out", str(case.out)], check=True, env=env, capture_output=True)
+                            str(case.case / "netem" / "latency.json"), "--latency-env", str(case.latency_env),
+                            "--denylist", str(case.denylist), "--out", str(case.out)],
+                           check=True, env=env, capture_output=True)
             outputs.append(case.out.read_bytes())
         self.assertEqual(outputs[0], outputs[1])
         self.assertEqual(load(case.out)["instrument"], case.expected["instrument"])
@@ -334,7 +351,7 @@ class Classification(unittest.TestCase):
         shutil.rmtree(case.case / "run")
         runner = load(case.case / "runner.json")
         self.assertIsNotNone(runner["time"]["drill_started_at"])
-        outcome = record.build(runner, None, None, record.read_env(record.LATENCY_ENV))["outcome"]
+        outcome = record.build(runner, None, None, record.read_env(case.latency_env))["outcome"]
         self.assertEqual((outcome["class"], outcome["reasons"]), ("no_data", ["drill_interrupted"]))
 
     def test_a_runner_interrupt_after_the_pre_pass_is_not_a_runner_error(self):

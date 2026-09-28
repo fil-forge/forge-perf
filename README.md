@@ -7,7 +7,7 @@ The results page will be served from GitHub Pages at https://fil-forge.github.io
 ## How a run works
 
 1. Every five minutes the box resolves a set: the smelt SHA, the harness SHA and the digest of every tracked Forge image. A new set starts a run; a nightly run starts at 03:00 UTC regardless.
-2. The box boots the stack with smelt, every image pinned by digest, piri writing to S3, and 15 ms of round trip added between the node and the central services.
+2. The box boots the stack with smelt, every image pinned by digest, piri writing to S3, and 25 ms of round trip added between the node and the central services.
 3. The drill ingests up to its cap and reports per-window rates.
 4. The box builds an allowlisted record, uploads it and the raw data to a private bucket, and wipes every container, every volume and the box's piri buckets.
 5. A scheduled Action checks the record, commits it to the `results` branch and redeploys the page.

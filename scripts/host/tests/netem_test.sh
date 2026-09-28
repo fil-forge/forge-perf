@@ -10,6 +10,11 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/netem-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 export FIX="$work/fix"
 mkdir -p "$work/bin"
+# The fixtures model a 15 ms round trip. A config copy pins it, so a change
+# to config/latency.env leaves these tests alone.
+cp -R "$(cd "$(dirname "$0")/../../.." && pwd -P)/config" "$work/config"
+printf 'RTT_MS=15\nRTT_TOLERANCE_PCT=10\nNET_SUBNET=172.30.0.0/24\n' >"$work/config/latency.env"
+export FORGE_PERF_CONFIG="$work/config"
 
 cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
