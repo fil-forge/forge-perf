@@ -221,6 +221,30 @@ export function flagText(run) {
   return (run.flags || []).filter((f) => FLAG_TEXT[f]).map((f) => FLAG_TEXT[f]).join(", ");
 }
 
+// The Grafana stack a traced run's spans go to, and its Tempo data source.
+// docs/grafana/forge-perf.json names the same data source.
+export const GRAFANA = "https://filecoinfoundation.grafana.net";
+export const TEMPO_UID = "grafanacloud-traces";
+const TRACE_MARGIN_MS = 5 * 60 * 1000;
+
+// A traced run's spans in Grafana Explore: a TraceQL search for its run ID
+// from five minutes before its start to five minutes after its finish.
+// Null for an untraced run, and for a traced run whose trace file was
+// missing, since none of its spans reached Tempo.
+export function traceLink(run) {
+  const flags = run.flags || [];
+  if (!flags.includes("traced") || flags.includes("trace_missing")) return null;
+  if (!run.run_started_at || !run.run_finished_at) return null;
+  const pane = {
+    datasource: TEMPO_UID,
+    queries: [{ refId: "A", datasource: { type: "tempo", uid: TEMPO_UID }, queryType: "traceql",
+      query: `{ resource.forge_perf.run_id = "${run.run_id}" }`, limit: 20 }],
+    range: { from: String(Date.parse(run.run_started_at) - TRACE_MARGIN_MS),
+      to: String(Date.parse(run.run_finished_at) + TRACE_MARGIN_MS) },
+  };
+  return `${GRAFANA}/explore?schemaVersion=1&orgId=1&panes=${encodeURIComponent(JSON.stringify({ a: pane }))}`;
+}
+
 export function outcomeText(run) {
   if (run.override) return `Marked ${CLASS_LABEL[run.klass].toLowerCase()} after review`;
   return CLASS_LABEL[run.klass] || run.klass;

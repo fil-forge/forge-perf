@@ -37,6 +37,12 @@ const ICON = { valid: "●", availability_warning: "▲", invalid: "○", failed
 const outcome = (run) => h("span", { class: `outcome ${run.klass}` },
   h("span", { class: "icon", "aria-hidden": "true" }, ICON[run.klass]), " ", M.outcomeText(run),
   M.flagText(run) ? h("span", { class: "secondary" }, ` · ${M.flagText(run)}`) : null);
+// A traced run's link to its spans, or null.
+const traces = (run) => {
+  const href = M.traceLink(run);
+  return href && h("span", {}, h("a", { href }, "Traces in Grafana"),
+    h("span", { class: "secondary" }, " (needs a Grafana login)"));
+};
 
 // Theme: light, dark or system, remembered when storage allows.
 function setTheme(choice) {
@@ -90,13 +96,14 @@ function thermometer({ gates, lit, merc, top }) {
 function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
   const box = h("div", { class: "headline" });
   if (merc) {
-    const r = merc.run;
+    const r = merc.run, tl = traces(r);
     box.append(
       h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`),
       h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${M.perSecond(r.writes_median_per_s)} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
       h("p", { class: "secondary" }, "Run ", h("a", { href: `#run=${r.run_id}` }, r.run_id),
         ` on ${r.box.instance_type}, ${utc(r.run_started_at)}, ${gb(r.size_bytes)}`),
+      ...(tl ? [h("p", { class: "secondary" }, tl)] : []),
       h("p", { class: "secondary" }, `${M.ago(merc.age_ms)} ago · ${merc.runs_since} run${merc.runs_since === 1 ? "" : "s"} on the box since`));
   } else {
     box.append(h("p", { class: "big" }, "No valid per-trigger or nightly run yet"));
@@ -257,6 +264,7 @@ async function details(id) {
   if (!rec) { panel.append(h("p", {}, "The record could not be loaded.")); panel.querySelector("h2").focus(); return; }
   const t = rec.time, res = rec.drill.results || {}, o = rec.outcome;
   const dur = Math.round((Date.parse(t.run_finished_at) - Date.parse(t.run_started_at)) / 60000);
+  const tl = traces(run);
   panel.append(
     kv("Summary", { class: outcome(run), override: run.override ? h("a", { href: run.override.issue }, run.override.issue) : null,
       reasons: o.reasons.join(", ") || "none", restarted_services: (o.restarted_services || []).join(", ") || "none",
@@ -264,7 +272,7 @@ async function details(id) {
       trigger: `${rec.trigger.reason}${rec.trigger.changed?.length ? `: ${rec.trigger.changed.join(", ")}` : ""}`,
       started: utc(t.run_started_at), stack_up: t.stack_up_at && utc(t.stack_up_at),
       drill_started: t.drill_started_at && utc(t.drill_started_at), drill_finished: t.drill_finished_at && utc(t.drill_finished_at),
-      finished: utc(t.run_finished_at), duration: `${dur} min`,
+      finished: utc(t.run_finished_at), duration: `${dur} min`, ...(tl ? { traces: tl } : {}),
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
     kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
       writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s), steady_windows: res.sustained_windows, total_windows: res.total_windows,

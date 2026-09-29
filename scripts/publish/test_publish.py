@@ -356,6 +356,8 @@ class BuildSite(unittest.TestCase):
             self.assertEqual([r["instrument_changes"] for r in index["runs"]], [None, ["smelt"], None])
             self.assertEqual(index["runs"][0]["p5_bytes_per_s"], 25360000.0)
             self.assertIsNone(index["runs"][2]["p5_bytes_per_s"])
+            self.assertEqual([r["run_finished_at"] for r in index["runs"]],
+                             [r["time"]["run_finished_at"] for r in (first, second, third)])
             gates = json.loads((ROOT / "data/gates.json").read_text(encoding="utf-8"))
             self.assertEqual((index["overrides"], index["gates"], index["heartbeats"]), ([], gates, {"main": None}))
             self.assertEqual([(r["pairing_id"], r["changed"], r["size_bytes"]) for r in index["runs"]][0],
@@ -380,7 +382,10 @@ class BuildSite(unittest.TestCase):
             index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
             self.assertEqual([r["instrument_changes"] for r in index["runs"]],
                              [None, [], ["trace"], [], ["trace"]])
+            # The page links a traced run to its spans over its start to finish.
             self.assertEqual(index["runs"][2]["flags"], ["few_windows", "traced"])
+            self.assertEqual((index["runs"][2]["run_started_at"], index["runs"][2]["run_finished_at"]),
+                             ("2026-10-01T13:00:00Z", "2026-10-01T13:20:00Z"))
 
     def test_a_broken_host_record_builds(self):
         # A schema-valid record with no settings file, no NVMe and no Docker

@@ -45,6 +45,12 @@ exporters:
       authenticator: basicauth/tempo
     tls:
       insecure: false
+    # The deadline of one gRPC call to Tempo, set anew for each retry; no
+    # retry starts after max_elapsed_time. The default 5s cut off
+    # 4 MB requests that Tempo then took on a retry. The step stops the
+    # collector at the end of its budget whatever is in flight, so a longer
+    # attempt never lengthens the step.
+    timeout: 30s
     # Each request holds up to 4 MB of OTLP JSON. A full queue makes the
     # receiver wait instead of refusing, so a slow Tempo slows the upload.
     sending_queue:
