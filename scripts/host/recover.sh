@@ -4,8 +4,9 @@
 #   recover.sh     run by forge-perf-recover.service at boot, before any poll
 #
 # Reads $FORGE_PERF_STATE_DIR/current.json ({run_id, phase, run_dir}). With no
-# current.json it only flushes the outbox. Otherwise, in order: stop a traced
-# run's collector, forge-perf-otel, with a minute to flush, and keep its log
+# current.json it only flushes the outbox. Otherwise, in order: remove a
+# Grafana step's leftover collector, forge-perf-grafana, and token file; stop
+# a traced run's collector, forge-perf-otel, with a minute to flush, and keep its log
 # in the run's traces/; stop every container Docker restarted; for a run whose phase comes before `recorded`
 # (preflight, boot, drill, or a phase it does not know), collect each
 # container's `docker logs --timestamps` and the run directory into the raw
@@ -152,6 +153,12 @@ record="$FORGE_PERF_OUTBOX/$run_id.json"
 forbid="$FORGE_PERF_RUNTIME/secrets/recover-forbid"
 
 step "stop containers"
+# A Grafana step the reboot cut short leaves its collector and token file;
+# this attempt's own step starts from neither.
+grafana="$(docker ps -aq --filter name=^forge-perf-grafana)"
+# shellcheck disable=SC2086 # container IDs
+[ -z "$grafana" ] || docker rm -f $grafana >/dev/null || echo "recover: the wipe removes the Grafana collector" >&2
+rm -f "$FORGE_PERF_RUNTIME/secrets/grafana-token"
 # The collector writes traces.jsonl until it stops; the wipe removes it.
 otel="$(docker ps -aq --filter name=^forge-perf-otel)"
 if [ -n "$otel" ]; then
@@ -240,7 +247,7 @@ PY
   [ -z "$no_record" ] || echo "recover: $no_record; wiping without a record" >&2
   # Only the attempt that writes the record sends it, so a retry sends nothing twice.
   if [ -z "$no_record" ] && [ -s "$amended" ]; then
-    grafana_export "$amended" "$record" "$run_dir/traces" || true
+    grafana_export "$amended" "$record" "$run_dir" || true
   fi
 fi
 

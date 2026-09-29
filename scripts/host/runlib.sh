@@ -170,76 +170,243 @@ run_active() {
   return 1
 }
 
-# grafana_export RUNNER RECORD TRACES_DIR: send the run's results from RECORD
-# and, for a traced run, its scrubbed spans from TRACES_DIR/traces.jsonl to
-# config/grafana.conf's endpoint (docs/runner.md, "Grafana"). The credential,
-# SSM <path>/grafana-otlp, goes through a mode-600 file under
-# $FORGE_PERF_RUNTIME/secrets that the step removes, never argv or a log. A
-# local run sends only with FORGE_PERF_GRAFANA_CREDENTIALS naming such a file;
-# FORGE_PERF_GRAFANA_ENDPOINT overrides the endpoint. Best effort under
+# grafana_export RUNNER RECORD RUN_DIR: send the run's results from RECORD to
+# Prometheus and, for a traced run, its scrubbed spans from
+# RUN_DIR/traces/traces.jsonl to Tempo, through a one-shot collector,
+# forge-perf-grafana, run from config/otel-grafana.yaml (docs/runner.md,
+# "Grafana"). config/grafana.conf names both services; an empty endpoint or
+# user turns that half off. The token, SSM <path>/grafana-token, goes into a
+# mode-600 file under $FORGE_PERF_RUNTIME/secrets that the collector reads
+# from a read-only mount and the step removes: never argv, an environment, a
+# log or RUN_DIR. A local run sends only with FORGE_PERF_GRAFANA_TOKEN_FILE
+# naming a file that holds the token. The collector's log goes to
+# RUN_DIR/grafana-export.log once checked for the token. Best effort under
 # GRAFANA_TIMEOUT_S, plus GRAFANA_TRACE_S_PER_GB for each GB of traces.jsonl
-# up to GRAFANA_TIMEOUT_MAX_S: whatever happens it logs a line and returns 0, so the
-# run's class, reasons and flags, its upload and its wipe never depend on it.
-# Callers under set -e add `|| true`, which keeps a failing command inside
-# from ending the caller.
+# up to GRAFANA_TIMEOUT_MAX_S: whatever happens it logs a line and returns 0,
+# so the run's class, reasons and flags, its upload and its wipe never depend
+# on it. Callers under set -e add `|| true`, which keeps a failing command
+# inside from ending the caller.
 grafana_export() {
-  local runner="$1" record="$2" traces="$3" conf="$FORGE_PERF_CHECKOUT/config/grafana.conf"
-  local endpoint creds status=0 own_creds="" started=$SECONDS left ssm_s budget bytes cap
+  local runner="$1" record="$2" run_dir="$3" conf="$FORGE_PERF_CHECKOUT/config/grafana.conf"
+  local traces="" tok status=0 started=$SECONDS end budget bytes cap ssm_s left tail image
+  local tempo=off prom=off send_traces="" send_results="" ready="" counts="" started_collector=""
+  local port="${FORGE_PERF_GRAFANA_PORT:-14318}" mport="${FORGE_PERF_GRAFANA_METRICS_PORT:-18888}"
+  local -a opts=()
   step "grafana"
-  local GRAFANA_OTLP_ENDPOINT="" GRAFANA_TIMEOUT_S=120 GRAFANA_MAX_REQUEST_BYTES=4000000
-  local GRAFANA_TRACE_S_PER_GB=150 GRAFANA_TIMEOUT_MAX_S=600
+  local GRAFANA_TEMPO_ENDPOINT="" GRAFANA_TEMPO_USER="" GRAFANA_PROM_URL="" GRAFANA_PROM_USER=""
+  local GRAFANA_TIMEOUT_S=120 GRAFANA_MAX_REQUEST_BYTES=4000000 GRAFANA_TRACE_S_PER_GB=150 GRAFANA_TIMEOUT_MAX_S=600
   # shellcheck source=../../config/grafana.conf
   . "$conf" 2>/dev/null || { echo "grafana: cannot read config/grafana.conf; nothing sent" >&2; return 0; }
   [[ "$GRAFANA_TIMEOUT_S" =~ ^[1-9][0-9]{0,3}$ ]] || GRAFANA_TIMEOUT_S=120
   [[ "$GRAFANA_TRACE_S_PER_GB" =~ ^[0-9]{1,4}$ ]] || GRAFANA_TRACE_S_PER_GB=150
   [[ "$GRAFANA_TIMEOUT_MAX_S" =~ ^[1-9][0-9]{0,3}$ ]] || GRAFANA_TIMEOUT_MAX_S=600
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && [[ "$mport" =~ ^[1-9][0-9]{0,4}$ ]] ||
+    { echo "grafana: FORGE_PERF_GRAFANA_PORT and FORGE_PERF_GRAFANA_METRICS_PORT must be ports; nothing sent" >&2; return 0; }
+  [ -z "$run_dir" ] || traces="$run_dir/traces/traces.jsonl"
   # A traced run's spans take longer to scrub and send the more there are.
   budget="$GRAFANA_TIMEOUT_S"
-  if [ -f "$traces/traces.jsonl" ] && bytes="$(wc -c <"$traces/traces.jsonl" | tr -d ' ')" &&
+  if [ -n "$traces" ] && [ -f "$traces" ] && bytes="$(wc -c <"$traces" | tr -d ' ')" &&
     [[ "$bytes" =~ ^[0-9]{1,15}$ ]]; then
     budget=$((GRAFANA_TIMEOUT_S + bytes * GRAFANA_TRACE_S_PER_GB / 1000000000))
     cap=$((GRAFANA_TIMEOUT_MAX_S > GRAFANA_TIMEOUT_S ? GRAFANA_TIMEOUT_MAX_S : GRAFANA_TIMEOUT_S))
     budget=$((budget < cap ? budget : cap))
   fi
-  endpoint="${FORGE_PERF_GRAFANA_ENDPOINT:-$GRAFANA_OTLP_ENDPOINT}"
-  if [ -z "$endpoint" ]; then
-    echo "grafana: no endpoint in config/grafana.conf; nothing sent" >&2
-    return 0
-  fi
-  if [ -n "${FORGE_PERF_GRAFANA_CREDENTIALS:-}" ]; then
-    creds="$FORGE_PERF_GRAFANA_CREDENTIALS"
-  elif host_ops_skipped || [ "${FORGE_PERF_SECRETS:-ssm}" != ssm ]; then
-    echo "grafana: a local run sends only with FORGE_PERF_GRAFANA_CREDENTIALS set; nothing sent" >&2
-    return 0
-  else
-    creds="$FORGE_PERF_RUNTIME/secrets/grafana-otlp" own_creds=1
-    mkdir -p "$FORGE_PERF_RUNTIME/secrets"
-    # The SSM read spends from the same budget, capped at 20 s (a sixth of a
-    # short one), so the whole step stays inside its budget.
-    ssm_s=$((GRAFANA_TIMEOUT_S >= 120 ? 20 : GRAFANA_TIMEOUT_S / 6 + 2))
-    if ! (umask 077 && timeout --kill-after=2 "$ssm_s" aws ssm get-parameter --with-decryption \
-      --name "${FORGE_PERF_GRAFANA_PARAM:-${FORGE_PERF_SSM_PATH:-/forge-perf}/grafana-otlp}" \
-      --query Parameter.Value --output text >"$creds" 2>/dev/null) || [ ! -s "$creds" ]; then
-      rm -f "$creds"
-      echo "grafana: no credential in SSM; nothing sent" >&2
-      return 0
+  end=$((started + budget))
+  # What the collector needs after the upload: the wait for its queues and
+  # its stop.
+  tail=$((budget >= 120 ? 30 : budget / 4))
+
+  if [ -n "$GRAFANA_TEMPO_ENDPOINT" ] && [ -n "$GRAFANA_TEMPO_USER" ]; then
+    if [[ "$GRAFANA_TEMPO_ENDPOINT" =~ ^[A-Za-z0-9.-]+:[0-9]{1,5}$ ]] && [[ "$GRAFANA_TEMPO_USER" =~ ^[0-9]{1,12}$ ]]; then
+      tempo=on
+    else
+      echo "grafana: GRAFANA_TEMPO_ENDPOINT must be host:port and GRAFANA_TEMPO_USER a number; traces off" >&2
     fi
   fi
-  left=$((budget - (SECONDS - started)))
-  [ "$left" -ge 2 ] || left=2
-  set -- --endpoint "$endpoint" --credentials "$creds" --runner "$runner" \
-    --span-attributes "$FORGE_PERF_CHECKOUT/config/grafana-span-attributes.txt" \
-    --max-request-bytes "$GRAFANA_MAX_REQUEST_BYTES" \
-    --deadline $((left > 20 ? left - 10 : left / 2))
-  [ ! -s "$record" ] || set -- "$@" --record "$record"
-  [ ! -e "$traces/traces.jsonl" ] || set -- "$@" --traces "$traces/traces.jsonl"
-  timeout --kill-after=5 "$left" python3 "$FORGE_PERF_CHECKOUT/scripts/host/grafana-export.py" "$@" ||
-    status=$?
-  [ -z "$own_creds" ] || rm -f "$creds"
-  case "$status" in
-    0) ;;
-    124 | 137) echo "grafana: ran over ${budget}s; the run goes on" >&2 ;;
-    *) echo "grafana: grafana-export.py exited $status; the run goes on" >&2 ;;
-  esac
+  if [ -n "$GRAFANA_PROM_URL" ] && [ -n "$GRAFANA_PROM_USER" ]; then
+    if [[ "$GRAFANA_PROM_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?$ ]] &&
+      [[ "$GRAFANA_PROM_USER" =~ ^[0-9]{1,12}$ ]]; then
+      prom=on
+    else
+      echo "grafana: GRAFANA_PROM_URL must be an https:// URL and GRAFANA_PROM_USER a number; results off" >&2
+    fi
+  fi
+  if [ "$tempo" = off ] && [ "$prom" = off ]; then
+    echo "grafana: no Tempo or Prometheus in config/grafana.conf; nothing sent" >&2
+    return 0
+  fi
+  [ "$tempo" = off ] || [ -z "$traces" ] || [ ! -e "$traces" ] || send_traces=1
+  [ "$prom" = off ] || [ ! -s "$record" ] || send_results=1
+  if [ -z "$send_traces$send_results" ]; then
+    echo "grafana: nothing to send" >&2
+    return 0
+  fi
+
+  mkdir -p "$FORGE_PERF_RUNTIME/secrets" || { echo "grafana: cannot write the token file; nothing sent" >&2; return 0; }
+  tok="$FORGE_PERF_RUNTIME/secrets/grafana-token"
+  if [ -n "${FORGE_PERF_GRAFANA_TOKEN_FILE:-}" ]; then
+    (umask 077 && tr -d '\r\n' <"$FORGE_PERF_GRAFANA_TOKEN_FILE" >"$tok") 2>/dev/null || rm -f "$tok"
+  elif host_ops_skipped || [ "${FORGE_PERF_SECRETS:-ssm}" != ssm ]; then
+    echo "grafana: a local run sends only with FORGE_PERF_GRAFANA_TOKEN_FILE set; nothing sent" >&2
+    return 0
+  else
+    # The SSM read spends from the same budget, capped at 20 s (a sixth of a
+    # short one). SSM's text output ends in a newline, which would become
+    # part of the password.
+    ssm_s=$((GRAFANA_TIMEOUT_S >= 120 ? 20 : GRAFANA_TIMEOUT_S / 6 + 2))
+    (umask 077 && set -o pipefail && timeout --kill-after=2 "$ssm_s" aws ssm get-parameter --with-decryption \
+      --name "${FORGE_PERF_GRAFANA_PARAM:-${FORGE_PERF_SSM_PATH:-/forge-perf}/grafana-token}" \
+      --query Parameter.Value --output text 2>/dev/null | tr -d '\r\n' >"$tok") || rm -f "$tok"
+  fi
+  if [ ! -s "$tok" ]; then
+    rm -f "$tok"
+    echo "grafana: no token in SSM; nothing sent" >&2
+    return 0
+  fi
+
+  # The image runs as 10001; root on the box hands it the file. A laptop's
+  # user cannot chown, so the collector runs as that user instead.
+  chown 10001:10001 "$tok" 2>/dev/null || opts=(--user "$(id -u):$(id -g)")
+  # A half that is off gets placeholders its exporter needs to pass
+  # validation, and nop in its pipeline, so that exporter never starts.
+  if [ "$tempo" = on ]; then
+    opts+=(-e "GRAFANA_TEMPO_ENDPOINT=$GRAFANA_TEMPO_ENDPOINT" -e "GRAFANA_TEMPO_USER=$GRAFANA_TEMPO_USER")
+  else
+    opts+=(-e GRAFANA_TEMPO_ENDPOINT=127.0.0.1:9 -e GRAFANA_TEMPO_USER=0)
+  fi
+  if [ "$prom" = on ]; then
+    opts+=(-e "GRAFANA_PROM_URL=$GRAFANA_PROM_URL" -e "GRAFANA_PROM_USER=$GRAFANA_PROM_USER")
+  else
+    opts+=(-e GRAFANA_PROM_URL=https://127.0.0.1:9/ -e GRAFANA_PROM_USER=0)
+  fi
+  image="$(awk '$1 == "OTEL_COLLECTOR_IMAGE" { sub(/:[^:\/]*$/, "", $2); print $2 "@" $3; exit }' \
+    "$FORGE_PERF_CHECKOUT/config/images.lock" 2>/dev/null)" || image=""
+  set -- --config /etc/forge-perf/otel-grafana.yaml
+  [ "$tempo" = on ] || set -- "$@" '--set=service::pipelines::traces::exporters=[nop]'
+  [ "$prom" = on ] || set -- "$@" '--set=service::pipelines::metrics::exporters=[nop]'
+
+  docker rm -f forge-perf-grafana >/dev/null 2>&1 || true
+  if [ -z "$image" ]; then
+    echo "grafana: no OTEL_COLLECTOR_IMAGE in config/images.lock; nothing sent" >&2
+  elif ! docker image inspect "$image" >/dev/null 2>&1 &&
+    ! timeout --kill-after=5 "$(((end - SECONDS - tail) > 2 ? end - SECONDS - tail : 2))" \
+      docker pull --quiet "$image" >/dev/null 2>&1; then
+    echo "grafana: cannot pull the collector image; nothing sent" >&2
+  elif ! docker run -d --name forge-perf-grafana --cpus 2 --memory 2g "${opts[@]}" \
+    -p "127.0.0.1:$port:4318" -p "127.0.0.1:$mport:8888" \
+    -v "$tok:/secrets/token:ro" \
+    -v "$FORGE_PERF_CHECKOUT/config/otel-grafana.yaml:/etc/forge-perf/otel-grafana.yaml:ro" \
+    "$image" "$@" >/dev/null; then
+    echo "grafana: cannot start the collector; nothing sent" >&2
+  else
+    started_collector=1
+    # Ready once the receiver answers HTTP; Docker's proxy accepts the
+    # connection before the collector listens.
+    for _ in $(seq 20); do
+      if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then
+        ready=1
+        break
+      fi
+      [ $((end - SECONDS)) -gt "$tail" ] || break
+      sleep 1
+    done
+    if [ -z "$ready" ]; then
+      echo "grafana: the collector did not start; nothing sent" >&2
+    else
+      left=$((end - SECONDS - tail))
+      [ "$left" -ge 2 ] || left=2
+      set -- --endpoint "http://127.0.0.1:$port" --runner "$runner" \
+        --span-attributes "$FORGE_PERF_CHECKOUT/config/grafana-span-attributes.txt" \
+        --max-request-bytes "$GRAFANA_MAX_REQUEST_BYTES" \
+        --deadline $((left > 20 ? left - 10 : left / 2))
+      [ -z "$send_results" ] || set -- "$@" --record "$record"
+      [ -z "$send_traces" ] || set -- "$@" --traces "$traces"
+      timeout --kill-after=5 "$left" python3 "$FORGE_PERF_CHECKOUT/scripts/host/grafana-export.py" "$@" ||
+        status=$?
+      case "$status" in
+        0) ;;
+        124 | 137) echo "grafana: ran over ${budget}s; the run goes on" >&2 ;;
+        *) echo "grafana: grafana-export.py exited $status; the run goes on" >&2 ;;
+      esac
+      # The exporters send from their queues and retry; wait until both are
+      # empty or ten seconds of the budget are left.
+      while :; do
+        counts="$(grafana_counts "$mport")" && [ "${counts##* }" = 0 ] && break
+        [ $((end - SECONDS)) -gt 10 ] || break
+        sleep 2
+      done
+      grafana_summary "$counts"
+    fi
+  fi
+  grafana_close "$tok" "$run_dir" $((end - SECONDS - 5)) "$started_collector"
   return 0
+}
+
+# grafana_counts PORT: the collector's counters, from its metrics on
+# 127.0.0.1:PORT, as "accepted sent failed" for spans, the same for metric
+# points, then the requests in the exporters' queues, including any being
+# retried. Fails when the collector does not answer.
+grafana_counts() {
+  local text
+  text="$(curl -sf --max-time 5 "http://127.0.0.1:$1/metrics")" || return 1
+  awk '
+    /^#/ { next }
+    {
+      name = $1; sub(/\{.*/, "", name); sub(/_total$/, "", name)
+      if (name in n) n[name] += $NF
+    }
+    BEGIN {
+      split("otelcol_receiver_accepted_spans otelcol_exporter_sent_spans otelcol_exporter_send_failed_spans " \
+        "otelcol_receiver_accepted_metric_points otelcol_exporter_sent_metric_points " \
+        "otelcol_exporter_send_failed_metric_points otelcol_exporter_queue_size", keys, " ")
+      for (i = 1; i <= 7; i++) n[keys[i]] = 0
+    }
+    END { for (i = 1; i <= 7; i++) printf "%d%s", n[keys[i]], (i < 7 ? " " : "\n") }
+  ' <<<"$text"
+}
+
+# grafana_summary COUNTS: the step's line. Unsent is what the collector
+# accepted and had neither sent nor given up on when the step stopped waiting.
+grafana_summary() {
+  local as ss fs ap sp fp q
+  if [ -z "$1" ]; then
+    echo "grafana: cannot read the collector's counters; its errors follow" >&2
+    return 0
+  fi
+  read -r as ss fs ap sp fp q <<<"$1"
+  echo "grafana: spans $ss sent, $fs failed, $((as - ss - fs > 0 ? as - ss - fs : 0)) unsent;" \
+    "points $sp sent, $fp failed, $((ap - sp - fp > 0 ? ap - sp - fp : 0)) unsent" >&2
+}
+
+# grafana_close TOKEN RUN_DIR GRACE [STARTED]: stop the collector with GRACE
+# seconds (1 to 30) to flush, keep its log in RUN_DIR/grafana-export.log
+# and print its last error lines once a check finds no token in it, and
+# remove the collector and the token file.
+grafana_close() {
+  local tok="$1" run_dir="$2" grace="$3" log="$FORGE_PERF_RUNTIME/secrets/grafana-export.log"
+  [ "$grace" -ge 1 ] || grace=1
+  [ "$grace" -le 30 ] || grace=30
+  if [ -z "${4:-}" ]; then
+    docker rm -f forge-perf-grafana >/dev/null 2>&1 || true
+  else
+    timeout --kill-after=5 $((grace + 10)) docker stop -t "$grace" forge-perf-grafana >/dev/null 2>&1 ||
+      echo "grafana: the collector did not stop cleanly" >&2
+    if docker logs forge-perf-grafana >"$log" 2>&1 && [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+      # grep exits 1 only when it read both files and found no token.
+      grep -qF -f "$tok" "$log"
+      case $? in
+        0) echo "grafana: the collector's log holds the token; it is not kept" >&2 ;;
+        1)
+          # The log goes with the run directory at the wipe; its last
+          # errors go to the journal.
+          grep -i 'error' "$log" | tail -n 5 | sed 's/^/grafana: collector: /' >&2 || true
+          mv "$log" "$run_dir/grafana-export.log" || echo "grafana: cannot keep the collector's log" >&2
+          ;;
+        *) echo "grafana: cannot check the collector's log for the token; it is not kept" >&2 ;;
+      esac
+    fi
+    rm -f "$log" || true
+    docker rm -f forge-perf-grafana >/dev/null 2>&1 || echo "grafana: the wipe removes the collector" >&2
+  fi
+  rm -f "$tok" || echo "grafana: cannot remove the token file; the wipe does" >&2
 }
