@@ -133,7 +133,7 @@ class Preview(unittest.TestCase):
             self.assertEqual({r["box"]["instance_type"] for r in box}, {"m9gd.2xlarge", "m9gd.8xlarge"})
             self.assertTrue(any(r["pairing_id"] for r in box))
             self.assertEqual(box[0]["size_bytes"], 100 * 10**9)
-            self.assertEqual([r["class"] for r in index["one-run"]["runs"]], ["valid"])
+            self.assertEqual([(r["class"], "traced" in r["flags"]) for r in index["one-run"]["runs"]], [("valid", True)])
             outcomes = index["outcomes"]["runs"]
             broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
             self.assertEqual(len(broken), 1)

@@ -59,6 +59,7 @@ def row(record, previous):
         "size_bytes": (record["drill"]["settings"] or {}).get("stop_ingest_at_bytes"),
         "box": {k: record["box"][k] for k in ("id", "tier", "instance_type")},
         "run_started_at": record["time"]["run_started_at"],
+        "run_finished_at": record["time"]["run_finished_at"],
         "class": record["outcome"]["class"],
         "reasons": record["outcome"]["reasons"],
         "flags": record["outcome"]["flags"],

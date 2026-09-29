@@ -234,3 +234,30 @@ test("the latest counting run can come from a series other than per-trigger", ()
   assert.equal(M.latestCounting(d.runs).series, "nightly");
   assert.equal(M.latestCounting(index([run({ series: "calibration" })]).runs), null);
 });
+
+test("a traced run links to a Tempo search for its run ID over its run, five minutes either side", () => {
+  const r = run({ run_id: "main-20260929t210142z", flags: ["few_windows", "traced"],
+    run_started_at: "2026-09-29T21:01:42Z", run_finished_at: "2026-09-29T21:40:00Z" });
+  const url = M.traceLink(r);
+  const [base, query] = url.split("?");
+  assert.equal(base, `${M.GRAFANA}/explore`);
+  const params = new URLSearchParams(query);
+  assert.deepEqual([params.get("schemaVersion"), params.get("orgId")], ["1", "1"]);
+  assert.deepEqual(JSON.parse(params.get("panes")), { a: {
+    datasource: M.TEMPO_UID,
+    queries: [{ refId: "A", datasource: { type: "tempo", uid: M.TEMPO_UID }, queryType: "traceql",
+      query: '{ resource.forge_perf.run_id = "main-20260929t210142z" }', limit: 20 }],
+    range: { from: String(Date.parse("2026-09-29T20:56:42Z")), to: String(Date.parse("2026-09-29T21:45:00Z")) },
+  } });
+  assert.equal(M.GRAFANA, "https://filecoinfoundation.grafana.net");
+  assert.equal(M.TEMPO_UID, "grafanacloud-traces");
+});
+
+test("only a traced run with its trace file and both times gets a trace link", () => {
+  const times = { run_started_at: "2026-09-29T21:01:42Z", run_finished_at: "2026-09-29T21:40:00Z" };
+  assert.equal(M.traceLink(run({ ...times })), null);
+  assert.equal(M.traceLink(run({ ...times, flags: undefined })), null);
+  assert.ok(M.traceLink(run({ ...times, flags: ["traced"] })).startsWith(`${M.GRAFANA}/explore?`));
+  assert.equal(M.traceLink(run({ ...times, flags: ["traced", "trace_missing"] })), null);
+  assert.equal(M.traceLink(run({ run_started_at: times.run_started_at, flags: ["traced"] })), null);
+});

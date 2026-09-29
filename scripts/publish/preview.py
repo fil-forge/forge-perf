@@ -38,13 +38,21 @@ def iso(t):
 
 
 @functools.cache
+def fixture_case(case):
+    return json.loads((FIXTURES / case / "expected.json").read_text(encoding="utf-8"))
+
+
 def fixture(cls):
-    return json.loads((FIXTURES / CASE[cls] / "expected.json").read_text(encoding="utf-8"))
+    return fixture_case(CASE[cls])
 
 
 def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=None, smelt=None,
-           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False):
+           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False, traced=False):
     r = copy.deepcopy(fixture(cls))
+    if traced:
+        # The traced fixture's trace block and flag, so the page shows a trace link.
+        r["trace"] = copy.deepcopy(fixture_case("traced")["trace"])
+        r["outcome"]["flags"] = sorted(set(r["outcome"]["flags"]) | {"traced"})
     r["run_id"] = "main-" + start.strftime("%Y%m%dt%H%M%Sz")
     r["series"], r["pairing_id"] = series, pairing
     r["trigger"]["changed"] = list(changed)
@@ -101,7 +109,7 @@ def scenarios(now):
     idle = {"at": iso(now - dt.timedelta(minutes=3)), "state": "idle", "poll_failures": 0, "run_started_at": None}
     out = {}
     out["no-runs"] = ("No runs yet", [], unmeasured, [], idle)
-    out["one-run"] = ("One valid run", [record(hours(3), p5=0.31e9, windows=22)], unmeasured, [], idle)
+    out["one-run"] = ("One valid traced run", [record(hours(3), p5=0.31e9, windows=22, traced=True)], unmeasured, [], idle)
     out["calibration-only"] = ("Calibration runs only", [
         record(hours(40 - 6 * i), series="calibration", p5=p) for i, p in enumerate([0.24e9, 0.25e9, 0.23e9, 0.26e9])
     ] + [record(hours(4), "no_data", series="calibration")], unmeasured, [], idle)
