@@ -9,7 +9,7 @@ host="$(cd "$(dirname "$0")/.." && pwd -P)"
 repo="$(cd "$host/../.." && pwd -P)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/wipe-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-export D="$work/docker"
+export D="$work/docker" TESTS="$host/tests"
 mkdir -p "$work/bin"
 unset INVOCATION_ID FORGE_PERF_HOST_OPS FORGE_PERF_LOCK_HELD
 export PYTHONDONTWRITEBYTECODE=1
@@ -18,11 +18,19 @@ cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "docker $*" >>"$D/log"
+# The Grafana step's collector: grafana-docker.sh runs grafana-stub.py.
+case "$*" in "run -d --name forge-perf-grafana"* | "stop -t "*" forge-perf-grafana" | "logs forge-perf-grafana" | "rm -f forge-perf-grafana")
+  exec "$TESTS/grafana-docker.sh" "$@" ;;
+esac
 filter() { while [ $# -gt 0 ]; do [ "$1" != --filter ] || { echo "$2"; return; }; shift; done; }
 drop() { grep -v "^$1 " "$2" >"$2.new" || true; mv "$2.new" "$2"; }
 case "$1 ${2:-}" in
   "ps -aq")
     f="$(filter "$@")"
+    # recover.sh looks for the trace collector after it clears the Grafana
+    # step's leftovers; note a stale token file still there.
+    [ "$f" != "name=^forge-perf-otel" ] || [ -z "${GRAFANA_STALE_TOKEN:-}" ] ||
+      ! grep -qx stale "$GRAFANA_STALE_TOKEN" 2>/dev/null || touch "$D/stale-token-seen"
     while read -r id name proj; do
       case "$f" in
         "") echo "$id" ;;
@@ -74,9 +82,9 @@ case "$args" in
         [ -e "$D/harness-app" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
         cat "$D/harness-app" ;;
       *denylist*) echo FORBIDDEN-WORD ;;
-      *grafana-otlp*)
-        [ -e "$D/grafana-cred" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
-        cat "$D/grafana-cred" ;;
+      *grafana-token*)
+        [ -e "$D/grafana-token" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+        cat "$D/grafana-token" ;;
     esac ;;
   *" put-object "*)
     [ ! -e "$D/s3-down" ] || exit 1
@@ -278,43 +286,52 @@ assert trace["spans"] == 8, trace
 PY2
   fail "recovery did not pass the run's traces/ to record.py"
 echo "ok: recovery of a traced run records the run's trace file"
-has "$work/out" "grafana: no credential in SSM; nothing sent"
+has "$work/out" "grafana: no token in SSM; nothing sent"
 
 # The attempt that writes a traced run's no_data record sends its scrubbed
 # spans to Grafana before the wipe; the record has no drill results to send.
-# A later attempt, with the record already in the outbox, sends nothing.
-stub_pid=""
-trap '[ -z "$stub_pid" ] || kill "$stub_pid" 2>/dev/null; rm -rf "$work"' EXIT
+# A later attempt, with the record already in the outbox, sends nothing. A
+# collector and token file left by an earlier attempt go first.
+read -r gport gmport < <(python3 -c '
+import socket
+s = [socket.socket() for _ in range(2)]
+for x in s:
+    x.bind(("127.0.0.1", 0))
+print(*[x.getsockname()[1] for x in s])')
+trap '[ ! -e "$D/grafana-stub.pid" ] || kill "$(cat "$D/grafana-stub.pid")" 2>/dev/null; rm -rf "$work"' EXIT
 setup
 jq '.trace = {"ratio": "0.1"}' "$host/fixtures/stack-boot-failed/runner.json" >"$work/box/nvme/work/run/runner.json"
 mkdir -p "$work/box/nvme/work/run/traces"
 cp "$host/tests/grafana-span.json" "$work/box/nvme/work/run/traces/traces.jsonl"
 echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
-echo "123456:glc_fake-grafana-token-value" >"$D/grafana-cred"
-python3 "$host/tests/grafana-stub.py" "$D/grafana" "$work/grafana-port" &
-stub_pid=$!
-for _ in $(seq 50); do [ ! -e "$work/grafana-port" ] || break; sleep 0.1; done
+echo "glc_fake-grafana-token-value" >"$D/grafana-token"
+echo "cg forge-perf-grafana -" >>"$D/containers"
+echo stale >"$work/box/run/secrets/grafana-token"
 touch "$D/s3-down"
-FORGE_PERF_GRAFANA_ENDPOINT="http://127.0.0.1:$(cat "$work/grafana-port")/otlp" "$host/recover.sh" >"$work/out" 2>&1 ||
+GRAFANA_STALE_TOKEN="$work/box/run/secrets/grafana-token" \
+  FORGE_PERF_GRAFANA_PORT="$gport" FORGE_PERF_GRAFANA_METRICS_PORT="$gmport" "$host/recover.sh" >"$work/out" 2>&1 ||
   { cat "$work/out"; fail "recover (grafana) failed"; }
-[ "$(cat "$D"/grafana/*.json | jq -r .path | tr '\n' ' ')" = "/otlp/v1/traces " ] ||
+[ "$(cat "$D"/grafana/*.json | jq -r .path | tr '\n' ' ')" = "/v1/traces " ] ||
   fail "recovery sent: $(cat "$D"/grafana/*.json 2>/dev/null | jq -r .path)"
 jq -r .body "$D/grafana/000.json" >"$work/sent"
 lacks "$work/sent" "secret-object-key"
 lacks "$work/sent" "piri-0-allocations"
 has "$work/sent" '"forge_perf.run_id","value":{"stringValue":"main-20261001t200000z"}'
 has "$work/out" "no results to send"
+has "$work/out" "grafana: spans 1 sent, 0 failed, 0 unsent"
 [ "$(grep -n '=== grafana ===' "$work/out" | cut -d: -f1)" -lt "$(grep -n '=== wipe ===' "$work/out" | cut -d: -f1)" ] ||
   fail "grafana after the wipe"
+[ "$(grep -n 'rm -f cg' "$D/log" | head -1 | cut -d: -f1)" -lt "$(grep -n 'run -d --name forge-perf-grafana' "$D/log" | cut -d: -f1)" ] ||
+  fail "the leftover collector was not removed first"
+[ ! -e "$D/stale-token-seen" ] || fail "the leftover token file was not removed first"
 lacks "$work/out" "glc_fake-grafana-token-value"
-[ ! -e "$work/box/run/secrets/grafana-otlp" ] || fail "the credential file was left on /run"
+[ ! -e "$work/box/run/secrets/grafana-token" ] || fail "the token file was left on /run"
+[ ! -e "$D/grafana-stub.pid" ] || fail "the collector was left running"
 rm -rf "$D/grafana"
 echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
 "$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover (second) failed"; }
 [ ! -d "$D/grafana" ] || fail "a second attempt sent again"
 rm -f "$D/s3-down"
-{ kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
-stub_pid=""
 echo "ok: the recovery attempt that writes a traced run's record sends its scrubbed spans before the wipe, once"
 
 # --- recovery failure paths ---------------------------------------------------------

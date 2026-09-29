@@ -214,21 +214,33 @@ aws ssm get-parameters-by-path --path /forge-perf --query 'Parameters[].[Name,Ty
 
 ### The Grafana token
 
-Each run sends its results, and a traced run its scrubbed spans, to the `filecoinfoundation` Grafana Cloud stack through its OTLP gateway ([runner.md](runner.md#grafana)). The box authenticates with the stack's instance ID and an access policy token that can write metrics and traces and nothing else. Making the token takes the Admin role in the Grafana Cloud organization.
+Each run sends its results to the `filecoinfoundation` Grafana Cloud stack's Prometheus, and a traced run its scrubbed spans to the stack's Tempo, as infra-nodes' dev node does ([runner.md](runner.md#grafana)). Each service has its own instance ID, the basic auth user, committed in `config/grafana.conf`: Tempo `233235` at `tempo-us-central1.grafana.net:443`, Prometheus `475506` at `https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom/push`. Both take the same password, an access policy token that can write metrics and traces and nothing else. Making the token takes the Admin role in the Grafana Cloud organization.
 
-1. In the Grafana Cloud portal, open the stack's OpenTelemetry (OTLP) configuration. It shows the OTLP endpoint, which must equal `GRAFANA_OTLP_ENDPOINT` in `config/grafana.conf`, and the instance ID, which is the basic auth user.
-2. Under Security, Access Policies, create a policy named `forge-perf`, limited to the `filecoinfoundation` stack, with the scopes `metrics:write` and `traces:write`. Add a token to it; the portal shows the token once.
-3. Store `<instance id>:<token>` as one SecureString. As with the other secrets, the value goes through a temporary file readable only by you, never a command-line argument; `read -rs` keeps the pasted token off the screen and out of the shell history:
+1. Under Security, Access Policies in the Grafana Cloud portal, create a policy named `forge-perf`, limited to the `filecoinfoundation` stack, with the scopes `metrics:write` and `traces:write`. Add a token to it; the portal shows the token once. Copy it to the clipboard.
+2. Put the token alone in a temporary file readable only by you. As with the other secrets, it never becomes a command-line argument:
 
    ```sh
    tmp=$(mktemp)   # created mode 600
-   read -rs token  # paste the token, then Enter
-   printf '%s:%s' <instance id> "$token" >"$tmp"; unset token
-   aws ssm put-parameter --name /forge-perf/grafana-otlp --type SecureString --value "file://$tmp"
+   printf '%s' "$(pbpaste)" >"$tmp"
+   ```
+
+3. Check it against Prometheus without writing any data. An empty remote write request gets 400 when the token is right and 401 when it is not. `curl --config -` reads the credential from standard input, which keeps it out of the process list:
+
+   ```sh
+   printf 'user = "475506:%s"\n' "$(cat "$tmp")" | curl -s -o /dev/null -w '%{http_code}\n' --config - \
+     -X POST https://prometheus-prod-10-prod-us-central-0.grafana.net/api/prom/push
+   ```
+
+4. Store it as a SecureString and remove the file:
+
+   ```sh
+   aws ssm put-parameter --name /forge-perf/grafana-token --type SecureString --value "file://$tmp"
    rm -f "$tmp"
    ```
 
-The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `results sent` for a run with drill results, and for a traced run the count of trace requests sent. A tier 2 nightly's spans take a few minutes to send; the step's budget grows with the trace file, up to 10 minutes ([runner.md](runner.md#size-at-10)). Without the parameter every run logs `grafana: no credential in SSM; nothing sent` and goes on.
+The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `grafana: spans <n> sent, <n> failed, <n> unsent; points <n> sent, <n> failed, <n> unsent`. Points sent with none failed means Prometheus took the token; a traced run's spans sent means Tempo did. A tier 2 nightly's spans take a few minutes to send; the step's budget grows with the trace file, up to 10 minutes ([runner.md](runner.md#size-at-10)). Without the parameter every run logs `grafana: no token in SSM; nothing sent` and goes on.
+
+A run's spans in Tempo carry its run ID as the resource attribute `forge_perf.run_id`: in Explore, with the stack's Tempo data source, `{ resource.forge_perf.run_id = "<run_id>" }` finds them ([Reading a run's traces](#reading-a-runs-traces)).
 
 ### The `Project` cost allocation tag
 
@@ -475,13 +487,13 @@ infra-central installs it from `terraform/envs/grafana/dashboards/forge-perf.jso
 | harness deploy key | SSM `/forge-perf/harness-deploy-key`; the public half on fil-one/storage-qualification | yearly, and when someone with access leaves |
 | denylist pattern | SSM `/forge-perf/denylist`; repository secret `PUBLIC_DENYLIST_REGEX` | when the pattern changes |
 | `SLACK_BOT_TOKEN` | repository secret | when the Slack app's token changes |
-| Grafana token | SSM `/forge-perf/grafana-otlp` | yearly, and when someone with access leaves |
+| Grafana token (Tempo and Prometheus) | SSM `/forge-perf/grafana-token` | yearly, and when someone with access leaves |
 
 **piri's key.** IAM allows two keys per user, so the new key overlaps the old. Hold each box first (`hold.sh main on`), since a run whose preflight reads the parameters between the two writes starts piri with a mismatched pair, and release the hold once both are written. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
 
 **Harness deploy key.** Make and store a new key as in "The harness credential" above, with `--overwrite` on `put-parameter`, and add its public half beside the old one. After the next run fetches the harness, remove the old key from the repository's deploy keys.
 
-**Grafana token.** An access policy holds several tokens at once. Add a new token to the `forge-perf` policy, store it as in "The Grafana token" above with `--overwrite` added to `put-parameter`, and delete the old token once the next run's journal shows `results sent`.
+**Grafana token.** An access policy holds several tokens at once. Add a new token to the `forge-perf` policy, store it as in "The Grafana token" above with `--overwrite` added to `put-parameter`, and delete the old token once the next run's journal shows points sent and none failed.
 
 **Slack token.** `gh secret set SLACK_BOT_TOKEN -R fil-forge/forge-perf`, then dispatch `publish.yml` once to confirm a post goes through.
 

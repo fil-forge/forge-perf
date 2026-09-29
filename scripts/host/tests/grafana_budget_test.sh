@@ -4,8 +4,9 @@
 # GRAFANA_TRACE_S_PER_GB for each GB of traces.jsonl, up to
 # GRAFANA_TIMEOUT_MAX_S. timeout is stubbed on PATH to run over, so the step's
 # "ran over" line names the budget; the time left, which a second boundary can
-# shave by one, stays out of the check. The trace files are sparse, so a 5 GB
-# file costs no disk.
+# shave by one, stays out of the check. docker and curl are stubbed so the
+# collector "starts" and reports empty queues. The trace files are sparse, so
+# a 5 GB file costs no disk.
 # SC2016: stub bodies expand in the stub, not here.
 # shellcheck disable=SC2016
 set -euo pipefail
@@ -16,33 +17,46 @@ repo="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/grafana-budget-test.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin" "$work/checkout/config" "$work/traces"
+cp "$repo/config/images.lock" "$work/checkout/config/"
+echo '{}' >"$work/record.json"
 
 # timeout --kill-after=5 SECONDS python3 grafana-export.py ...: run over.
 cat >"$work/bin/timeout" <<'STUB'
 #!/usr/bin/env bash
 exit 124
 STUB
-chmod +x "$work/bin/timeout"
-echo "123456:glc_fake" >"$work/creds"
+printf '#!/usr/bin/env bash\n' >"$work/bin/docker"
+# The collector answers and its queues are empty; instance metadata does not.
+cat >"$work/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+for a; do
+  case "$a" in
+    */latest/*) exit 7 ;;
+    */metrics) echo "otelcol_exporter_queue_size 0" ;;
+  esac
+done
+STUB
+chmod +x "$work/bin/"*
+echo "glc_fake" >"$work/token"
 
 failures=0
 fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
 
 # budget <conf lines> <traces.jsonl size or "none">: the seconds the exporter got.
 budget() {
-  printf 'GRAFANA_OTLP_ENDPOINT=https://otlp.example.test/otlp\n%s\n' "$1" >"$work/checkout/config/grafana.conf"
+  printf 'GRAFANA_PROM_URL=https://prom.example.test/push\nGRAFANA_PROM_USER=1\n%s\n' "$1" >"$work/checkout/config/grafana.conf"
   rm -f "$work/traces/traces.jsonl"
   [ "$2" = none ] || { : >"$work/traces/traces.jsonl" && truncate -s "$2" "$work/traces/traces.jsonl"; }
   (
     PATH="$work/bin:$PATH"
-    FORGE_PERF_CHECKOUT="$work/checkout" FORGE_PERF_GRAFANA_CREDENTIALS="$work/creds"
+    FORGE_PERF_CHECKOUT="$work/checkout" FORGE_PERF_GRAFANA_TOKEN_FILE="$work/token" FORGE_PERF_RUNTIME="$work/rt"
     FORGE_PERF_HOST_OPS=skip FORGE_PERF_IMDS_URL=http://127.0.0.1:9
     # shellcheck source=../lib.sh
     . "$repo/scripts/host/lib.sh"
     # shellcheck source=../runlib.sh
     . "$repo/scripts/host/runlib.sh"
     step() { :; }
-    grafana_export "$work/runner.json" "$work/record.json" "$work/traces" 2>&1 >/dev/null
+    grafana_export "$work/runner.json" "$work/record.json" "$work" 2>&1 >/dev/null
   ) | sed -n 's/^grafana: ran over \([0-9]*\)s.*/\1/p' | grep . || echo "not run"
 }
 

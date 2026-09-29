@@ -8,7 +8,6 @@ message, an exception event and a link attribute. No test reaches a real
 endpoint.
 """
 
-import base64
 import copy
 import http.server
 import json
@@ -25,7 +24,6 @@ ROOT = HERE.parent.parent
 SCRIPT = HERE / "grafana-export.py"
 ALLOWLIST = ROOT / "config" / "grafana-span-attributes.txt"
 FIXTURES = HERE / "fixtures"
-CREDENTIAL = "123456:glc_fake-grafana-token-value"
 
 # Strings that must not survive the scrub.
 LEAKS = ("forge-perf-piri-main-1-piri-0-allocations", "objects/secret-object-key", "://",
@@ -141,8 +139,6 @@ class ExportTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         self.stub = Stub()
-        self.creds = self.dir / "grafana-otlp"
-        self.creds.write_text(CREDENTIAL + "\n")
         self.record = json.loads((FIXTURES / "traced" / "expected.json").read_text())
         self.runner = json.loads((FIXTURES / "traced" / "runner.json").read_text())
 
@@ -161,7 +157,7 @@ class ExportTest(unittest.TestCase):
         return path
 
     def export(self, *extra, record=True, traces=None, endpoint=None, runner=None):
-        args = ["--endpoint", endpoint or self.stub.url, "--credentials", str(self.creds),
+        args = ["--endpoint", endpoint or self.stub.url,
                 "--runner", str(self.write("runner.json", runner or self.runner)),
                 "--span-attributes", str(ALLOWLIST), "--deadline", "20"]
         if record:
@@ -170,8 +166,6 @@ class ExportTest(unittest.TestCase):
             args += ["--traces", str(traces)]
         proc = subprocess.run([sys.executable, str(SCRIPT), *args, *extra],
                               capture_output=True, text=True, timeout=60, check=False)
-        self.assertNotIn(CREDENTIAL.split(":")[1], proc.stdout + proc.stderr)
-        self.assertNotIn(base64.b64encode(CREDENTIAL.encode()).decode(), proc.stdout + proc.stderr)
         return proc
 
     def test_scrub_keeps_the_allowlist_and_drops_everything_else(self):
@@ -209,12 +203,11 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(rs[1]["scopeSpans"][0]["spans"][0]["name"], "bucket.lock")
         self.assertIn("traces 1 of 1 requests sent, 3 spans, 0 unreadable lines", proc.stderr)
 
-    def test_basic_auth_and_content_type(self):
+    def test_no_auth_and_json(self):
         self.export(traces=self.traces([request("piri", [span(1)])]))
         self.assertEqual([r["path"] for r in self.stub.requests], ["/otlp/v1/metrics", "/otlp/v1/traces"])
-        want = "Basic " + base64.b64encode(CREDENTIAL.encode()).decode()
         for r in self.stub.requests:
-            self.assertEqual(r["headers"]["Authorization"], want)
+            self.assertNotIn("Authorization", r["headers"])
             self.assertEqual(r["headers"]["Content-Type"], "application/json")
 
     def test_requests_split_under_the_size_limit(self):
@@ -390,17 +383,10 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("1 spans, 1 unreadable lines", proc.stderr)
 
-    def test_a_malformed_credential_sends_nothing(self):
-        for bad in ("no-colon", ":token", "123:", "123:tok en"):
-            self.creds.write_text(bad)
-            proc = self.export(traces=self.traces([request("piri", [span(1)])]))
-            self.assertEqual(proc.returncode, 2, bad)
-            self.assertNotIn(bad, proc.stderr)
-        self.assertEqual(self.stub.requests, [])
-
-    def test_plain_http_goes_only_to_this_machine(self):
-        proc = self.export(endpoint="http://otlp.example.com/otlp")
-        self.assertEqual(proc.returncode, 2)
+    def test_only_plain_http_on_this_machine(self):
+        for url in ("http://otlp.example.com/otlp", "https://127.0.0.1:1/otlp", "https://otlp.example.com/otlp"):
+            proc = self.export(endpoint=url)
+            self.assertEqual(proc.returncode, 2, url)
         self.assertEqual(self.stub.requests, [])
 
     def test_a_record_run_id_in_the_resource_follows_the_runner(self):

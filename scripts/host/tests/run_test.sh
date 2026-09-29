@@ -15,7 +15,8 @@ repo="$(cd "$host/../.." && pwd -P)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/run-test.XXXXXX")"
 # KEEP_WORK=1 keeps the scratch directory for inspection.
 trap '[ -n "${KEEP_WORK:-}" ] || rm -rf "$work"' EXIT
-export D="$work/d" FIXTURES="$host/fixtures" TESTS="$host/tests"
+REAL_CURL="$(command -v curl)"
+export D="$work/d" FIXTURES="$host/fixtures" TESTS="$host/tests" REAL_CURL
 mkdir -p "$work/bin" "$D"
 unset INVOCATION_ID FORGE_PERF_HOST_OPS FORGE_PERF_LOCK_HELD AWS_ENDPOINT_URL AWS_PROFILE
 export PYTHONDONTWRITEBYTECODE=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -29,6 +30,8 @@ cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >>"$D/docker.log"
 case "$*" in
+  # The Grafana step's collector: grafana-docker.sh runs grafana-stub.py.
+  *forge-perf-grafana*) exec "$TESTS/grafana-docker.sh" "$@" ;;
   "version --format"*) echo 28.5.1 ;;
   "compose version --short") echo 2.40.3 ;;
   "ps -aq"*) [ -z "${DOCKER_HANG:-}" ] || exec sleep 10; cat "$D/containers" 2>/dev/null ;;
@@ -102,7 +105,7 @@ case " $* " in
       *piri-s3-access-key-id*) echo AKIAFAKEKEYID ;;
       *piri-s3-secret-access-key*) echo fake-secret-value ;;
       *denylist*) echo zz-no-such-term-zz ;;
-      *grafana-otlp*) [ -e "$D/grafana-cred" ] || exit 254; cat "$D/grafana-cred" ;;
+      *grafana-token*) [ -e "$D/grafana-token" ] || exit 254; cat "$D/grafana-token" ;;
       *) exit 254 ;;
     esac ;;
   *" s3 cp "*) [ ! -e "$D/results-down" ] && cp "$3" "$D/raw.tar.zst" ;;
@@ -115,8 +118,10 @@ case " $* " in
 esac
 STUB
 # IMDSv2: a token, then meta-data. IMDS_DOWN makes it unreachable (a laptop).
+# Requests to 127.0.0.1, the Grafana step's collector, go to the real curl.
 cat >"$work/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+for a; do case "$a" in http://127.0.0.1:*) exec "$REAL_CURL" "$@" ;; esac; done
 [ -z "${IMDS_DOWN:-}" ] || exit 7
 for a; do
   case "$a" in
@@ -902,18 +907,16 @@ echo "ok: a malformed ratio from the command line, pending.json or the settings 
 
 # --- Grafana ----------------------------------------------------------------------
 
-# The stub OTLP endpoint (grafana-stub.py) and its URL in grafana_url.
-stub_pid=""
-grafana_stub() {
-  [ -z "$stub_pid" ] || { kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
-  rm -f "$work/grafana-port"
-  python3 "$TESTS/grafana-stub.py" "$D/grafana" "$work/grafana-port" &
-  stub_pid=$!
-  for _ in $(seq 50); do [ ! -e "$work/grafana-port" ] || break; sleep 0.1; done
-  [ -e "$work/grafana-port" ] || fail "the Grafana stub did not start"
-  grafana_url="http://127.0.0.1:$(cat "$work/grafana-port")/otlp"
-}
-trap '[ -z "$stub_pid" ] || kill "$stub_pid" 2>/dev/null; [ -n "${KEEP_WORK:-}" ] || rm -rf "$work"' EXIT
+# The collector is stubbed (grafana-docker.sh starts grafana-stub.py on the
+# ports the step publishes); grafana_step_test.sh covers the step itself.
+read -r gport gmport < <(python3 -c '
+import socket
+s = [socket.socket() for _ in range(2)]
+for x in s:
+    x.bind(("127.0.0.1", 0))
+print(*[x.getsockname()[1] for x in s])')
+ports=(FORGE_PERF_GRAFANA_PORT="$gport" FORGE_PERF_GRAFANA_METRICS_PORT="$gmport")
+trap '[ ! -e "$D/grafana-stub.pid" ] || kill "$(cat "$D/grafana-stub.pid")" 2>/dev/null; [ -n "${KEEP_WORK:-}" ] || rm -rf "$work"' EXIT
 token=glc_fake-grafana-token-value
 grafana_requests() { cat "$D"/grafana/*.json 2>/dev/null | jq -r .path | tr '\n' ' '; }
 attrs() { jq -c 'map({(.key): (.value | to_entries[0].value)}) | add'; }
@@ -921,21 +924,19 @@ attrs() { jq -c 'map({(.key): (.value | to_entries[0].value)}) | add'; }
 # Without the SSM parameter the step logs a line and the run goes on.
 setup
 run 0 -- --set "$work/set.json" --workers 16
-has "$work/out" "grafana: no credential in SSM; nothing sent"
+has "$work/out" "grafana: no token in SSM; nothing sent"
+[ ! -e "$D/grafana-run.args" ] || fail "a collector started without a token"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
-echo "ok: without a Grafana credential the run sends nothing and is recorded as before"
+echo "ok: without a Grafana token the run sends nothing and is recorded as before"
 
-# A traced run sends its scrubbed spans and its results after the record and
-# before the upload and the wipe. The token reaches no log, file or argument.
+# A traced run sends its scrubbed spans and its results through the collector
+# after the record and before the upload and the wipe. The token reaches no
+# log, file other than its own or argument.
 setup
-grafana_stub
-echo "123456:$token" >"$D/grafana-cred"
-run 0 FORGE_PERF_TRACE_SETTLE_S=0 FORGE_PERF_GRAFANA_ENDPOINT="$grafana_url" -- \
-  --set "$work/set.json" --workers 16 --trace 0.1
+echo "$token" >"$D/grafana-token"
+run 0 FORGE_PERF_TRACE_SETTLE_S=0 "${ports[@]}" -- --set "$work/set.json" --workers 16 --trace 0.1
 id="$(runner .run_id)"
-[ "$(grafana_requests)" = "/otlp/v1/metrics /otlp/v1/traces " ] || fail "requests: $(grafana_requests)"
-[ "$(jq -r .auth "$D"/grafana/*.json | sort -u)" = "Basic $(printf '123456:%s' "$token" | base64 | tr -d '\n')" ] ||
-  fail "basic auth"
+[ "$(grafana_requests)" = "/v1/metrics /v1/traces " ] || fail "requests: $(grafana_requests)"
 jq -r .body "$D/grafana/001.json" >"$work/sent-traces"
 for leak in forge-perf-piri-main-1-piri-0-allocations objects/secret-object-key '://' 'SELECT id FROM' fake-host; do
   lacks "$work/sent-traces" "$leak"
@@ -948,28 +949,31 @@ done
 jq -r .body "$D/grafana/000.json" | jq -e --arg id "$id" '[.resourceMetrics[0].scopeMetrics[0].metrics[]
   | .gauge.dataPoints[0].attributes | map({(.key): .value.stringValue}) | add | .run_id == $id and .traced == "true"
   and .class == "valid"] | length == 5 and all' >/dev/null || fail "metrics body"
+has "$work/out" "grafana: spans 1 sent, 0 failed, 0 unsent; points 5 sent, 0 failed, 0 unsent"
 order="$(grep -E '^=== (record|grafana|upload|wipe) ===' "$work/out" | tr -d '= ' | tr '\n' ' ')"
 [ "$order" = "record grafana upload wipe " ] || fail "close-out order: $order"
-has "$D/aws.log" "--name /forge-perf/grafana-otlp"
-[ ! -e "$work/box/run/secrets/grafana-otlp" ] || fail "the credential file was left on /run"
+has "$D/aws.log" "--name /forge-perf/grafana-token"
+[ "$(tail -1 "$D/grafana-docker.log")" = "rm -f forge-perf-grafana" ] || fail "the collector was not removed"
+[ ! -e "$work/box/run/secrets/grafana-token" ] || fail "the token file was left on /run"
+[ "$(cat "$work/box/nvme/work/run/grafana-export.log")" = "collector log" ] || fail "no grafana-export.log"
 lacks "$work/out" "$token"
 ! grep -rqF "$token" "$work/box/state" "$work/box/nvme" "$work/box/outbox" "$D/record.json" "$D/docker.log" \
-  "$D/aws.log" || fail "the token reached a file"
+  "$D/aws.log" "$D/grafana-run.args" || fail "the token reached a file"
 ! zstd -dc "$D/raw.tar.zst" | tar -xOf - | grep -qF "$token" || fail "the token reached the raw tarball"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
 echo "ok: a traced run sends scrubbed spans and its results between the record and the upload, and the token stays off disk"
 
 # An untraced run sends its results alone.
 setup
-echo "123456:$token" >"$D/grafana-cred"
-run 0 FORGE_PERF_GRAFANA_ENDPOINT="$grafana_url" -- --set "$work/set.json" --workers 16
-[ "$(grafana_requests)" = "/otlp/v1/metrics " ] || fail "requests: $(grafana_requests)"
+echo "$token" >"$D/grafana-token"
+run 0 "${ports[@]}" -- --set "$work/set.json" --workers 16
+[ "$(grafana_requests)" = "/v1/metrics " ] || fail "requests: $(grafana_requests)"
 echo "ok: an untraced run sends its results and no spans"
 
 # A stop request leaves Grafana out, like the upload.
 setup
-echo "123456:$token" >"$D/grafana-cred"
-(launch DRILL=hang FORGE_PERF_GRAFANA_ENDPOINT="$grafana_url" -- --set "$work/set.json" --workers 16) &
+echo "$token" >"$D/grafana-token"
+(launch DRILL=hang "${ports[@]}" -- --set "$work/set.json" --workers 16) &
 pid=$!
 for _ in $(seq 150); do [ ! -e "$D/drill-running" ] || break; sleep 0.2; done
 kill -TERM "$pid"
@@ -978,34 +982,33 @@ wait "$pid" || true
 lacks "$work/out" "=== grafana ==="
 echo "ok: a stopped run sends nothing to Grafana"
 
-# An endpoint that fails, hangs past the budget or is down changes nothing
-# else: the class, reasons and flags are those of a run without Grafana, and
-# the run still uploads and wipes.
+# A collector that refuses, hangs past the budget, fails to send or does not
+# start changes nothing else: the class, reasons and flags are those of a run
+# without Grafana, and the run still uploads and wipes.
 setup
 run 0 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 0.1
 want_outcome="$(jq -c '[.outcome.class, .outcome.reasons, .outcome.flags]' "$D/record.json")"
-for mode in fail hang down; do
+for mode in refuse hang fail down; do
   setup
-  echo "123456:$token" >"$D/grafana-cred"
+  echo "$token" >"$D/grafana-token"
   case "$mode" in
-    fail) GRAFANA_STATUS=500 grafana_stub ;;
+    refuse) env=(GRAFANA_STATUS=500) line="grafana-export.py exited 1; the run goes on" ;;
     hang)
-      GRAFANA_HANG=1 grafana_stub
-      sed 's/^GRAFANA_TIMEOUT_S=.*/GRAFANA_TIMEOUT_S=4/' "$work/checkout/config/grafana.conf" >"$work/grafana.conf"
+      env=(GRAFANA_HANG=1) line="the run goes on"
+      sed 's/^GRAFANA_TIMEOUT_S=.*/GRAFANA_TIMEOUT_S=8/' "$work/checkout/config/grafana.conf" >"$work/grafana.conf"
       mv "$work/grafana.conf" "$work/checkout/config/grafana.conf"
       git -C "$work/checkout" commit -qam "short budget" ;;
-    down)
-      { kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
-      stub_pid="" ;;
+    fail) env=(GRAFANA_EXPORT=fail) line="grafana: spans 0 sent, 1 failed, 0 unsent; points 0 sent, 5 failed, 0 unsent" ;;
+    down) env=(GRAFANA_RUN_FAIL=1) line="grafana: cannot start the collector; nothing sent" ;;
   esac
-  run 0 FORGE_PERF_TRACE_SETTLE_S=0 FORGE_PERF_GRAFANA_ENDPOINT="$grafana_url" -- \
-    --set "$work/set.json" --workers 16 --trace 0.1
-  has "$work/out" "the run goes on"
+  run 0 FORGE_PERF_TRACE_SETTLE_S=0 "${ports[@]}" "${env[@]}" -- --set "$work/set.json" --workers 16 --trace 0.1
+  has "$work/out" "$line"
   [ "$(jq -c '[.outcome.class, .outcome.reasons, .outcome.flags]' "$D/record.json")" = "$want_outcome" ] ||
     fail "$mode: outcome $(jq -c .outcome "$D/record.json")"
   [ "$(runner '.reasons | length')" = 0 ] || fail "$mode: reasons $(runner .reasons)"
   grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "$mode: not wiped"
-  [ ! -e "$work/box/run/secrets/grafana-otlp" ] || fail "$mode: the credential file was left on /run"
+  [ ! -e "$work/box/run/secrets/grafana-token" ] || fail "$mode: the token file was left on /run"
+  [ "$(tail -1 "$D/grafana-docker.log")" = "rm -f forge-perf-grafana" ] || fail "$mode: the collector was not removed"
   lacks "$work/out" "$token"
 done
-echo "ok: a Grafana endpoint that fails, hangs or is down leaves the run's class, upload and wipe as they were"
+echo "ok: a collector that refuses, hangs, fails to send or does not start leaves the run's class, upload and wipe as they were"

@@ -1,0 +1,93 @@
+# The one-shot collector the Grafana step starts as forge-perf-grafana after
+# the record (docs/runner.md, "Grafana"), image OTEL_COLLECTOR_IMAGE in
+# images.lock. scripts/host/grafana-export.py posts the run's results and
+# scrubbed spans to its OTLP/HTTP receiver, published on 127.0.0.1 only. It
+# sends traces to Tempo over OTLP gRPC with TLS and results to Prometheus by
+# remote write, each with basic auth: the user is the stack's instance ID for
+# that service, the password the access policy token, which the step mounts
+# read-only at /secrets/token. The token never reaches argv or the
+# container's environment.
+#
+# The step sets the GRAFANA_* variables from config/grafana.conf. For a half
+# that is off it passes a placeholder endpoint and user and points that
+# pipeline at nop, so the exporter is never started. The collector's own
+# counters on :8888 tell the step when the queues are empty and how many
+# spans and points were sent.
+
+extensions:
+  basicauth/tempo:
+    client_auth:
+      username: ${env:GRAFANA_TEMPO_USER}
+      password: ${file:/secrets/token}
+  basicauth/prometheus:
+    client_auth:
+      username: ${env:GRAFANA_PROM_USER}
+      password: ${file:/secrets/token}
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Refuses data before the container's 2 GB memory limit is reached; the
+  # receiver answers the refused request with an error and counts it.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1536
+    spike_limit_mib: 384
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: ${env:GRAFANA_TEMPO_ENDPOINT}
+    auth:
+      authenticator: basicauth/tempo
+    tls:
+      insecure: false
+    # Each request holds up to 4 MB of OTLP JSON. A full queue makes the
+    # receiver wait instead of refusing, so a slow Tempo slows the upload.
+    sending_queue:
+      enabled: true
+      queue_size: 16
+      block_on_overflow: true
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 60s
+  prometheus_remote_write:
+    http:
+      endpoint: ${env:GRAFANA_PROM_URL}
+      auth:
+        authenticator: basicauth/prometheus
+    # Resource attributes become labels (service.name also becomes job).
+    resource_constant_labels:
+      included: ["*"]
+    # This exporter's timeout covers its retries, not one attempt; the
+    # default 5s would end them long before max_elapsed_time. 30s fits in
+    # the time the step keeps for the drain and the stop.
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 60s
+  nop: {}
+
+service:
+  extensions: [basicauth/tempo, basicauth/prometheus]
+  telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [otlp_grpc/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [prometheus_remote_write]

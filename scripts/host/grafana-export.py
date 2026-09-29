@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Sends a finished run's results, and a traced run's scrubbed spans, to an
-OTLP/HTTP endpoint: Grafana Cloud's OTLP gateway on the box.
+OTLP/HTTP endpoint on this machine: the Grafana step's collector, which
+forwards them to Grafana Cloud.
 
-    grafana-export.py --endpoint URL --credentials FILE --runner runner.json
+    grafana-export.py --endpoint URL --runner runner.json
                       [--record record.json] [--traces traces.jsonl]
                       --span-attributes FILE [--max-request-bytes N]
                       [--deadline SECONDS]
 
-docs/runner.md ("Grafana") is the contract. FILE holds `<instance id>:<token>`,
-sent as HTTP basic auth; the credential never reaches argv, the output or a
-file this script writes.
+docs/runner.md ("Grafana") is the contract. The endpoint is plain http:// on
+this machine and takes no credential; the collector holds the token.
 
 Traces: each line of traces.jsonl is one OTLP JSON ExportTraceServiceRequest.
 Every attribute not on an allowlist is dropped: on the resource, only
@@ -29,13 +29,12 @@ the deadline.
 Nothing here changes the run: every failure is counted and reported in one
 line, never raised. Messages name a status code or an error class, never a
 response body or a header. A redirect counts as a failure and is not
-followed, so the credential reaches only the configured endpoint. Exit status: 0 everything was sent, or there was
+followed. Exit status: 0 everything was sent, or there was
 nothing to send; 1 a request failed or was not sent before the deadline; 2 a
 usage error or unusable configuration, with nothing sent.
 """
 
 import argparse
-import base64
 import calendar
 import http.client
 import json
@@ -292,7 +291,7 @@ def metrics_body(record):
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Refuses every redirect, so the credential goes only to the configured
+    """Refuses every redirect, so the data goes only to the configured
     endpoint; urlopen then raises HTTPError with the 3xx code."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -303,9 +302,8 @@ OPENER = urllib.request.build_opener(NoRedirect)
 
 
 class Sender:
-    def __init__(self, endpoint, auth, deadline):
+    def __init__(self, endpoint, deadline):
         self.endpoint = endpoint.rstrip("/")
-        self.auth = auth
         self.deadline = deadline
         self.late = False
 
@@ -318,7 +316,7 @@ class Sender:
                 self.late = True
             return False
         req = urllib.request.Request(self.endpoint + path, data=data, method="POST", headers={
-            "Content-Type": "application/json", "Authorization": self.auth})
+            "Content-Type": "application/json"})
         try:
             with OPENER.open(req, timeout=min(PER_REQUEST_TIMEOUT_S, left)) as resp:
                 resp.read()
@@ -330,29 +328,17 @@ class Sender:
         return False
 
 
-def read_auth(path):
-    with open(path, encoding="utf-8") as f:
-        value = f.read().strip()
-    user, sep, token = value.partition(":")
-    if not sep or not user or not token or any(c.isspace() for c in value):
-        return None
-    return "Basic " + base64.b64encode(value.encode()).decode()
-
-
 def endpoint_ok(url):
     try:
         u = urllib.parse.urlsplit(url)
     except ValueError:
         return False
-    if u.scheme == "https":
-        return bool(u.hostname)
     return u.scheme == "http" and u.hostname in LOCAL_HOSTS
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--endpoint", required=True)
-    p.add_argument("--credentials", required=True)
     p.add_argument("--runner", required=True)
     p.add_argument("--record")
     p.add_argument("--traces")
@@ -363,15 +349,7 @@ def main(argv=None):
     deadline = time.monotonic() + args.deadline
 
     if not endpoint_ok(args.endpoint):
-        log("the endpoint must be https://, or http:// on this machine; nothing sent")
-        return 2
-    try:
-        auth = read_auth(args.credentials)
-    except OSError as e:
-        log(f"cannot read the credential ({type(e).__name__}); nothing sent")
-        return 2
-    if auth is None:
-        log("the credential is not <instance id>:<token>; nothing sent")
+        log("the endpoint must be http:// on this machine; nothing sent")
         return 2
     try:
         runner = json.load(open(args.runner, encoding="utf-8"))
@@ -386,7 +364,7 @@ def main(argv=None):
         log(f"cannot read the runner, the record or the allowlist ({type(e).__name__}); nothing sent")
         return 2
 
-    sender = Sender(args.endpoint, auth, deadline)
+    sender = Sender(args.endpoint, deadline)
     failed = 0
     parts = []
 
@@ -427,7 +405,7 @@ def main(argv=None):
                      f"{stats['spans_too_large']} spans too large")
         failed += stats["spans_too_large"] > 0
 
-    log("; ".join(parts))
+    log("to the collector: " + "; ".join(parts))
     return 1 if failed else 0
 
 

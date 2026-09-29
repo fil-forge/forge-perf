@@ -4,10 +4,12 @@
 #   wipe.sh [--if-dirty]
 #
 # In order: `make nuke YES=1` in the smelt checkout; remove every remaining
-# container, every volume by name and forge-network; empty piri's six buckets
-# and abort their incomplete multipart uploads; delete the work tree; check
-# that no container or volume remains; fstrim the NVMe; drop the page cache;
-# remove images outside the pinned set; delete the secrets under /run.
+# container (a leftover Grafana collector, forge-perf-grafana, among them),
+# every volume by name and forge-network; empty piri's six buckets and abort
+# their incomplete multipart uploads; delete the work tree; check that no
+# container or volume remains; fstrim the NVMe; drop the page cache; remove
+# images outside the pinned set; delete the secrets under /run, the Grafana
+# token file among them.
 #
 # It never stops Docker, so it can run in a unit ordered after docker.service.
 # The NVMe is formatted only at boot (nvme.sh). Every step is safe to repeat,

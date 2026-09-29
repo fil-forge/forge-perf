@@ -881,7 +881,7 @@ close_out() {
   # A stop request leaves Grafana out and the upload to the next poll, so the
   # wipe fits in the unit's TimeoutStopSec.
   if [ -z "$stop_requested" ]; then
-    grafana_export "$state/runner.json" "$record" "$RUN/traces"
+    grafana_export "$state/runner.json" "$record" "$RUN"
     step "upload"
     "$here/outbox.sh" flush || echo "run.sh: the outbox keeps files for the next poll" >&2
     [ "$ok" -ne 0 ] || set_phase uploaded
