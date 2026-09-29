@@ -1,0 +1,347 @@
+# Runs one pull request's image on the persistent box against main's set.
+#
+# A Forge service repository calls this from its own forge-perf.yml when
+# someone comments `/forge-perf` on a pull request (docs/operations.md,
+# "Testing a pull request with /forge-perf"). The jobs:
+#
+#   check    the comment, the commenter and the pull request; posts the comment
+#            this run keeps up to date
+#   build    the pull request's head commit for linux/arm64, pushed only as
+#            ghcr.io/fil-forge/<service>:pr-<n>-<sha7>
+#   request  writes requests/<id>.json to the requests bucket for the box
+#   wait     reads status/<id>.json every minute for up to 5 h 30 min and
+#            updates the comment and the job summary
+#   report   updates the comment when an earlier job failed or was cancelled
+#
+# The build job runs the pull request's Dockerfile and holds no AWS
+# credentials. The jobs that hold them run only forge-perf's own code, checked
+# out from main, where scripts/ci/pr_run.py does everything beyond one command.
+#
+# Everything runs in the caller's context: github.repository is the service
+# repository, and an issue_comment run takes the workflow from its default
+# branch, which is what the request role's trust policy names.
+
+name: forge-perf pr-run
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: The repository's name, which is also its image's name under ghcr.io/fil-forge/.
+        type: string
+        required: true
+      dockerfile:
+        description: The Dockerfile, as a path from the repository root.
+        type: string
+        default: Dockerfile
+      target:
+        description: The build stage the tracked image is built from; empty for the last stage.
+        type: string
+        default: ""
+      context:
+        description: The build context, as a path from the repository root.
+        type: string
+        default: .
+      build-args:
+        description: >-
+          One NAME=value per line, as docker/build-push-action takes them. {commit}, {sha7}, {pr} and {tag}
+          are replaced by the head commit, its first seven characters, the pull request number and the image tag.
+        type: string
+        default: ""
+
+permissions: {}
+
+env:
+  AWS_REGION: us-east-2
+  REQUESTS_BUCKET: forge-perf-requests-654654381893
+  REQUEST_ROLE: arn:aws:iam::654654381893:role/forge-perf-ci-request
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  check:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      go: ${{ steps.check.outputs.match == 'true' && steps.check.outputs.error == '' && steps.comment.outputs.id != '' }}
+      pairs: ${{ steps.check.outputs.pairs }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
+      tag: ${{ steps.check.outputs.tag }}
+      comment_id: ${{ steps.comment.outputs.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fil-forge/forge-perf
+          ref: main
+          path: forge-perf
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: read the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'json<<FORGE_PERF_EOF'
+            gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state,headRefOid,headRepository,headRepositoryOwner
+            echo 'FORGE_PERF_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: check the comment and the pull request
+        id: check
+        env:
+          FP_COMMENT_BODY: ${{ github.event.comment.body }}
+          FP_PR_JSON: ${{ steps.pr.outputs.json }}
+          FP_REPOSITORY: ${{ github.repository }}
+          FP_SERVICE: ${{ inputs.service }}
+          FP_PR: ${{ github.event.issue.number }}
+        run: python3 forge-perf/scripts/ci/pr_run.py check
+
+      - name: refuse
+        if: steps.check.outputs.match == 'true' && steps.check.outputs.error != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          ERROR: ${{ steps.check.outputs.error }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="forge-perf did not start: $ERROR" --silent
+          exit 1
+
+      - name: react
+        if: steps.check.outputs.match == 'true' && steps.check.outputs.error == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT: ${{ github.event.comment.id }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT/reactions" -f content=rocket --silent
+
+      - name: post the status comment
+        id: comment
+        if: steps.check.outputs.match == 'true' && steps.check.outputs.error == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FP_SERVICE: ${{ inputs.service }}
+          FP_PR: ${{ github.event.issue.number }}
+          FP_COMMIT: ${{ steps.check.outputs.head_sha }}
+          FP_PAIRS: ${{ steps.check.outputs.pairs }}
+          FP_RUN_URL: ${{ env.RUN_URL }}
+        run: |
+          set -euo pipefail
+          python3 forge-perf/scripts/ci/pr_run.py comment --phase started --out "$RUNNER_TEMP/comment.md"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$FP_PR/comments" -F "body=@$RUNNER_TEMP/comment.md" --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.go == 'true'
+    # The box is Graviton, so the image is built natively on arm64.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      # The service under src/, so forge-perf's scripts beside it stay out of
+      # the build context.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.check.outputs.head_sha }}
+          path: src
+          persist-credentials: false
+
+      # The same commit the check job read; a push since then is not built.
+      - name: confirm the commit
+        env:
+          WANT: ${{ needs.check.outputs.head_sha }}
+        run: test "$(git -C src rev-parse HEAD)" = "$WANT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fil-forge/forge-perf
+          ref: main
+          path: forge-perf
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: fill in the build arguments
+        id: args
+        env:
+          FP_BUILD_ARGS: ${{ inputs.build-args }}
+          FP_COMMIT: ${{ needs.check.outputs.head_sha }}
+          FP_PR: ${{ github.event.issue.number }}
+        run: python3 forge-perf/scripts/ci/pr_run.py build-args
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Only the pr- tag: main, latest and sha-* belong to the repository's own
+      # publish workflow, which the dev node and the box's poller follow.
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: src/${{ inputs.context }}
+          file: src/${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
+          build-args: ${{ steps.args.outputs.build_args }}
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/fil-forge/${{ inputs.service }}:${{ needs.check.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.check.outputs.head_sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  request:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      id: ${{ steps.request.outputs.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fil-forge/forge-perf
+          ref: main
+          path: forge-perf
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: write the request
+        id: request
+        env:
+          FP_SERVICE: ${{ inputs.service }}
+          FP_DIGEST: ${{ needs.build.outputs.digest }}
+          FP_COMMIT: ${{ needs.check.outputs.head_sha }}
+          FP_REPOSITORY: ${{ github.repository }}
+          FP_PR: ${{ github.event.issue.number }}
+          FP_REQUESTED_BY: ${{ github.event.comment.user.login }}
+          FP_PAIRS: ${{ needs.check.outputs.pairs }}
+          FP_RUN_ID: ${{ github.run_id }}
+          FP_SERVER_URL: ${{ github.server_url }}
+        run: python3 forge-perf/scripts/ci/pr_run.py request --out "$RUNNER_TEMP/request.json"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.REQUEST_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The ID carries the run ID, which stays the same across attempts, so an
+      # existing object means a retried job. Once the box has taken a request
+      # it deletes it and writes status/<id>.json; a request put after that
+      # would queue a second experiment whose result nothing reads, and the
+      # wait would report the first attempt's status.
+      - name: put the request
+        env:
+          ID: ${{ steps.request.outputs.id }}
+        run: |
+          if aws s3api head-object --bucket "$REQUESTS_BUCKET" --key "status/$ID.json" >/dev/null 2>&1; then
+            echo "::error::the box already took this run's request; comment /forge-perf again instead of re-running the workflow"
+            exit 1
+          fi
+          aws s3api put-object --bucket "$REQUESTS_BUCKET" --key "requests/$ID.json" \
+            --body "$RUNNER_TEMP/request.json" --content-type application/json --if-none-match '*'
+
+  wait:
+    needs: [check, build, request]
+    runs-on: ubuntu-24.04
+    # 5 h 30 min of polling, and a margin for the last reads and the comment.
+    timeout-minutes: 340
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+      issues: write
+    outputs:
+      outcome: ${{ steps.wait.outputs.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fil-forge/forge-perf
+          ref: main
+          path: forge-perf
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      # pr_run.py assumes the request role afresh for each read, from a new
+      # OIDC token, so the wait is not bounded by the role's session length.
+      - name: wait for the box
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FP_ID: ${{ needs.request.outputs.id }}
+          FP_SERVICE: ${{ inputs.service }}
+          FP_REPOSITORY: ${{ github.repository }}
+          FP_PR: ${{ github.event.issue.number }}
+          FP_COMMIT: ${{ needs.check.outputs.head_sha }}
+          FP_DIGEST: ${{ needs.build.outputs.digest }}
+          FP_PAIRS: ${{ needs.check.outputs.pairs }}
+          FP_RUN_URL: ${{ env.RUN_URL }}
+          FP_COMMENT_ID: ${{ needs.check.outputs.comment_id }}
+        run: python3 forge-perf/scripts/ci/pr_run.py wait
+
+      - name: fail unless done
+        if: steps.wait.outputs.outcome != 'done'
+        env:
+          OUTCOME: ${{ steps.wait.outputs.outcome }}
+        run: |
+          echo "::error::forge-perf ended with outcome ${OUTCOME:-unknown}"
+          exit 1
+
+  report:
+    needs: [check, build, request, wait]
+    if: always() && needs.check.outputs.comment_id != '' && needs.wait.outputs.outcome == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: fil-forge/forge-perf
+          ref: main
+          path: forge-perf
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: update the status comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD: ${{ needs.build.result }}
+          REQUEST: ${{ needs.request.result }}
+          COMMENT: ${{ needs.check.outputs.comment_id }}
+          FP_SERVICE: ${{ inputs.service }}
+          FP_PR: ${{ github.event.issue.number }}
+          FP_COMMIT: ${{ needs.check.outputs.head_sha }}
+          FP_DIGEST: ${{ needs.build.outputs.digest }}
+          FP_PAIRS: ${{ needs.check.outputs.pairs }}
+          FP_RUN_URL: ${{ env.RUN_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD" != success ]; then phase=build_failed
+          elif [ "$REQUEST" != success ]; then phase=request_failed
+          else phase=stopped
+          fi
+          python3 forge-perf/scripts/ci/pr_run.py comment --phase "$phase" --out "$RUNNER_TEMP/comment.md"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT" -F "body=@$RUNNER_TEMP/comment.md" --silent

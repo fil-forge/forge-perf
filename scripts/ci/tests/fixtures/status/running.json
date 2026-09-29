@@ -1,0 +1,6 @@
+{"schema": "forge-perf.status/v1", "id": "ingot-pr123-0123456789ab-987654321", "state": "running",
+ "updated_at": "2026-09-29T20:20:00Z", "position": null, "reason": null,
+ "pairing_id": "exp-ingot-pr123-0123456789ab-987654321",
+ "runs": [{"role": "main", "run_id": "main-20260929t200500z", "class": "valid", "flags": ["traced"],
+           "size_bytes": 500000000000, "p5_bytes_per_s": 812000000, "median_bytes_per_s": 1004000000,
+           "traced": true, "started_at": "2026-09-29T20:05:00Z", "finished_at": "2026-09-29T20:15:30Z"}]}

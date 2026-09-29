@@ -12,6 +12,8 @@ The results page will be served from GitHub Pages at https://fil-forge.github.io
 4. The box builds an allowlisted record, uploads it and the raw data to a private bucket, and wipes every container, every volume and the box's piri buckets.
 5. A scheduled Action checks the record, commits it to the `results` branch and redeploys the page.
 
+A developer can also measure a pull request in a Forge service repository by commenting `/forge-perf` on it. The box runs main's set and the same set with the pull request's image, back to back, and the comparison comes back as a comment ([docs/operations.md](docs/operations.md#testing-a-pull-request-with-forge-perf)).
+
 ## Tiers
 
 | Tier | Instance | Role |

@@ -1,0 +1,3 @@
+{"schema": "forge-perf.status/v1", "id": "ingot-pr123-0123456789ab-987654321", "state": "failed",
+ "updated_at": "2026-09-29T20:30:00Z", "position": null, "reason": "run main-20260929t200500z: stack_unhealthy",
+ "pairing_id": "exp-ingot-pr123-0123456789ab-987654321", "runs": []}
