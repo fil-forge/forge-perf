@@ -55,6 +55,9 @@ def row(record, previous):
         "run_id": record["run_id"],
         "series": record["series"],
         "pairing_id": record["pairing_id"],
+        # An experiment's run: which pull request and which of its two sets.
+        # A record from before experiments has no block.
+        "experiment": record.get("experiment"),
         "changed": record["trigger"]["changed"],
         "size_bytes": (record["drill"]["settings"] or {}).get("stop_ingest_at_bytes"),
         "box": {k: record["box"][k] for k in ("id", "tier", "instance_type")},

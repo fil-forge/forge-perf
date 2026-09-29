@@ -3,6 +3,7 @@
  "run_id": "main-20261001t200000z",
  "series": "calibration",
  "pairing_id": null,
+ "experiment": null,
  "trigger": {
   "reason": "manual",
   "changed": [

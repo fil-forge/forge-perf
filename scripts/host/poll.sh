@@ -14,11 +14,15 @@
 #   3. updates pending.json: a set that differs from the last one started
 #      replaces what is pending, and --nightly writes a nightly run whatever
 #      changed;
-#   4. between runs, and unless the box is held: starts update.sh when
+#   4. reads the experiment requests in the requests bucket: refuses the ones
+#      that break a rule, queues the rest oldest first and writes each its
+#      status (docs/runner.md, "Experiments");
+#   5. between runs, and unless the box is held: starts update.sh when
 #      origin moved or the last update.sh did not finish for this checkout,
-#      otherwise starts the pending run, or flushes the outbox when nothing
-#      can start;
-#   5. writes the heartbeat to published/<box>/heartbeat.json.
+#      otherwise starts the pending run, else the oldest queued experiment
+#      when the start rules allow, or flushes the outbox when nothing can
+#      start;
+#   6. writes the heartbeat to published/<box>/heartbeat.json.
 #
 # Exit status 1 when the set could not be resolved, update.sh failed, or the
 # heartbeat did not go up; the pass still does everything else.
@@ -64,6 +68,15 @@ INFRA_REASONS="image_pull_failed secrets_unavailable s3_unreachable mirror_fetch
 RETRIES=3 RETRY_AFTER=900
 bucket="${FORGE_PERF_RESULTS_BUCKET:-forge-perf-results-654654381893}"
 status=0
+# Experiments: validated requests waiting in queue/, the IDs of finished ones
+# (kept 31 days, past the bucket's 30-day expiry, so a request whose delete
+# failed never runs twice), the status last sent for each, an experiment's
+# last status that experiment.sh could not send, and the day and ID of each
+# start.
+queue="$state/experiments/queue" finished="$state/experiments/finished" sent="$state/experiments/status"
+unsent="$state/experiments/unsent" started_log="$state/experiments/started"
+EXPERIMENTS_PER_DAY=4 NEW_REQUESTS_PER_PASS=3 MAX_REQUEST_BYTES=8192
+mkdir -p "$queue" "$finished" "$sent" "$unsent"
 
 limited() { timeout --kill-after=10 "${FORGE_PERF_CALL_TIMEOUT:-60}" "$@"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -161,6 +174,21 @@ resolve() {
     '{smelt: $smelt, harness: {sha: $sha, pinned: $pinned, main: $main}, images: $images, resolved_at: $at}'
 }
 
+# ghcr_has IMAGE DIGEST: 0 when GHCR serves the manifest anonymously, 1 when
+# it answers that it does not, 2 when it does not answer.
+ghcr_has() {
+  local repo="${1#ghcr.io/}" token code
+  token="$(limited curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token)" || return 2
+  code="$(limited curl -sS -o /dev/null -w '%{http_code}' -I -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/$repo/manifests/$2")" || return 2
+  case "$code" in
+    200) return 0 ;;
+    401 | 403 | 404) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # --- 3. pending.json -------------------------------------------------------------------
 
 # want SET: latest wins, one pending run. A newer set replaces the pending
@@ -189,7 +217,133 @@ want() {
   fi
 }
 
-# --- 4. between runs --------------------------------------------------------------------
+# --- 4. experiment requests ---------------------------------------------------------------
+
+# send_status ID ARGS...: status/<id>.json from `experiment.py status ARGS`,
+# sent only when it differs from the last one sent in more than its time.
+send_status() {
+  local id="$1" doc
+  shift
+  doc="$(python3 "$here/experiment.py" status --id "$id" "$@")" || return 1
+  if [ -e "$sent/$id.json" ] &&
+    [ "$(jq -cS 'del(.updated_at)' "$sent/$id.json")" = "$(jq -cS 'del(.updated_at)' <<<"$doc")" ]; then
+    return 0
+  fi
+  put_status "$id" <<<"$doc" && printf '%s\n' "$doc" >"$sent/$id.json"
+}
+
+# end_request ID STATE ARGS...: the last status, then the request goes. When
+# the status cannot be sent the request stays for the next pass.
+end_request() {
+  local id="$1"
+  shift
+  send_status "$id" --state "$@" || return 1
+  : >"$finished/$id"
+  delete_request "$id" || true
+  rm -f "${queue:?}/$id.json" "${sent:?}/$id.json"
+}
+
+# check_request KEY ID SIZE: queue the request, refuse it, or leave it for the
+# next pass when S3 or GHCR does not answer. Status 0 when it is queued.
+check_request() {
+  local key="$1" id="$2" size="$3" tmp="$FORGE_PERF_RUNTIME/request.json" out rc=0 got=0
+  if [ "$size" -gt "$MAX_REQUEST_BYTES" ]; then
+    end_request "$id" refused --reason "the request is larger than 8 KiB" || true
+    return 1
+  fi
+  limited aws s3api get-object --bucket "$(requests_bucket)" --key "$key" "$tmp" >/dev/null ||
+    { echo "poll: cannot read request $id; the next pass tries again" >&2; return 1; }
+  out="$(python3 "$here/experiment.py" validate --request "$tmp" --id "$id" --tracked "$cfg/images.tracked")" || rc=$?
+  rm -f "$tmp"
+  case "$rc" in
+    0) ;;
+    1)
+      echo "poll: refused request $id: $out"
+      end_request "$id" refused --reason "$out" || true
+      return 1
+      ;;
+    *) echo "poll: cannot check request $id" >&2; return 1 ;;
+  esac
+  ghcr_has "$(jq -r .image <<<"$out")" "$(jq -r .digest <<<"$out")" || got=$?
+  case "$got" in
+    0) ;;
+    1)
+      echo "poll: refused request $id: its digest cannot be pulled"
+      end_request "$id" refused \
+        --reason "$(jq -r '"\(.digest) cannot be pulled anonymously from \(.image)"' <<<"$out")" || true
+      return 1
+      ;;
+    *) echo "poll: GHCR did not answer for request $id; the next pass tries again" >&2; return 1 ;;
+  esac
+  printf '%s\n' "$out" | put "experiments/queue/$id.json"
+  echo "poll: queued experiment $id"
+}
+
+# settle_experiment: an experiment.json that no experiment is running ended
+# without experiment.sh closing it, as after a reboot mid-pair.
+settle_experiment() {
+  local f="$state/experiment.json" id
+  [ -e "$f" ] || return 0
+  id="$(jq -r '.id // ""' "$f")"
+  if [ -n "$id" ]; then
+    end_request "$id" failed --reason "the experiment stopped before it finished" --experiment "$f" \
+      --records "$state/experiment/records" || return 0
+  fi
+  echo "poll: experiment ${id:-without an ID} stopped before it finished"
+  rm -f "$f" "$state/pending-experiment.json" "$state/pending-experiment.json.rejected"
+  rm -rf "${state:?}/experiment"
+}
+
+# requests: list requests/ oldest first, check up to NEW_REQUESTS_PER_PASS
+# new ones, and send each queued request its position. `queued` holds their
+# IDs in that order. A queue entry whose object is gone is dropped.
+queued=()
+requests() {
+  local listing key id size running="" position=0 checked=0 listed=" " f
+  for f in "$unsent"/*.json; do
+    [ -e "$f" ] || continue
+    id="$(basename "$f" .json)"
+    if put_status "$id" <"$f"; then
+      rm -f "$f"
+    fi
+  done
+  listing="$(limited aws s3api list-objects-v2 --bucket "$(requests_bucket)" --prefix requests/ --output json)" ||
+    { echo "poll: cannot list the requests bucket; the queue waits" >&2; return 0; }
+  [ ! -e "$state/experiment.json" ] || running="$(jq -r '.id // ""' "$state/experiment.json")"
+  while IFS=$'\t' read -r key size; do
+    [ -n "$key" ] || continue
+    # The key's match last, so BASH_REMATCH holds its ID.
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || [[ ! "$key" =~ ^requests/([a-z0-9][a-z0-9-]{0,99})\.json$ ]]; then
+      echo "poll: deleting a requests/ object that is not requests/<id>.json" >&2
+      limited aws s3api delete-object --bucket "$(requests_bucket)" --key "$key" >/dev/null || true
+      continue
+    fi
+    id="${BASH_REMATCH[1]}"
+    listed+="$id "
+    [ "$id" != "$running" ] || continue
+    if [ -e "$finished/$id" ]; then
+      delete_request "$id" || true
+      continue
+    fi
+    if [ ! -e "$queue/$id.json" ]; then
+      [ "$checked" -lt "$NEW_REQUESTS_PER_PASS" ] || continue
+      checked=$((checked + 1))
+      check_request "$key" "$id" "$size" || continue
+    fi
+    position=$((position + 1))
+    queued+=("$id")
+    send_status "$id" --state queued --position "$position" || true
+  done < <(jq -r '[.Contents // [] | .[] | {k: .Key, t: .LastModified, s: .Size}] | sort_by(.t, .k) | .[]
+    | "\(.k)\t\(.s)"' <<<"${listing:-"{}"}")
+  for f in "$queue"/*.json; do
+    [ -e "$f" ] || continue
+    id="$(basename "$f" .json)"
+    [ "${listed#* "$id" }" != "$listed" ] || rm -f "$f" "${sent:?}/$id.json"
+  done
+  find "$finished" -type f -mtime +31 -delete 2>/dev/null || true
+}
+
+# --- 5. between runs --------------------------------------------------------------------
 
 # background UNIT SCRIPT ARGS...: a transient unit, so a long upload or a
 # provision is not cut off by this unit's TimeoutStartSec.
@@ -263,6 +417,62 @@ ready() {
   return 1
 }
 
+# experiment_ready: the oldest queued experiment may start: no earlier
+# experiment's state/experiment.json is left (settle_experiment keeps it when
+# its failed status cannot go up), main's set resolved this pass, nothing
+# live is pending, the time is outside 02:30 to
+# 03:30 UTC around the nightly run, fewer than EXPERIMENTS_PER_DAY started
+# this UTC day, and no outbox flush is uploading. The caller has already
+# found the box free, not held and not updating.
+experiment_ready() {
+  local hm n
+  [ "${#queued[@]}" -gt 0 ] || return 1
+  if [ -e "$state/experiment.json" ]; then
+    echo "poll: an earlier experiment is not settled yet; the queue waits"
+    return 1
+  fi
+  [ -n "$resolved_ok" ] || { echo "poll: main's set did not resolve this pass; no experiment starts"; return 1; }
+  [ ! -e "$state/pending.json" ] || return 1
+  hm="${FORGE_PERF_UTC_HHMM:-$(date -u +%H%M)}"
+  if [ "$hm" -ge 0230 ] && [ "$hm" -lt 0330 ]; then
+    echo "poll: no experiment starts between 02:30 and 03:30 UTC"
+    return 1
+  fi
+  n="$(grep -c "^$(date -u +%F) " "$started_log" 2>/dev/null || true)"
+  if [ "${n:-0}" -ge "$EXPERIMENTS_PER_DAY" ]; then
+    echo "poll: $n experiments started today (UTC); the queue waits for tomorrow"
+    return 1
+  fi
+  if ! host_ops_skipped && systemctl is-active --quiet forge-perf-outbox.service; then
+    echo "poll: the outbox flush is going; the experiment starts after it"
+    return 1
+  fi
+}
+
+# start_experiment: plan the oldest queued experiment on this pass's main set
+# and start forge-perf-experiment.service, which runs it.
+start_experiment() {
+  local id="${queued[0]}" set="$FORGE_PERF_RUNTIME/main-set.json" today i
+  printf '%s\n' "$resolved" >"$set"
+  if ! python3 "$here/experiment.py" plan --request "$queue/$id.json" --set "$set" --at "$(now)" |
+    put experiment.json; then
+    echo "poll: cannot plan experiment $id" >&2
+    rm -f "$state/experiment.json"
+    status=1
+    return 0
+  fi
+  today="$(date -u +%F)"
+  { grep "^$today " "$started_log" 2>/dev/null || true; echo "$today $id"; } | put experiments/started
+  rm -f "${queue:?}/$id.json" "${sent:?}/$id.json"
+  host_op systemctl start --no-block forge-perf-experiment.service
+  echo "poll: started experiment $id"
+  # The rest move up a place.
+  queued=("${queued[@]:1}")
+  for ((i = 0; i < ${#queued[@]}; i++)); do
+    send_status "${queued[i]}" --state queued --position "$((i + 1))" || true
+  done
+}
+
 # dispatch: start the pending run, unless an outbox flush is still uploading
 # beside where the run would measure; the run's own upload flushes the rest.
 dispatch() {
@@ -276,13 +486,16 @@ dispatch() {
 
 # --- the pass ------------------------------------------------------------------------------
 
-active="" held=""
+active="" held="" resolved_ok=""
 ! run_active || active=1
-[ -n "$active" ] || settle_last_run
+if [ -z "$active" ]; then
+  settle_last_run
+  settle_experiment
+fi
 
 failures="$(cat "$state/poll-failures" 2>/dev/null || echo 0)"
 if resolved="$(resolve)"; then
-  failures=0
+  failures=0 resolved_ok=1
   want "$resolved"
 else
   failures=$((failures + 1)) status=1
@@ -296,6 +509,7 @@ else
 fi
 echo "$failures" | put poll-failures
 update_failures="$(cat "$state/update-failures" 2>/dev/null || echo 0)"
+requests
 
 # The hold is read after resolution, which can take minutes, so a hold set
 # during it still stops this pass's dispatch. run.sh checks it again under
@@ -310,6 +524,8 @@ elif update; then
   :
 elif ready; then
   dispatch
+elif experiment_ready; then
+  start_experiment
 else
   flush
 fi
@@ -318,7 +534,7 @@ fi
   update_failures=0
 echo "$update_failures" | put update-failures
 
-# --- 5. the heartbeat --------------------------------------------------------------------
+# --- 6. the heartbeat --------------------------------------------------------------------
 
 run_id=null started=null box_state=idle
 [ ! -e "$state/hold" ] || box_state=held
@@ -332,8 +548,9 @@ jq -n --arg box "$FORGE_PERF_BOX_ID" --arg at "$(now)" --arg sha "$(git -C "$FOR
   --arg state "$box_state" \
   --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$((failures + update_failures))" \
   --argjson kind "$(jq -c '.kind // null' "$state/pending.json" 2>/dev/null || echo null)" \
+  --argjson queued "${#queued[@]}" \
   '{box: $box, at: $at, forge_perf_sha: $sha, state: $state, run_id: $run_id, run_started_at: $started,
-    pending_kind: $kind, poll_failures: $failures}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
+    pending_kind: $kind, poll_failures: $failures, experiments_queued: $queued}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
 if ! limited aws s3api put-object --bucket "$bucket" --key "published/$FORGE_PERF_BOX_ID/heartbeat.json" \
   --body "$FORGE_PERF_RUNTIME/heartbeat.json" --content-type application/json >/dev/null; then
   echo "poll: the heartbeat did not go up" >&2

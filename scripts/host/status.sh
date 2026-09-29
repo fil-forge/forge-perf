@@ -2,7 +2,8 @@
 # The box's run state, and its hold.
 #
 #   status.sh                      the hold, the run in progress, the pending,
-#                                  last started and last finished sets, poll
+#                                  last started and last finished sets, the
+#                                  experiment going and the queue, poll
 #                                  failures and the timers
 #   status.sh hold [--wait-idle]   no run starts until release; with
 #                                  --wait-idle, return once no run is going
@@ -41,6 +42,8 @@ case "${1:-}" in
     show pending.json '{kind, superseded, attempt, not_before, first_seen_at, smelt: .set.smelt}'
     show last-started.json '{smelt, harness: .harness.sha, resolved_at}'
     show last-run.json '{run_id, kind, attempt, reasons}'
+    show experiment.json '{id, order, runs: [.runs[].run_id]}'
+    printf '%-13s %s\n' "experiments:" "$(find "$state/experiments/queue" -name '*.json' 2>/dev/null | wc -l | tr -d ' ') queued"
     printf '%-13s %s\n' "poll failures:" "$(cat "$state/poll-failures" 2>/dev/null || echo 0)"
     printf '%-13s %s (updated-rev %s)\n' "update fails:" "$(cat "$state/update-failures" 2>/dev/null || echo 0)" \
       "$(cut -c1-12 "$state/updated-rev" 2>/dev/null || echo none)"

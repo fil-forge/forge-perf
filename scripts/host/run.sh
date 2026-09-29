@@ -16,7 +16,12 @@
 # or the settings file's TRACE_RATIO, in that order, traces the run: a
 # collector runs beside the stack and the services sample RATIO of requests
 # (docs/runner.md, "Tracing"). --trace 0, or a pending trace_ratio of "0",
-# runs it untraced whatever the settings file says. The steps are preflight, checkout, images,
+# runs it untraced whatever the settings file says. experiment.sh's run comes
+# from $FORGE_PERF_STATE_DIR/pending-experiment.json, taken before pending.json
+# while experiment.sh holds experiment.lock: it runs as series experiment with
+# the record's experiment block, pins the branch image under its pull request
+# tag, and leaves pending.json and last-started.json alone (docs/runner.md,
+# "Experiments"). The steps are preflight, checkout, images,
 # boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
@@ -27,7 +32,8 @@
 # did not start (usage, no settings for this instance type, WORKERS empty, an
 # unusable set, a malformed trace ratio); 130 or 143 a stop request, after the record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
-# pending.json.rejected, so the next poll does not start it again.
+# pending.json.rejected, so the next poll does not start it again, and an
+# experiment's run as pending-experiment.json.rejected.
 #
 # SC2016: jq and awk programs are single-quoted on purpose. SC2015: `a && b ||
 # stop` is intended, since stop exits whichever of a and b failed.
@@ -41,13 +47,13 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 . "$here/runlib.sh"
 
 STEPS="preflight checkout images boot setup latency drill check"
-from_pending=""
+from_pending="" pending_file=""
 refuse() {
   echo "run.sh: $*" >&2
-  if [ -n "$from_pending" ] && [ -e "$state/pending.json" ]; then
-    write_durable "$state/pending.json.rejected" <"$state/pending.json"
-    rm -f "$state/pending.json"
-    echo "run.sh: moved pending.json to pending.json.rejected" >&2
+  if [ -n "$from_pending" ] && [ -e "$pending_file" ]; then
+    write_durable "$pending_file.rejected" <"$pending_file"
+    rm -f "$pending_file"
+    echo "run.sh: moved $(basename "$pending_file") to $(basename "$pending_file").rejected" >&2
   fi
   exit 2
 }
@@ -110,7 +116,7 @@ settings="$cfg/settings/$instance_type.env"
 
 # --- the set, the series and the drill settings -------------------------------
 
-kind=manual superseded=0 pairing=null attempt=0 caps='{}'
+kind=manual superseded=0 pairing=null attempt=0 caps='{}' experiment=null overrides='{}'
 if [ -n "$set_file" ]; then
   set_json="$(jq -ce 'objects' "$set_file")" || refuse "$set_file is not a JSON object"
 else
@@ -121,14 +127,22 @@ else
   if command -v flock >/dev/null; then
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
   fi
-  [ -e "$state/pending.json" ] || { echo "run.sh: nothing pending"; exit 0; }
+  # An experiment's run goes first, but only while experiment.sh, which
+  # wrote it, still holds experiment.lock; one it left behind is dropped.
+  pending_file="$state/pending-experiment.json" from_pending=experiment
+  if [ -e "$pending_file" ] && command -v flock >/dev/null &&
+    flock -n "$FORGE_PERF_RUNTIME/experiment.lock" true; then
+    echo "run.sh: no experiment holds experiment.lock; dropping pending-experiment.json" >&2
+    rm -f "$pending_file"
+  fi
+  [ -e "$pending_file" ] || pending_file="$state/pending.json" from_pending=1
+  [ -e "$pending_file" ] || { echo "run.sh: nothing pending"; exit 0; }
   # A hold set while a poll pass was deciding to start this run. campaign.sh
   # runs its own on a held box.
-  [ ! -e "$state/hold" ] || [ "$(jq -r '.kind // ""' "$state/pending.json" 2>/dev/null)" = campaign ] ||
+  [ ! -e "$state/hold" ] || [ "$(jq -r '.kind // ""' "$pending_file" 2>/dev/null)" = campaign ] ||
     { echo "run.sh: the box is held; the pending run waits"; exit 0; }
-  from_pending=1
-  pending="$(jq -ce 'objects | select(.set | type == "object")' "$state/pending.json")" ||
-    refuse "pending.json is not a JSON object with a set"
+  pending="$(jq -ce 'objects | select(.set | type == "object")' "$pending_file")" ||
+    refuse "$(basename "$pending_file") is not a JSON object with a set"
   set_json="$(jq -c '.set' <<<"$pending")"
   kind="$(jq -r '.kind // "trigger"' <<<"$pending")"
   superseded="$(jq '.superseded // 0' <<<"$pending")"
@@ -141,6 +155,26 @@ else
   for v in workers size duration; do
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
   done
+  # An experiment's run: its record block and the branch image's provenance,
+  # each value in the pattern the record schema gives it.
+  if [ "$from_pending" = experiment ]; then
+    [ "$(jq -r '.kind' <<<"$pending")" = experiment ] || refuse "pending-experiment.json has kind '$(jq -r '.kind' <<<"$pending")'"
+    experiment="$(jq -ce '.experiment | objects | select((keys == ["commit", "pr", "repository", "request_id", "role", "service"])
+      and (.request_id | type == "string" and test("^[a-z0-9][a-z0-9-]{0,39}-pr[1-9][0-9]{0,6}-[0-9a-f]{12}-[1-9][0-9]{0,19}$"))
+      and (.service | type == "string" and test("^[a-z0-9][a-z0-9-]{0,39}$"))
+      and .repository == "fil-forge/" + .service and (.pr | type == "number" and . >= 1 and . == floor)
+      and (.commit | type == "string" and test("^[0-9a-f]{40}$")) and (.role == "main" or .role == "branch"))' \
+      <<<"$pending")" || refuse "pending-experiment.json has no well-formed experiment block"
+    [ "$pairing" = "\"exp-$(jq -r .request_id <<<"$experiment")\"" ] ||
+      refuse "pending-experiment.json's pairing_id is not exp-<request_id>"
+    overrides="$(jq -ce '.overrides // {} | objects | select(all(to_entries[];
+      (.value | keys == ["ref", "revision", "source"]) and (.value.ref | test("^pr-[1-9][0-9]*-[0-9a-f]{7}$"))
+      and (.value.revision | test("^[0-9a-f]{40}$"))
+      and (.value.source | test("^https://github\\.com/fil-forge/[a-z0-9][a-z0-9-]{0,39}$"))))' <<<"$pending")" ||
+      refuse "pending-experiment.json has overrides that are not {ref, revision, source}"
+    [ "$(jq -r .role <<<"$experiment")" = branch ] || [ "$overrides" = '{}' ] ||
+      refuse "the main run of an experiment takes no overrides"
+  fi
   if [ -z "$trace" ]; then
     trace="$(jq -re '.trace_ratio // "" | strings | select(contains("\n") | not)' <<<"$pending")" ||
       refuse "pending.json has a trace_ratio that is not \"0\" or a decimal in (0, 1]"
@@ -162,11 +196,16 @@ case "$kind" in
   trigger) series=per-trigger ;;
   nightly) series=nightly ;;
   campaign) series="$(jq -r '.series // "campaign"' <<<"$pending")" ;;
+  experiment) [ "$from_pending" = experiment ] || refuse "pending.json has kind experiment"; series=experiment ;;
   *) refuse "pending.json has kind '$kind'" ;;
 esac
-grep -qxE 'per-trigger|nightly|campaign|calibration' <<<"$series" || refuse "unknown series '$series'"
-[ "${SERIES_LIVE:-0}" = 1 ] || series=calibration
+grep -qxE 'per-trigger|nightly|campaign|calibration|experiment' <<<"$series" || refuse "unknown series '$series'"
+[ "$series" != experiment ] || [ "$kind" = experiment ] || refuse "series experiment is for experiment runs only"
+# An experiment's run never counts toward the page's gates and mercury, so it
+# keeps its series whatever SERIES_LIVE says.
+[ "${SERIES_LIVE:-0}" = 1 ] || [ "$kind" = experiment ] || series=calibration
 # A capped run is the falsification check: it never lights a gate.
+[ "$caps" = '{}' ] || [ "$kind" != experiment ] || refuse "an experiment's run takes no caps"
 [ "$caps" = '{}' ] || series=calibration
 
 # A traced run keeps its series; the record says it was traced. A ratio of 0
@@ -203,15 +242,17 @@ settings_json="$(jq -nce --arg manifest "$MANIFEST_NAME" --arg window "${WINDOW:
 
 # The pinned images: VARIABLE repo tag digest role, and each exported as
 # VARIABLE=repo@digest for every compose call of the run.
+# An experiment's branch image keeps its pull request tag as the ref.
 pinned=()
 while read -r var ref digest; do
-  role=instrument
+  role=instrument tag="${ref##*:}"
   if [ -z "$digest" ]; then
     role=under_test
     digest="$(jq -r --arg ref "$ref" '.images[$ref] // ""' <<<"$set_json")"
+    tag="$(jq -r --arg ref "$ref" --arg tag "$tag" '.[$ref].ref // $tag' <<<"$overrides")"
   fi
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || refuse "no digest for $ref in the set or config/images.lock"
-  pinned+=("$var ${ref%:*} ${ref##*:} $digest $role")
+  pinned+=("$var ${ref%:*} $tag $digest $role")
   export "$var=${ref%:*}@$digest"
 done < <(sed 's/#.*//' "$cfg/images.tracked" | awk 'NF == 2' && sed 's/#.*//' "$cfg/images.lock" | awk 'NF == 3')
 
@@ -356,7 +397,10 @@ finish() {
     exit "$status"
   fi
   close_out || [ "$status" -ne 0 ] || status=1
-  [ -z "$from_pending" ] || last_run
+  case "$from_pending" in
+    experiment) experiment_run ;;
+    1) last_run ;;
+  esac
   echo "run $run_id: ${record_class:-no record ($(jq -r '.reasons | join(" ")' "$state/runner.json"))}"
   exit "$status"
 }
@@ -368,6 +412,14 @@ last_run() {
     --argjson attempt "$attempt" --argjson previous "$last" --slurpfile runner "$state/runner.json" \
     '{run_id: $id, kind: $kind, set: $set, superseded: $superseded, attempt: $attempt,
       previous_started: $previous, reasons: $runner[0].reasons}' | write_durable "$state/last-run.json"
+}
+
+# experiment_run: the run's ID and reasons for experiment.sh, which reads its
+# record from state/experiment/records/.
+experiment_run() {
+  mkdir -p "$state/experiment"
+  jq -n --arg id "$run_id" --slurpfile runner "$state/runner.json" '{run_id: $id, reasons: $runner[0].reasons}' |
+    write_durable "$state/experiment/last-run.json"
 }
 
 # within SECONDS REASON COMMAND...: run COMMAND under timeout. An overrun
@@ -613,6 +665,10 @@ step_images() {
       stop runner_error "unreadable labels on $ref"
   done
   rj --argjson l "$labels" '.images |= map(. + $l[.repo + "@" + .digest])'
+  # An experiment's branch image: the requested commit and repository, which
+  # its labels, set by the same workflow, should repeat.
+  rj --argjson o "$overrides" '.images |= map(. as $i | ([$o | to_entries[] | select(.key | startswith($i.repo + ":"))
+    | .value][0]) as $v | if $v then $i + {revision: $v.revision, source: $v.source} else $i end)'
 }
 
 step_boot() {
@@ -872,6 +928,11 @@ close_out() {
   python3 "$here/record.py" "$@" || status=$?
   if [ "$status" -eq 0 ] || [ "$status" -eq 3 ]; then
     record_class="$(jq -r '.outcome | "\(.class) (\(.reasons | join(" ")))"' "$record")"
+    # The outbox upload removes the record; experiment.sh reads this copy.
+    if [ "$kind" = experiment ]; then
+      mkdir -p "$state/experiment/records"
+      cp "$record" "$state/experiment/records/$run_id.json" || echo "run.sh: cannot keep the record for the experiment" >&2
+    fi
     set_phase recorded
   else
     echo "run.sh: record.py wrote no record (exit $status)" >&2
@@ -923,6 +984,10 @@ changed="$(jq -c --argjson last "$last" --argjson tracked "$tracked_refs" '. as 
 case "$kind" in
   manual | nightly) reason="$kind" ;;
   campaign) reason="$([ "$pairing" = null ] && echo campaign || echo pairing)" ;;
+  # An experiment's branch run differs from its main run in one image.
+  experiment)
+    reason=experiment
+    changed="$(jq -c 'if .role == "branch" then [.service] else [] end' <<<"$experiment")" ;;
   *) reason="$(jq -r 'if any(.[]; . != "smelt" and . != "harness") or . == [] then "image"
     elif any(.[]; . == "smelt") then "smelt" else "harness" end' <<<"$changed")" ;;
 esac
@@ -935,8 +1000,9 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
   --arg started "$started" --argjson settings "$settings_json" \
   --arg fp "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" --arg tree "$(instrument_tree)" \
   --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" \
-  --arg trace "$trace" '
-  {run_id: $run_id, series: $series, pairing_id: $pairing, trigger: {reason: $reason, changed: $changed},
+  --arg trace "$trace" --argjson experiment "$experiment" '
+  {run_id: $run_id, series: $series, pairing_id: $pairing, experiment: $experiment,
+   trigger: {reason: $reason, changed: $changed},
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
           run_finished_at: null},
@@ -952,9 +1018,16 @@ trap finish EXIT
 trap 'on_stop 143' TERM
 trap 'on_stop 130' INT
 set_phase preflight
-jq . <<<"$set_json" | write_durable "$state/last-started.json"
-# A manual run leaves the poller's pending run and retry state alone.
-[ -z "$from_pending" ] || rm -f "$state/pending.json" "$state/last-run.json"
+# An experiment's run leaves last-started.json as the live series had it, so
+# the next pass neither re-pends main's set nor skips a set that is pending.
+case "$from_pending" in
+  experiment) rm -f "$pending_file" "$state/experiment/last-run.json" ;;
+  *)
+    jq . <<<"$set_json" | write_durable "$state/last-started.json"
+    # A manual run leaves the poller's pending run and retry state alone.
+    [ -z "$from_pending" ] || rm -f "$state/pending.json" "$state/last-run.json"
+    ;;
+esac
 exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 

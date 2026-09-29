@@ -147,7 +147,10 @@ STUB
 printf '#!/usr/bin/env bash\necho "go $*" >>"$D/go.log"\n' >"$work/bin/go"
 printf '#!/usr/bin/env bash\necho "${NTP:-yes}"\n' >"$work/bin/timedatectl"
 printf '#!/usr/bin/env bash\n[ "$1" = -u ] && echo 0 || /usr/bin/id "$@"\n' >"$work/bin/id"
-for tool in flock modprobe sync sysctl journalctl; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+for tool in modprobe sync sysctl journalctl; do printf '#!/usr/bin/env bash\n' >"$work/bin/$tool"; done
+# flock always gets its lock, except experiment.lock while EXPERIMENT_HELD is
+# set, as while experiment.sh runs.
+printf '#!/usr/bin/env bash\ncase "$*" in *experiment.lock*) [ -z "${EXPERIMENT_HELD:-}" ] ;; esac\n' >"$work/bin/flock"
 printf '#!/usr/bin/env bash\necho "1.1.1.1 via 10.0.0.1 dev ens5 src 10.0.0.9 uid 0"\n' >"$work/bin/ip"
 # Each call reads one more of every allowance counter, so the drill's delta is 1.
 cat >"$work/bin/ethtool" <<'STUB'
@@ -612,6 +615,72 @@ for series in "" calibration; do
     "${series:-campaign} pairing pair-20261001-t1 32 10000000000 1800" ] || fail "campaign run $(runner '[.series, .settings]')"
 done
 echo "ok: a campaign's pending run starts on a held box with its own series, pairing and settings"
+
+# experiment.sh's run: pending-experiment.json, taken while experiment.lock is
+# held (EXPERIMENT_HELD makes the flock stub report it held), before the live
+# pending.json, which stays; so does last-started.json.
+exp_commit=0123456789abcdef0123456789abcdef01234567
+exp_id="ingot-pr123-${exp_commit:0:12}-17000000001"
+# exp_pending ROLE: the run experiment.sh would leave for ROLE.
+exp_pending() {
+  jq --arg c "$exp_commit" --arg id "$exp_id" --arg role "$1" '{kind: "experiment", set: ., superseded: 0,
+    first_seen_at: "2026-10-01T12:00:00Z", pairing_id: "exp-\($id)",
+    experiment: {request_id: $id, service: "ingot", repository: "fil-forge/ingot", pr: 123, commit: $c, role: $role},
+    overrides: (if $role == "branch" then {"ghcr.io/fil-forge/ingot:main": {ref: "pr-123-0123456", revision: $c,
+      source: "https://github.com/fil-forge/ingot"}} else {} end)}' "$work/set.json" \
+    >"$work/box/state/pending-experiment.json"
+}
+setup
+jq '.images["ghcr.io/fil-forge/ingot:main"] = "sha256:" + ("9" * 64)' "$work/set.json" >"$work/box/state/last-started.json"
+jq '{kind: "trigger", set: ., superseded: 0}' "$work/box/state/last-started.json" >"$work/box/state/pending.json"
+cp "$work/box/state/last-started.json" "$work/last-started.json"
+cp "$work/box/state/pending.json" "$work/pending.json"
+exp_pending branch
+run 0 EXPERIMENT_HELD=1 -- --workers 16
+rec="$D/record.json"
+[ "$(jq -r '"\(.series) \(.pairing_id) \(.trigger.reason) \(.trigger.changed | join(","))"' "$rec")" = \
+  "experiment exp-$exp_id experiment ingot" ] || fail "experiment record $(jq -c '[.series, .pairing_id, .trigger]' "$rec")"
+jq -e --arg c "$exp_commit" --arg id "$exp_id" '.experiment == {request_id: $id, service: "ingot",
+  repository: "fil-forge/ingot", pr: 123, commit: $c, role: "branch"}' "$rec" >/dev/null || fail "block $(jq -c .experiment "$rec")"
+[ "$(jq -r '.provenance.images[] | select(.repo == "ghcr.io/fil-forge/ingot") | "\(.ref) \(.revision) \(.source)"' "$rec")" = \
+  "pr-123-0123456 $exp_commit https://github.com/fil-forge/ingot" ] || fail "branch provenance"
+[ "$(jq -r '.provenance.images[] | select(.repo == "ghcr.io/fil-forge/piri") | .ref' "$rec")" = main ] || fail "piri ref"
+cmp -s "$work/box/state/last-started.json" "$work/last-started.json" &&
+  cmp -s "$work/box/state/pending.json" "$work/pending.json" || fail "the live series' state changed"
+[ ! -e "$work/box/state/pending-experiment.json" ] && [ ! -e "$work/box/state/last-run.json" ] || fail "state left"
+[ "$(jq -r .run_id "$work/box/state/experiment/last-run.json")" = "$(jq -r .run_id "$rec")" ] || fail "no last-run for experiment.sh"
+cmp -s <(jq -S . "$work/box/state/experiment/records/$(jq -r .run_id "$rec").json") <(jq -S . "$rec") ||
+  fail "experiment.sh's copy of the record differs"
+echo "ok: an experiment's branch run records series experiment with the pull request's provenance and leaves the live series alone"
+
+setup
+exp_pending main
+run 0 EXPERIMENT_HELD=1 -- --workers 16 --until preflight
+[ "$(runner '"\(.series) \(.trigger.changed | length) \(.experiment.role)"')" = "experiment 0 main" ] ||
+  fail "main run $(runner '[.series, .trigger, .experiment]')"
+[ "$(runner '.images[] | select(.variable == "INGOT_IMAGE") | .ref')" = main ] || fail "main run ref"
+echo "ok: an experiment's main run keeps main's refs and names nothing changed"
+
+setup
+exp_pending branch
+jq '{kind: "trigger", set: ., superseded: 0}' "$work/set.json" >"$work/box/state/pending.json"
+run 0 -- --workers 16 --until preflight
+[ ! -e "$work/box/state/pending-experiment.json" ] && [ "$(runner .series)" = calibration ] ||
+  fail "a pending-experiment.json no experiment holds was taken"
+echo "ok: a pending-experiment.json that no experiment holds is dropped"
+
+for bad in '.experiment.role = "candidate"' '.pairing_id = "exp-other-pr1-0123456789ab-1"' \
+  '.overrides[].ref = "main"' '.caps = {"ingot": "1.0"}' '.experiment.repository = "someone/ingot"'; do
+  setup
+  exp_pending branch
+  jq "$bad" "$work/box/state/pending-experiment.json" >"$work/p" && mv "$work/p" "$work/box/state/pending-experiment.json"
+  run 2 EXPERIMENT_HELD=1 -- --workers 16
+  [ -e "$work/box/state/pending-experiment.json.rejected" ] && [ ! -e "$work/box/state/runner.json" ] ||
+    fail "$bad was not refused"
+done
+setup
+run 2 -- --set "$work/set.json" --series experiment
+echo "ok: a malformed experiment run is refused, and series experiment is for experiment runs only"
 
 # campaign.sh --cap: the caps land on each service's container after setup,
 # and the run publishes as calibration with cpu_capped even while live.

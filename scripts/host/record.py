@@ -352,6 +352,10 @@ def base_record(runner, env):
         # A CPU-capped run is the falsification check, never a live measurement.
         "series": "calibration" if runner.get("caps") else runner["series"],
         "pairing_id": runner["pairing_id"],
+        # An experiment's run: which request, and whether it ran main's set or
+        # the branch's. A runner from before experiments has none.
+        "experiment": None if runner.get("experiment") is None else
+        {k: runner["experiment"][k] for k in ("request_id", "service", "repository", "pr", "commit", "role")},
         "trigger": {"reason": runner["trigger"]["reason"], "changed": sorted(runner["trigger"]["changed"])},
         "box": {**{k: box[k] for k in ("id", "tier", "instance_type", "arch")}, "region": "us-east-2",
                 **{k: box[k] for k in ("availability_zone", "ami_id", "kernel", "docker_server", "docker_compose")},

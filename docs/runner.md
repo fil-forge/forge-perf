@@ -106,7 +106,7 @@ The outbox holds at most 20 GB (`FORGE_PERF_OUTBOX_CAP_BYTES`). Past that, each 
 
 ## Polling
 
-`forge-perf-poll.timer` runs `poll.sh` two minutes after boot and then every five minutes; `forge-perf-nightly.timer` runs `poll.sh --nightly` at 03:00 UTC, and once at the next boot for a night the box was off. Both units have `Requires=` and `After=` on `forge-perf-recover.service`. A pass holds `/run/forge-perf/poll.lock`: a timer pass that finds the previous one still going exits, and the nightly pass waits up to 200 seconds for it. Each network call gets 60 seconds, and the poll unit's `TimeoutStartSec` is 240.
+`forge-perf-poll.timer` runs `poll.sh` two minutes after boot and then every five minutes; `forge-perf-nightly.timer` runs `poll.sh --nightly` at 03:00 UTC, and once at the next boot for a night the box was off. Both units have `Requires=` and `After=` on `forge-perf-recover.service`. A pass holds `/run/forge-perf/poll.lock`: a timer pass that finds the previous one still going exits, and the nightly pass waits up to 200 seconds for it. Each network call gets 60 seconds, and the poll unit's `TimeoutStartSec` is 240. Every pass also reads the experiment requests ([Experiments](#experiments)).
 
 ### The set
 
@@ -131,6 +131,10 @@ The trigger key is `{smelt, harness.sha, images}` in canonical form. Third-party
 | `current.json` | `run.sh` | the run in progress and its phase ([A run](#record-upload-and-wipe)) |
 | `last-run.json` | `run.sh` as a run it took from `pending.json` ends; a manual run leaves it and `pending.json` alone | `{run_id, kind, set, superseded, attempt, previous_started, reasons}` |
 | `pending.json.rejected` | `run.sh` | a pending run that could not start |
+| `experiment.json` | `poll.sh` as it starts an experiment; `experiment.sh` adds each run and removes it at the end | the experiment going: its request, both sets, the order of the runs and the runs so far ([Experiments](#experiments)) |
+| `pending-experiment.json` | `experiment.sh` under `poll.lock`; taken by `run.sh` under the same lock | the next run of the experiment: `{kind: experiment, set, pairing_id, experiment, overrides}`; `.rejected` when `run.sh` refused it |
+| `experiment/` | `run.sh` for an experiment's run | `last-run.json` (`{run_id, reasons}`) and `records/<run_id>.json`, a copy of each record, which the outbox upload removes from the outbox |
+| `experiments/` | `poll.sh` and `experiment.sh` | `queue/<id>.json`, the checked requests; `status/<id>.json`, the status last sent for each; `finished/<id>`, requests that ended, kept 31 days; `unsent/<id>.json`, a last status that did not go up; `started`, the day and ID of each start |
 | `hold` | `status.sh hold` | `{at}`; the box starts no run while it exists |
 | `poll-failures` | `poll.sh` | failed resolutions in a row |
 
@@ -153,12 +157,13 @@ Latest wins, and at most one run is pending. With the set resolved, a pass write
 
 ### Between runs
 
-A run is going while `run.lock` is held or `forge-perf-run.service` is activating, active or deactivating (its `ExecStopPost` wipe runs after `run.sh` lets the lock go). During a run a pass only resolves, updates `pending.json` and writes the heartbeat. Between runs, in order:
+A run is going while `run.lock` is held or `forge-perf-run.service` is activating, active or deactivating (its `ExecStopPost` wipe runs after `run.sh` lets the lock go), and for the whole of an experiment, while `experiment.lock` is held or `forge-perf-experiment.service` is activating, active or deactivating. During a run a pass only resolves, updates `pending.json` and writes the heartbeat. Between runs, in order:
 
 1. **Held:** with `state/hold` present, the pass flushes the outbox and starts nothing, not even an update.
 2. **Update:** when `git ls-remote origin` shows `FORGE_PERF_REF` (default `main`) ahead of the checkout's `HEAD`, the pass starts `update.sh` as the transient unit `forge-perf-update` and starts no run. `update.sh` resets the checkout, provisions, syncs the units, and as its last step writes `HEAD` to `state/updated-rev`. Until `updated-rev` matches `HEAD`, no run starts: a pass that finds `forge-perf-update` still going waits, and a pass that finds it stopped counts an update failure, exits 1 and starts `update.sh` again. The count adds to the heartbeat's `poll_failures`, so a provision that keeps failing raises the same alert as a set that cannot be resolved, and it clears once `updated-rev` matches. A campaign box (`FORGE_PERF_MODE=campaign`) and skip mode never update.
 3. **Dispatch:** `systemctl start --no-block forge-perf-run.service` when a run is pending, its `not_before` has passed, and `WORKERS` is set in the instance type's settings file (or the pending run names its own). With no settings file for the instance type, the run waits and the pass says so. While a `forge-perf-outbox` flush is still uploading, the run waits for the next pass, so no upload shares the NIC with a drill; the run's own upload flushes whatever the outbox still holds. Starting an active oneshot is a no-op. `run.sh` takes `poll.lock` while it reads and removes `pending.json`, so no pass writes a set that the run then discards.
-4. **Flush:** when nothing can start, `outbox.sh flush` as the transient unit `forge-perf-outbox`, if the outbox holds anything. Transient units (`RuntimeMaxSec` 45 minutes) keep a 15-minute upload or a provision clear of the poll unit's 240 seconds.
+4. **Experiment:** with nothing live pending, the oldest queued experiment starts when the start rules allow ([Experiments](#experiments)).
+5. **Flush:** when nothing can start, `outbox.sh flush` as the transient unit `forge-perf-outbox`, if the outbox holds anything. Transient units (`RuntimeMaxSec` 45 minutes) keep a 15-minute upload or a provision clear of the poll unit's 240 seconds.
 
 ### Heartbeat
 
@@ -167,10 +172,10 @@ Every pass ends by writing `s3://$FORGE_PERF_RESULTS_BUCKET/published/<box>/hear
 ```json
 {"box": "main", "at": "2026-09-26T06:00:09Z", "forge_perf_sha": "<40-hex>", "state": "running",
  "run_id": "main-20260926t055512z", "run_started_at": "2026-09-26T05:55:12Z",
- "pending_kind": "trigger", "poll_failures": 0}
+ "pending_kind": "trigger", "poll_failures": 0, "experiments_queued": 0}
 ```
 
-`state` is `running` during a run, else `held` while the hold exists, else `idle`. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
+`state` is `running` during a run, else `held` while the hold exists, else `idle`. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. `experiments_queued` counts the checked requests waiting, the one going excluded. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
 
 ### Holds and status
 
@@ -191,7 +196,7 @@ The hold is a file on the root volume, so it survives a reboot. It stops dispatc
 run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--trace RATIO] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size`, `duration`, `caps` and `trace_ratio` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it. `--trace RATIO` sets the run's trace ratio, and `--trace 0` runs it untraced ([Tracing](#tracing)).
+Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size`, `duration`, `caps` and `trace_ratio` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). While `experiment.sh` holds `experiment.lock`, it takes `pending-experiment.json` in preference, and records that run as series `experiment` whatever `SERIES_LIVE` says; one that no experiment holds is left over from a stopped experiment and is removed ([Experiments](#experiments)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it. `--trace RATIO` sets the run's trace ratio, and `--trace 0` runs it untraced ([Tracing](#tracing)).
 
 A set is the JSON the poller resolves:
 
@@ -395,6 +400,66 @@ It checks out `forge_perf_sha` if the checkout is elsewhere and starts again fro
 A run that the poweroff at `expires_at` still interrupts is recorded and wiped as the run unit stops. `forge-perf-final-flush.service`, enabled on campaign boxes only, does nothing at start; it is ordered before the run and campaign units and after `network-online.target`, so at shutdown it stops after them and while the network is up, and its `ExecStop` runs `outbox.sh flush` for up to 20 minutes. A campaign box has no poller to upload that run later, and the reaper's terminate deletes the root volume.
 
 On a persistent box it refuses unless the box is held, and powers nothing off. [operations.md](operations.md#a-campaign) covers dispatching a campaign box and its reaper.
+
+## Experiments
+
+An experiment measures one pull request's image of a tracked service against the current main set, on the persistent box. A developer comments `/forge-perf` on the pull request; the service repository's `forge-perf` workflow builds the head commit for `linux/arm64`, pushes it to `ghcr.io/fil-forge/<service>:pr-<n>-<sha7>`, and writes a request to the private bucket `forge-perf-requests-654654381893` (`FORGE_PERF_REQUESTS_BUCKET`), where the box reads it and writes its status back. Nothing reaches the box but what it polls.
+
+```
+workflow ──► s3://forge-perf-requests-654654381893/requests/<id>.json   the request; the box deletes it when it ends
+box      ──► s3://forge-perf-requests-654654381893/status/<id>.json     rewritten on every change; the workflow polls it
+```
+
+Both prefixes expire after 30 days. `<id>` is `<service>-pr<number>-<commit, 12 hex>-<workflow run id>`.
+
+### The request
+
+```json
+{"schema": "forge-perf.request/v1", "id": "ingot-pr123-0123456789ab-17000000001", "service": "ingot",
+ "image": "ghcr.io/fil-forge/ingot", "digest": "sha256:<64 hex>", "tag": "pr-123-0123456",
+ "commit": "<40 hex>", "repository": "fil-forge/ingot", "pr": 123,
+ "requested_by": "<login>", "requested_at": "2026-10-01T12:00:00Z", "pairs": 1,
+ "pr_url": "https://github.com/fil-forge/ingot/pull/123", "workflow_run_url": "…"}
+```
+
+Each pass lists `requests/`, oldest first, and checks up to three new requests with `scripts/host/experiment.py validate`. It refuses a request larger than 8 KiB, one that is not a `forge-perf.request/v1` object, or one whose `id` differs from its key, whose `service` is not the repository name of a line in `config/images.tracked`, whose `image` is not that line's repository, whose `digest` is not `sha256:<64 hex>`, whose `pairs` is not 1 or 2 (absent means 1), or whose `commit`, `pr`, `tag`, `repository`, `id` or `requested_at` disagree with each other or their patterns. It then asks GHCR, anonymously as the poller resolves the set, for the manifest at the digest, and refuses a digest GHCR says it does not have or will not serve. A refused request gets status `refused` with a sentence saying which rule it broke, and is deleted. When S3 or GHCR does not answer, the request waits for the next pass. The box keeps only the fields it uses in `state/experiments/queue/<id>.json`; the requester's login and the URLs stay in the bucket. An object under `requests/` whose key is not `requests/<id>.json` is deleted.
+
+Every queued request gets status `queued` with its `position`, 1 for the next to start. A status goes up only when it differs from the last one sent in more than its time.
+
+### Starting one
+
+A pass between runs starts the oldest queued experiment when the box is free, not held and not updating, and:
+
+- main's set resolved in this pass;
+- nothing live is pending: a per-trigger or nightly run, a retry waiting for its time included, always goes first;
+- the time is outside 02:30 to 03:30 UTC, the hour around the nightly run;
+- fewer than 4 experiments started this UTC day (`state/experiments/started`);
+- no outbox flush is uploading.
+
+It writes `state/experiment.json` with `experiment.py plan`: set A is this pass's resolved main set, and set B is set A with the service's digest replaced by the request's. B keeps its provenance honest: its image's record entry carries the request's tag (`pr-<n>-<sha7>`) as `ref`, the requested commit as `revision` and `https://github.com/<repository>` as `source`, never `main`. Then it starts `forge-perf-experiment.service` and sends the rest of the queue their new positions.
+
+### The pair
+
+`experiment.sh` holds `/run/forge-perf/experiment.lock` for the whole experiment, and the poller counts a run as going for as long ([Between runs](#between-runs)), so no live run, update or other experiment starts between its runs, and `update.sh` from an operator refuses while it is held; sets that change meanwhile coalesce in `pending.json` as usual and start once it ends. It runs A then B for one pair, and A, B, B, A for two, each as its own run of `forge-perf-run.service`: it writes the run into `state/pending-experiment.json` under `poll.lock` and runs `systemctl start --wait forge-perf-run.service`. Each run takes the settings file's per-trigger size and duration and its trace ratio, and publishes as series `experiment` with pairing `exp-<id>`, trigger `experiment` and the record's `experiment` block `{request_id, service, repository, pr, commit, role}`, role `main` for A and `branch` for B ([record.md](record.md)). `run.sh` leaves `pending.json` and `last-started.json` as the live series had them, so an experiment never re-pends main's set and never hides a set that is pending.
+
+Status `running` goes up at the start and after each run but the last, listing the runs so far. At the end, `experiment.py status --state final` writes `done` when every run recorded a p5 and a median with class `valid` or `availability_warning` and all runs share one `instrument.fingerprint` and `instrument.box_fingerprint`, else `failed` naming the run and its class or the run whose instrument differs. The experiment also ends `failed` at the first run that leaves no record or a `no_data` record, when `run.sh` refuses a run or does not start it, when the box is held before a run, and on a stop. Either way the request is deleted and `state/experiment.json` removed. A request that cannot be deleted is listed in `state/experiments/finished/` and deleted by a later pass, never queued again. A last status that does not go up waits in `state/experiments/unsent/` for the next pass. A pass that finds `state/experiment.json` with no experiment going, as after a reboot mid-pair, ends it `failed` the same way.
+
+### The status
+
+```json
+{"schema": "forge-perf.status/v1", "id": "ingot-pr123-0123456789ab-17000000001", "state": "done",
+ "updated_at": "2026-10-01T13:05:12Z", "position": null, "reason": null,
+ "pairing_id": "exp-ingot-pr123-0123456789ab-17000000001",
+ "runs": [{"role": "main", "run_id": "main-20261001t122001z", "class": "valid", "flags": ["traced"],
+           "size_bytes": 500000000000, "p5_bytes_per_s": 780000000, "median_bytes_per_s": 1000000000,
+           "traced": true, "started_at": "2026-10-01T12:20:01Z", "finished_at": "2026-10-01T12:31:40Z"}, "…"],
+ "comparison": {"median_delta_pct": 2.1, "p5_delta_pct": -4.3, "noise_median_pct": 3.5, "noise_p5_pct": 11.0,
+                "verdict": "within noise"}}
+```
+
+`state` is `queued`, `running`, `done`, `failed` or `refused`. `position` is set only on `queued`, `reason` only on `refused` and `failed`, and `comparison` is present only on `done`. `runs` lists the runs so far in order; a run without a record shows class `no_data` and nulls.
+
+The comparison takes the median of the branch runs' medians against the median of the main runs' medians, and the same for p5, as percentages to two places. The noise figures are twice the coefficients of variation of the committed per-trigger noise band for this box and instance type (`calibration/noise/*.json` with `series: per-trigger`, `pass: true`), in percent to one place. With no such band, as on tier 2 today, they are 3.5% for the median and 11% for p5: the spread of eight valid 500 GB per-trigger runs on the tier 2 box on 28 and 29 September 2026, which ran different sets and so bound the noise from above. The verdict follows the median, the steadier of the two: `within noise` when the median difference is within the median noise, otherwise `faster` or `slower`.
 
 ## Local run
 

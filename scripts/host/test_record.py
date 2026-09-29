@@ -515,6 +515,40 @@ class Classification(unittest.TestCase):
                 self.assertEqual((rec["series"], rec["outcome"]["flags"]), ("per-trigger", ["few_windows"]))
 
 
+class Experiments(unittest.TestCase):
+    BLOCK = {"request_id": "ingot-pr123-0123456789ab-17000000001", "service": "ingot",
+             "repository": "fil-forge/ingot", "pr": 123, "commit": "0123456789abcdef0123456789abcdef01234567",
+             "role": "branch"}
+
+    def experiment(self, case, block):
+        case.edit("runner.json", lambda d: d.update(
+            series="experiment", pairing_id=f"exp-{self.BLOCK['request_id']}", experiment=block,
+            trigger={"reason": "experiment", "changed": ["ingot"]}))
+
+    def test_an_experiment_run_carries_its_block_and_pairing(self):
+        for command in ("build", "minimal"):
+            with self.subTest(command=command):
+                case = Case(self, "valid")
+                self.experiment(case, dict(self.BLOCK, extra="dropped"))
+                result = case.cli(command=command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rec = load(case.out)
+                self.assertEqual(rec["experiment"], self.BLOCK)
+                self.assertEqual((rec["series"], rec["pairing_id"], rec["trigger"]["reason"]),
+                                 ("experiment", "exp-ingot-pr123-0123456789ab-17000000001", "experiment"))
+                # Which set ran is provenance, not instrument.
+                self.assertEqual(rec["instrument"], case.expected["instrument"])
+
+    def test_a_malformed_experiment_block_writes_no_record(self):
+        for change in ({"pr": "123"}, {"role": "candidate"}, {"repository": "someone/ingot"},
+                       {"request_id": "ingot pr123"}):
+            with self.subTest(change=change):
+                case = Case(self, "valid")
+                self.experiment(case, dict(self.BLOCK, **change))
+                self.assertEqual(case.cli().returncode, 1)
+                self.assertFalse(case.out.exists())
+
+
 class Tracing(unittest.TestCase):
     UNTRACED = sorted(p.name for p in FIXTURES.iterdir() if not (p / "traces").exists())
 

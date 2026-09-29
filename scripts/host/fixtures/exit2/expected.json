@@ -3,6 +3,7 @@
  "run_id": "main-20261001t190000z",
  "series": "per-trigger",
  "pairing_id": null,
+ "experiment": null,
  "trigger": {
   "reason": "image",
   "changed": [

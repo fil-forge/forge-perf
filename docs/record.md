@@ -22,6 +22,7 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | Field | Meaning |
 |---|---|
 | `run_id`, `series`, `pairing_id`, `trigger`, `box`, `time` | copied into the record unchanged, except that a capped run's series is `calibration` |
+| `experiment` | an experiment's run: `request_id`, `service`, `repository`, `pr`, `commit` and `role`, from `pending-experiment.json`; null, or absent in a runner from before experiments, otherwise |
 | `superseded` | how many pending sets the run's set replaced (`pending.json`) |
 | `settings` | the drill settings from `config/settings/<instance type>.env`, in the record's units; null when the file is missing or unreadable |
 | `provenance.forge_perf`, `provenance.smelt.sha`, `provenance.harness.sha` | the SHAs the run used, which its checkouts hold once checked out |
@@ -51,10 +52,15 @@ When the drill never ran there is no run directory, and the builder uses `runner
 |---|---|
 | `schema` | constant `forge-perf.run/v1` |
 | `run_id` | runner: `<box.id>-<run_started_at as yyyymmddThhmmssZ, lowercased>`; also smelt's `LABEL` |
-| `series` | runner: `per-trigger`, `nightly`, `campaign`, or `calibration` while `config/launch.conf` has `SERIES_LIVE=0` |
-| `pairing_id` | runner: set on the paired runs that splice a tier change, else null |
+| `series` | runner: `per-trigger`, `nightly`, `campaign`, or `calibration` while `config/launch.conf` has `SERIES_LIVE=0`; `experiment` for an experiment's runs whatever `SERIES_LIVE` says. An experiment's run never moves the mercury, lights a gate or posts to Slack |
+| `pairing_id` | runner: `pair-<yyyymmdd>-<id>` on the paired runs that splice a tier change; `exp-<request_id>` on every run of one experiment; else null |
+| `experiment` | runner `experiment`: null on every run that is not an experiment's |
+| `experiment.request_id` | the request's `id`, `<service>-pr<number>-<commit, 12 hex>-<workflow run id>` ([runner.md](runner.md#experiments)) |
+| `experiment.service`, `experiment.repository` | the tracked image's repository name, such as `ingot`, and `fil-forge/<service>` |
+| `experiment.pr`, `experiment.commit` | the pull request number and the commit its image was built from |
+| `experiment.role` | `main`: the run tested the poller's resolved main set; `branch`: the same set with the service's image replaced by the pull request's, whose `provenance.images[]` entry has the request's tag as `ref` and its commit as `revision` |
 | `trigger.reason` | runner: what started the run, from the triggers table below |
-| `trigger.changed` | runner: the component ids whose digest or SHA in the run's set differs from the set in `last-started.json` before this run replaces it, sorted. A component id is a tracked image's repository name (`ingot`, `sprue`, `piri-signing-service`, `did-method-plc`), `smelt` or `harness` |
+| `trigger.changed` | runner: the component ids whose digest or SHA in the run's set differs from the set in `last-started.json` before this run replaces it, sorted; for an experiment's run, the service on a `branch` run and nothing on a `main` run. A component id is a tracked image's repository name (`ingot`, `sprue`, `piri-signing-service`, `did-method-plc`), `smelt` or `harness` |
 | `box.id`, `box.tier` | the box's OpenTofu-rendered config |
 | `box.instance_type`, `box.availability_zone`, `box.ami_id` | IMDSv2 `instance-type`, `placement/availability-zone`, `ami-id` |
 | `box.arch` | `uname -m`, with `aarch64` written as `arm64` |
@@ -122,8 +128,8 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `provenance.images` | one entry per image in the runner's pinned set, sorted by `repo` |
 | `provenance.images[].repo`, `provenance.images[].ref`, `provenance.images[].digest`, `provenance.images[].role` | the pinned set; `role` is `under_test` for the tracked `ghcr.io/fil-forge/<svc>` images and `instrument` for the third-party images in `config/images.lock` |
 | `provenance.images[].services` | `runner.json` `images[].services`: the services whose image in `docker compose config --format json` of the rendered manifest has the pinned digest, sorted. The netshoot image lists `netem`, the sidecar `netem.sh apply` starts, whenever the manifest was rendered, whether or not netem ran. The list is empty when the run stopped before the manifest was rendered |
-| `provenance.images[].revision` | `runner.json` `images[].revision`, when it is 40 hex characters; else null. A run that stops after the pull, such as a boot failure, still records every image's commit |
-| `provenance.images[].source` | `runner.json` `images[].source`, for `under_test` images whose label is a `https://github.com/fil-forge/` URL; else null |
+| `provenance.images[].revision` | `runner.json` `images[].revision`, when it is 40 hex characters; else null. A run that stops after the pull, such as a boot failure, still records every image's commit. On an experiment's `branch` run the branch image's is the request's commit, not its label |
+| `provenance.images[].source` | `runner.json` `images[].source`, for `under_test` images whose label is a `https://github.com/fil-forge/` URL; else null. On an experiment's `branch` run the branch image's is `https://github.com/<repository>` |
 | `instrument.fingerprint`, `instrument.box_fingerprint` | computed, below |
 | `trace` | null when `runner.json` has no `trace` |
 | `trace.ratio` | runner `trace.ratio`, the share of new traces the services sample |
@@ -172,8 +178,9 @@ For a traced run, a `traces.jsonl` that is missing or cannot be read gives `trac
 | `campaign` | `campaign.sh --set <file>` starts a run without `--pairing` |
 | `pairing` | `campaign.sh --set <file> --pairing <id>` starts a run; `pairing_id` is set |
 | `manual` | `run.sh --set <file>` starts a run outside a campaign: acceptance runs, calibration runs, reproducing a failure, and bisecting. It takes its series from `--series` |
+| `experiment` | `experiment.sh` starts one run of an experiment; `experiment` and `pairing_id` are set |
 
-`trigger.changed` is filled the same way for every reason, and is empty when nothing moved.
+`trigger.changed` is filled the same way for every reason but `experiment`, and is empty when nothing moved.
 
 ## Reasons
 

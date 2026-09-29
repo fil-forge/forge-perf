@@ -22,13 +22,17 @@ touch "$work/enabled"
 
 printf '#!/usr/bin/env bash\necho 0\n' >"$work/bin/id"
 # systemctl keeps enabled units in $WORK/enabled; forge-perf-run is a oneshot
-# unit, activating (and so not is-active) while $WORK/run-active exists.
+# unit, activating (and so not is-active) while $WORK/run-active exists;
+# forge-perf-experiment likewise while $WORK/experiment-active exists.
 cat >"$work/bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
 echo "systemctl $*" >>"$LOG"
 case "$1 $2" in
   "is-active --quiet") exit 3 ;;
-  "show -p") if [ -f "$WORK/run-active" ]; then echo activating; else echo inactive; fi ;;
+  "show -p")
+    f=run-active
+    [ "$5" != forge-perf-experiment.service ] || f=experiment-active
+    if [ -f "$WORK/$f" ]; then echo activating; else echo inactive; fi ;;
   "is-enabled --quiet") grep -qxF "$3" "$WORK/enabled" ;;
   "enable --now") echo "$3" >>"$WORK/enabled" ;;
   "enable "*) echo "$2" >>"$WORK/enabled" ;;
@@ -167,12 +171,23 @@ run 1 "a run in progress" && grep -q "forge-perf-run.service is activating" "$wo
   echo "ok: a running oneshot run unit stops the update" || fail "active run: not refused"
 rm "$work/run-active"
 
+touch "$work/experiment-active"
+run 1 "an experiment in progress" && grep -q "forge-perf-experiment.service is activating" "$work/out" &&
+  echo "ok: a running experiment unit stops the update" || fail "active experiment: not refused"
+rm "$work/experiment-active"
+
 if command -v flock >/dev/null; then
   mkdir -p "$work/run"
   exec 8>"$work/run/run.lock"
   flock 8
   LOCK_HELD="" run 1 "the run lock held" && grep -q "run.lock" "$work/out" &&
     echo "ok: a held run lock stops the update" || fail "run lock: not refused"
+  exec 8>&-
+  exec 8>"$work/run/experiment.lock"
+  flock 8
+  run 1 "the experiment lock held" && grep -q "experiment.lock" "$work/out" &&
+    echo "ok: a held experiment lock stops the update, even under poll's run lock" ||
+    fail "experiment lock: not refused"
   exec 8>&-
 fi
 

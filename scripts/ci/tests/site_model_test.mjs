@@ -261,3 +261,23 @@ test("only a traced run with its trace file and both times gets a trace link", (
   assert.equal(M.traceLink(run({ ...times, flags: ["traced", "trace_missing"] })), null);
   assert.equal(M.traceLink(run({ run_started_at: times.run_started_at, flags: ["traced"] })), null);
 });
+
+test("experiment runs never move the mercury or light a gate, and name their pull request and pairing", () => {
+  const e = { request_id: "ingot-pr123-0123456789ab-17000000001", service: "ingot", repository: "fil-forge/ingot",
+    pr: 123, commit: "0123456789abcdef0123456789abcdef01234567" };
+  const pairing = `exp-${e.request_id}`;
+  const live = run({ p5_bytes_per_s: 0.2e9 });
+  const main = run({ series: "experiment", pairing_id: pairing, experiment: { ...e, role: "main" }, p5_bytes_per_s: 5e9 });
+  const branch = run({ series: "experiment", pairing_id: pairing, experiment: { ...e, role: "branch" }, p5_bytes_per_s: 5e9 });
+  const d = index([live, main, branch], [measured(1, 0.36e9, "2026-09-01T00:00:00Z")]);
+  assert.equal(M.mercury(d.runs, NOW).run.run_id, live.run_id);
+  assert.equal(M.litGates(d.runs, d.gates)[0].run, null);
+  assert.equal(M.latestCounting(d.runs).run_id, live.run_id);
+  assert.deepEqual(M.pairedOffsets(d.runs), []);
+  assert.deepEqual(M.experimentNote(d.runs, d.runs[2]), {
+    label: "ingot #123", pr_url: "https://github.com/fil-forge/ingot/pull/123", commit: "0123456",
+    commit_url: `https://github.com/fil-forge/ingot/commit/${e.commit}`, role: "branch",
+    paired: [{ run_id: main.run_id, role: "main" }],
+  });
+  assert.equal(M.experimentNote(d.runs, d.runs[0]), null);
+});

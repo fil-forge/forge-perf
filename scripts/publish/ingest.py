@@ -200,6 +200,15 @@ class Checks:
         # A CPU-capped run is a check run; as any other series it could light a gate.
         if "cpu_capped" in out["flags"] and record["series"] != "calibration":
             raise Rejected("capped_not_calibration")
+        # An experiment's run carries its block, its trigger and its pairing, and
+        # no other run does, so an experiment never lands in a live series.
+        experiment = record.get("experiment")
+        is_experiment = record["series"] == "experiment"
+        pairing = record["pairing_id"] or ""
+        if {is_experiment, experiment is not None, record["trigger"]["reason"] == "experiment",
+                pairing.startswith("exp-")} != {is_experiment} or \
+                (is_experiment and pairing != f"exp-{experiment['request_id']}"):
+            raise Rejected("experiment_inconsistent")
         stored = (record["instrument"]["fingerprint"], record["instrument"]["box_fingerprint"])
         if stored != fingerprints(record):
             raise Rejected("fingerprint")
@@ -282,7 +291,7 @@ def compare_links(record, previous):
 
 def record_alerts(record, previous, status):
     """Alert lines for one record; updates the box's status in place."""
-    if record["series"] == "calibration":
+    if record["series"] in ("calibration", "experiment"):
         return []
     box, run_id, out = record["box"]["id"], record["run_id"], record["outcome"]
     cls, reasons = out["class"], set(out["reasons"])
@@ -409,9 +418,15 @@ def ingest(bucket, results, boxes, checks):
     for record in fresh:
         box = record["box"]["id"]
         status = statuses.setdefault(box, read_json(results / "status" / f"{box}.json", {}))
+        # The previous run the compare links start from is the latest earlier
+        # one outside the experiments, which test sets other than main's.
         runs = by_box[box]
-        i = runs.index(record["run_id"])
-        previous = read_json(have[runs[i - 1]], None) if i > 0 else None
+        previous = None
+        for run_id in reversed(runs[:runs.index(record["run_id"])]):
+            previous = read_json(have[run_id], None)
+            if previous is not None and previous.get("series") != "experiment":
+                break
+            previous = None
         alerts += record_alerts(record, previous, status)
     for box in boxes:
         status = statuses.setdefault(box, read_json(results / "status" / f"{box}.json", {}))
