@@ -24,6 +24,11 @@ output "results_bucket_name" {
   value       = "forge-perf-results-654654381893"
 }
 
+output "requests_bucket_name" {
+  description = "Where a /forge-perf request from a service repository's pull request waits for the persistent box: requests/ holds the queue, which CI writes and the box takes, and status/ holds the box's answers, which CI reads. Created by the bootstrap root."
+  value       = "forge-perf-requests-654654381893"
+}
+
 output "piri_bucket_name_prefix" {
   description = "First part of the name of each piri bucket. A box root appends the box name, the account id and piri's own suffix, forge-perf-piri-<box>-654654381893-piri-0-<store>, which stays under S3's 63-character limit for every box and store."
   value       = "forge-perf-piri"

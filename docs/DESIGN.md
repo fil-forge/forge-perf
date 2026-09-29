@@ -55,14 +55,14 @@ The layout follows infra-nodes and infra-central (`versions.tofu`, a `versions.t
 
 | Root | Applied by | Holds |
 |---|---|---|
-| `envs/bootstrap/account` | operator | state bucket `forge-perf-tfstate-654654381893`, CI roles, results bucket, piri IAM user, budget |
+| `envs/bootstrap/account` | operator | state bucket `forge-perf-tfstate-654654381893`, CI roles, results bucket, requests bucket, piri IAM user, budget |
 | `envs/network` | `deploy.yml` on main | `172.31.200.0/24` in the default VPC, its route table and S3 gateway endpoint |
 | `envs/box/main` | `deploy.yml` on main, after approval | the persistent box and its piri buckets |
 | `envs/box/campaign` | `campaign.yml` | a campaign or calibration box, destroyed after use |
 
 Each box root pre-creates piri's six buckets (`forge-perf-piri-<box>-654654381893-piri-0-<store>`, stores from `piri/pkg/fx/store/s3/provider.go:48-96`) with a one-day expiry. The security group has no ingress; Session Manager is the only way in. `ami_id` is pinned in the constants module, where infra-nodes looks its AMI up at create time (`infra-nodes/terraform/modules/node/main.tf:18-36`), because a new kernel is an instrument change. A resize or replacement mid-run would lose the run, so `apply-box-main` waits for a reviewer's approval, given once the box is held idle (§10).
 
-The instance role reads `/forge-perf/*` parameters, writes its own prefixes of the results bucket without read or delete, and empties its own piri buckets. The OIDC roles follow `infra-central/terraform/modules/github-actions-iam/main.tf:23-48`: `forge-perf-ci-plan` for pull requests, `forge-perf-ci-apply` and `forge-perf-ci-results` for main. The account also holds dev, so the apply role cannot stop, modify, delete or retag an EC2 resource lacking `Project = forge-perf`. main carries infra-nodes' ruleset, since any merge to forge-perf, smelt or storage-qualification main, or a new tracked `:main` image, runs code on the box as root.
+The instance role reads `/forge-perf/*` parameters, writes its own prefixes of the results bucket without read or delete, and empties its own piri buckets. The persistent box's role also takes `/forge-perf` requests from `requests/` in the requests bucket and answers in `status/`; a fourth OIDC role, `forge-perf-ci-request`, trusted from the main ref of ingot, piri, sprue and hilt only, may add a request and read an answer and nothing else. The OIDC roles follow `infra-central/terraform/modules/github-actions-iam/main.tf:23-48`: `forge-perf-ci-plan` for pull requests, `forge-perf-ci-apply` and `forge-perf-ci-results` for main. The account also holds dev, so the apply role cannot stop, modify, delete or retag an EC2 resource lacking `Project = forge-perf`. main carries infra-nodes' ruleset, since any merge to forge-perf, smelt or storage-qualification main, or a new tracked `:main` image, runs code on the box as root.
 
 ### Host
 

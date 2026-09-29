@@ -1,5 +1,5 @@
 output "role_arns" {
-  description = "ARN of each role by its short name (plan, apply, results), for the workflow env blocks."
+  description = "ARN of each role by its short name (plan, apply, results, request), for the workflow env blocks."
   value       = { for k, r in aws_iam_role.this : k => r.arn }
 }
 

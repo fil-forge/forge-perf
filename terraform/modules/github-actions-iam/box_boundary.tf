@@ -94,6 +94,32 @@ data "aws_iam_policy_document" "box_boundary" {
     }
   }
 
+  # The persistent box takes /forge-perf requests from the queue and answers
+  # in status/. It cannot write a request or read the results role's data.
+  statement {
+    sid       = "ListRequests"
+    actions   = ["s3:ListBucket"]
+    resources = [local.requests_bucket_arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["requests/*"]
+    }
+  }
+
+  statement {
+    sid       = "TakeRequests"
+    actions   = ["s3:GetObject", "s3:DeleteObject"]
+    resources = ["${local.requests_bucket_arn}/requests/*"]
+  }
+
+  statement {
+    sid       = "AnswerRequests"
+    actions   = ["s3:PutObject"]
+    resources = ["${local.requests_bucket_arn}/status/*"]
+  }
+
   statement {
     sid       = "WriteResults"
     actions   = ["s3:AbortMultipartUpload", "s3:PutObject"]
