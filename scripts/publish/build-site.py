@@ -40,6 +40,9 @@ def changes(record, previous):
         out.append("settings")
     if record["latency"]["target_rtt_ms"] != previous["latency"]["target_rtt_ms"]:
         out.append("latency")
+    # A record from before tracing has no `trace`; it was untraced.
+    if (record.get("trace") or {}).get("ratio") != (previous.get("trace") or {}).get("ratio"):
+        out.append("trace")
     if not broken and record["instrument"]["box_fingerprint"] != previous["instrument"]["box_fingerprint"]:
         out.append("box")
     return out

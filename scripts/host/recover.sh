@@ -229,6 +229,7 @@ PY
   fi
   if [ -z "$no_record" ]; then
     set -- --runner "$amended" --denylist "$denylist" --out "$record"
+    [ -z "$run_dir" ] || set -- "$@" --traces "$run_dir/traces"
     [ "$have_forbid" != true ] || set -- "$@" --forbid "$forbid"
     status=0
     python3 "$here/record.py" build "$@" || status=$?

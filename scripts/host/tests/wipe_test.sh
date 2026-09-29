@@ -257,6 +257,25 @@ has "$work/out" "no interrupted run"
 [ "$(grep -c . "$D/containers")" = 4 ] || fail "recovery without current.json touched the stack"
 echo "ok: without current.json recovery only flushes the outbox"
 
+setup
+jq '.trace = {"ratio": "0.1"}' "$host/fixtures/stack-boot-failed/runner.json" >"$work/box/nvme/work/run/runner.json"
+mkdir -p "$work/box/nvme/work/run/traces"
+cp "$host/fixtures/traced/traces/traces.jsonl" "$work/box/nvme/work/run/traces/"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
+touch "$D/s3-down"
+"$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover (traced) failed"; }
+rm -f "$D/s3-down"
+python3 - "$work/box/outbox/main-20261001t200000z.json" "$host/fixtures/traced/traces/traces.jsonl" <<'PY2' ||
+import hashlib, json, sys
+r = json.load(open(sys.argv[1]))
+flags, trace = r["outcome"]["flags"], r["trace"]
+assert "traced" in flags and "trace_missing" not in flags, flags
+assert trace["file_sha256"] == hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest(), trace
+assert trace["spans"] == 8, trace
+PY2
+  fail "recovery did not pass the run's traces/ to record.py"
+echo "ok: recovery of a traced run records the run's trace file"
+
 # --- recovery failure paths ---------------------------------------------------------
 current="$work/box/state/current.json"
 recover_ok() { "$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover exited non-zero: $1"; }; }

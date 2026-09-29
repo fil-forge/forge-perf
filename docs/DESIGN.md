@@ -199,7 +199,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 | `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore rates, marked `cache_served` because read-back runs 30 to 60 seconds after each write |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |
-| `instrument`, `trace` | two fingerprints; `null` until the tracing phase |
+| `instrument`, `trace` | two fingerprints; for a traced run, the sampling ratio, span and trace counts and the trace file's hash, else `null` |
 
 The record builder copies named fields and nothing else, because the drill's report, console output, evidence notes and failure details are free text; it takes `failures[].code`, a closed set, and named numeric facts. The box checks the record against the schema, a denylist pattern and piri's key ID. The Action repeats the checks, using the schema at the record's own forge-perf SHA, and recomputes the fingerprints; `check.yml` runs the denylist over the tree and commit messages.
 
@@ -215,7 +215,7 @@ One fingerprint hashes the box facts and one the rest of the instrument, minus f
 | `availability_warning` | only `availability_error`; the import client does not retry, so one 5xx fails a capped run | shown, numbers kept | no |
 | `valid` | drill exit 0, every check passed | yes | one message saying the box recovered |
 
-Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`, `cpu_capped`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
+Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`, `cpu_capped`, `traced`, `trace_missing`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
 
 `publish.yml` posts to `#filone-alerts` with `SLACK_BOT_TOKEN`, as `infra-nodes/.github/workflows/smoke.yml:205-238` does, once per box and class until that box records `valid` or `availability_warning`. It also alerts once when the persistent box's heartbeat is 30 minutes old, six polls in a row fail, one run has held the box for 7 hours, or no record has arrived in 26 hours. GitHub disables scheduled workflows in a public repository after 60 days without activity, so the page shows when it was last published.
 

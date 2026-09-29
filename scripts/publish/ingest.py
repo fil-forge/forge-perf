@@ -104,6 +104,9 @@ def fingerprints(record):
         "target_rtt_us": round(record["latency"]["target_rtt_ms"] * 1000),
         "jitter_us": 0,
     }
+    # Only a traced run hashes its ratio, so an untraced fingerprint is unchanged.
+    if record.get("trace") is not None:
+        instrument["trace_ratio_ppm"] = round(record["trace"]["ratio"] * 1000000)
     box = record["box"]
     facts = {k: box[k] for k in ("instance_type", "arch", "ami_id", "kernel", "docker_server",
                                  "docker_compose", "cpu")}

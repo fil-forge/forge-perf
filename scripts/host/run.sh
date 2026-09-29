@@ -856,7 +856,8 @@ close_out() {
   get_denylist || echo "run.sh: no denylist at $DENYLIST, or SSM did not answer" >&2
   rj --arg t "$(now)" '.time.run_finished_at = $t'
   smelt_run="$(find "$SMELT/generated/perf-runs/drill" -mindepth 1 -maxdepth 1 -type d -name "*-$run_id" 2>/dev/null)"
-  set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --denylist "$DENYLIST" --out "$record"
+  set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --traces "$RUN/traces" \
+    --denylist "$DENYLIST" --out "$record"
   [ -z "$smelt_run" ] || [ "$(wc -l <<<"$smelt_run")" -ne 1 ] || set -- "$@" --run-dir "$smelt_run"
   [ ! -s "$forbid" ] || set -- "$@" --forbid "$forbid"
   status=0

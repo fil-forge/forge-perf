@@ -248,12 +248,12 @@ class Publish(unittest.TestCase):
 
     def test_every_host_fixture_is_committed(self):
         cases = sorted(p.name for p in HOST_FIXTURES.iterdir() if (p / "expected.json").exists())
-        self.assertEqual(len(cases), 11)
+        self.assertEqual(len(cases), 12)
         for hour, case in enumerate(cases):
             self.record(fixture_record(case, hour))
         got = self.ingest()
         self.assertEqual(got["rejected"], "0")
-        self.assertEqual(len(list((self.results / "runs").rglob("*.json"))), 11)
+        self.assertEqual(len(list((self.results / "runs").rglob("*.json"))), 12)
 
     def test_a_record_that_wrote_nothing_posts_no_data(self):
         self.record(fixture_record("wrote-nothing", 12))
@@ -330,7 +330,7 @@ class Publish(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(HERE / "ingest.py"), "--self-test"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("18 of 18 cases as expected", proc.stdout)
+        self.assertIn("20 of 20 cases as expected", proc.stdout)
 
 
 class BuildSite(unittest.TestCase):
@@ -362,6 +362,25 @@ class BuildSite(unittest.TestCase):
                              (None, first["trigger"]["changed"], first["drill"]["settings"]["stop_ingest_at_bytes"]))
             self.assertTrue((tmp / "_site/index.html").exists())
             self.assertEqual(json.loads((tmp / f"_site/data/runs/{second['run_id']}.json").read_text()), second)
+
+    def test_turning_tracing_on_or_off_is_an_instrument_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runs = tmp / "results/runs/2026/10"
+            runs.mkdir(parents=True)
+            older = fixture_record("valid", 11)
+            del older["trace"]  # a record from before the schema had `trace`
+            records = (older, fixture_record("valid", 12), fixture_record("traced", 13),
+                       fixture_record("traced", 14), fixture_record("valid", 15))
+            for r in records:
+                (runs / f"{r['run_id']}.json").write_text(json.dumps(r), encoding="utf-8")
+            subprocess.run([sys.executable, str(HERE / "build-site.py"), "--site", str(ROOT / "site"),
+                            "--data", str(ROOT / "data"), "--results", str(tmp / "results"),
+                            "--out", str(tmp / "_site"), "--now", NOW], check=True, capture_output=True)
+            index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
+            self.assertEqual([r["instrument_changes"] for r in index["runs"]],
+                             [None, [], ["trace"], [], ["trace"]])
+            self.assertEqual(index["runs"][2]["flags"], ["few_windows", "traced"])
 
     def test_a_broken_host_record_builds(self):
         # A schema-valid record with no settings file, no NVMe and no Docker

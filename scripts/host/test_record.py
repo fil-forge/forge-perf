@@ -3,6 +3,7 @@
     cd scripts/host && python3 -m unittest -v test_record
 """
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -57,15 +58,21 @@ class Case:
     def evidence(self):
         return next((self.case / "run" / "drill" / "evidence").glob("drill-*.json")).relative_to(self.case)
 
+    @property
+    def traces(self):
+        """The case's traces/ directory, as run.sh passes $RUN/traces whether or not it exists."""
+        return self.case / "traces"
+
     def build(self):
         latency = self.case / "netem" / "latency.json"
         return record.build(load(self.case / "runner.json"), self.case / "run",
-                            load(latency) if latency.exists() else None, record.read_env(self.latency_env))
+                            load(latency) if latency.exists() else None, record.read_env(self.latency_env),
+                            self.traces)
 
     def cli(self, *extra, command="build"):
         args = [sys.executable, str(HERE / "record.py"), command, "--runner", str(self.case / "runner.json"),
                 "--run-dir", str(self.case / "run"), "--latency", str(self.case / "netem" / "latency.json"),
-                "--latency-env", str(self.latency_env),
+                "--latency-env", str(self.latency_env), "--traces", str(self.traces),
                 "--denylist", str(self.denylist), "--out", str(self.out), *extra]
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -506,6 +513,163 @@ class Classification(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 rec = load(case.out)
                 self.assertEqual((rec["series"], rec["outcome"]["flags"]), ("per-trigger", ["few_windows"]))
+
+
+class Tracing(unittest.TestCase):
+    UNTRACED = sorted(p.name for p in FIXTURES.iterdir() if not (p / "traces").exists())
+
+    def test_an_untraced_run_records_no_trace_whether_or_not_the_runner_says_so(self):
+        # A runner from before tracing has no `trace`; one after writes null.
+        # Both give the fixture's record byte for byte, fingerprint included.
+        self.assertIn("valid", self.UNTRACED)
+        for fixture in self.UNTRACED:
+            for trace in ("absent", None):
+                with self.subTest(fixture=fixture, trace=trace):
+                    case = Case(self, fixture)
+                    if trace is None:
+                        case.edit("runner.json", lambda d: d.update(trace=None))
+                    self.assertEqual(case.cli().returncode, 3 if fixture == "record-build-failed" else 0)
+                    self.assertEqual(load(case.out), case.expected)
+
+    def test_a_traced_run_counts_its_spans_by_service(self):
+        trace = Case(self, "traced").build()["trace"]
+        # Three traces; ingot 3, sprue 1, piri 2, and two spans whose service
+        # is another name or none.
+        self.assertEqual((trace["ratio"], trace["traces"], trace["spans"]), (0.1, 3, 8))
+        self.assertEqual(trace["spans_by_service"], {"ingot": 3, "sprue": 1, "hilt": 0, "piri": 2, "other": 2})
+        # receiver refused 2, exporter send failed 1, processor dropped 0.
+        self.assertEqual(trace["dropped_spans"], 3)
+        data = (FIXTURES / "traced" / "traces" / "traces.jsonl").read_bytes()
+        self.assertEqual((trace["file_bytes"], trace["file_sha256"]), (len(data), hashlib.sha256(data).hexdigest()))
+
+    def test_only_the_ratio_enters_the_fingerprint(self):
+        case = Case(self, "traced")
+        valid = load(FIXTURES / "valid" / "expected.json")
+        traced = case.build()["instrument"]
+        self.assertEqual(traced["box_fingerprint"], valid["instrument"]["box_fingerprint"])
+        self.assertNotEqual(traced["fingerprint"], valid["instrument"]["fingerprint"])
+        (case.traces / "traces.jsonl").write_text("", encoding="utf-8")
+        self.assertEqual(case.build()["instrument"], traced)
+        case.edit("runner.json", lambda d: d.update(trace={"ratio": "0.5"}))
+        self.assertNotEqual(case.build()["instrument"]["fingerprint"], traced["fingerprint"])
+        case.edit("runner.json", lambda d: d.update(trace={"ratio": "0.500"}))
+        self.assertEqual(case.build()["trace"]["ratio"], 0.5)
+
+    def test_missing_or_unreadable_traces_count_zero(self):
+        for name in ("missing", "a directory"):
+            with self.subTest(case=name):
+                case = Case(self, "traced")
+                path = case.traces / "traces.jsonl"
+                path.unlink()
+                if name == "a directory":
+                    path.mkdir()
+                rec = case.build()
+                self.assertEqual({k: rec["trace"][k] for k in ("traces", "spans", "file_bytes", "file_sha256")},
+                                 {"traces": 0, "spans": 0, "file_bytes": 0, "file_sha256": None})
+                self.assertEqual(set(rec["trace"]["spans_by_service"].values()), {0})
+                self.assertEqual(rec["trace"]["dropped_spans"], 3)
+                self.assertEqual(rec["outcome"]["flags"], ["few_windows", "traced", "trace_missing"])
+                self.assertEqual(rec["outcome"]["class"], "valid")
+                self.assertEqual(rec["instrument"], case.expected["instrument"])
+
+    def test_a_line_that_is_not_a_trace_export_is_skipped(self):
+        # The collector can stop mid-line; the complete lines still count, and
+        # the size and hash cover the file as it is.
+        lines = (FIXTURES / "traced" / "traces" / "traces.jsonl").read_text(encoding="utf-8").splitlines(True)
+        first = Case(self, "traced")
+        (first.traces / "traces.jsonl").write_text(lines[0], encoding="utf-8")
+        want = {k: first.build()["trace"][k] for k in ("traces", "spans", "spans_by_service")}
+        self.assertEqual((want["traces"], want["spans"]), (2, 4))
+        broken = {
+            "the last line cut short": lines[0] + lines[1][:40],
+            "not a trace export": lines[0] + "{}\n",
+            "a trace ID that is not hex": lines[0] + lines[1].replace(
+                lines[1].split('"traceId":"')[1][:32], "x" * 32, 1),
+            "not JSON, in the middle": "{\"resourceSpans\n" + lines[0],
+        }
+        for name, text in broken.items():
+            with self.subTest(case=name):
+                case = Case(self, "traced")
+                (case.traces / "traces.jsonl").write_text(text, encoding="utf-8")
+                rec = case.build()
+                data = text.encode("utf-8")
+                self.assertEqual({k: rec["trace"][k] for k in want}, want)
+                self.assertEqual((rec["trace"]["file_bytes"], rec["trace"]["file_sha256"]),
+                                 (len(data), hashlib.sha256(data).hexdigest()))
+                self.assertEqual(rec["outcome"]["flags"], ["few_windows", "traced"])
+                self.assertEqual(rec["instrument"], case.expected["instrument"])
+
+    def test_an_empty_trace_file_is_read(self):
+        case = Case(self, "traced")
+        (case.traces / "traces.jsonl").write_text("", encoding="utf-8")
+        rec = case.build()
+        self.assertEqual((rec["trace"]["spans"], rec["trace"]["file_sha256"]), (0, hashlib.sha256(b"").hexdigest()))
+        self.assertEqual(rec["outcome"]["flags"], ["few_windows", "traced"])
+
+    def test_without_a_traces_directory_the_trace_is_missing(self):
+        case = Case(self, "traced")
+        shutil.rmtree(case.traces)
+        rec = case.build()
+        self.assertEqual((rec["trace"]["spans"], rec["trace"]["dropped_spans"]), (0, None))
+        self.assertEqual(rec["outcome"]["flags"], ["few_windows", "traced", "trace_missing"])
+        runner = load(case.case / "runner.json")
+        latency = load(case.case / "netem" / "latency.json")
+        rec = record.build(runner, case.case / "run", latency, record.read_env(case.latency_env))
+        self.assertIn("trace_missing", rec["outcome"]["flags"])
+
+    def test_collector_counters(self):
+        case = Case(self, "traced")
+        path = case.traces / "collector-metrics.txt"
+        scrapes = {
+            "no counter": ("# HELP x y\notelcol_receiver_accepted_spans_total 5\n", 0),
+            "without _total, with a timestamp": ("otelcol_exporter_send_failed_spans{exporter=\"file\"} 4 1790856295000\n"
+                                                 "otelcol_exporter_enqueue_failed_spans_total 1\n", 5),
+            "a float the exporter writes": ("otelcol_processor_refused_spans_total{a=\"b c\"} 1.2e+01\n"
+                                            "otelcol_receiver_failed_spans_total 3\n", 15),
+            "a value that is not a number": ("otelcol_receiver_refused_spans_total nan-ish\n", None),
+            "a negative value": ("otelcol_receiver_refused_spans_total -1\n", None),
+        }
+        for name, (text, want) in scrapes.items():
+            with self.subTest(case=name):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(case.build()["trace"]["dropped_spans"], want)
+        path.unlink()
+        rec = case.build()
+        self.assertIsNone(rec["trace"]["dropped_spans"])
+        self.assertNotIn("trace_missing", rec["outcome"]["flags"])
+
+    def test_the_ratio_must_be_a_decimal_in_range(self):
+        for ratio in ("1", "0.1", ".25", "0.000001", "1.000"):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(record.trace_ratio(ratio), float(ratio))
+        for ratio in ("0", "0.0", "1.5", "-0.1", "1e-1", "nan", "", " 0.1", "0.0000001", 0.1, None):
+            with self.subTest(ratio=ratio), self.assertRaises(ValueError):
+                record.trace_ratio(ratio)
+
+    def test_a_bad_ratio_writes_no_record(self):
+        case = Case(self, "traced")
+        case.edit("runner.json", lambda d: d.update(trace={"ratio": "2"}))
+        result = case.cli()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(case.out.exists())
+
+    def test_the_minimal_record_keeps_the_trace(self):
+        case = Case(self, "traced")
+        result = case.cli(command="minimal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rec = load(case.out)
+        self.assertEqual(rec["trace"], case.expected["trace"])
+        self.assertEqual(rec["outcome"]["flags"], ["traced"])
+        self.assertEqual(rec["instrument"], case.expected["instrument"])
+
+    def test_trace_text_never_reaches_the_record(self):
+        case = Case(self, "traced")
+        for name in ("traces.jsonl", "collector-metrics.txt", "collector.log"):
+            self.assertIn(MARKER, (case.traces / name).read_text(encoding="utf-8"))
+        self.assertEqual(case.cli().returncode, 0)
+        text = case.out.read_text(encoding="utf-8")
+        self.assertNotIn(MARKER, text)
+        self.assertNotIn("0af7651916cd43dd8448eb211c80319c", text)
 
 
 class NetemLines(unittest.TestCase):
