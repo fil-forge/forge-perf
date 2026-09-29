@@ -17,7 +17,7 @@
 # collector runs beside the stack and the services sample RATIO of requests
 # (docs/runner.md, "Tracing"). The steps are preflight, checkout, images,
 # boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
-# collected, recorded, uploaded and wiped. --until STEP stops after STEP and
+# collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
 #
 # Exit status: 0 the run was recorded and wiped (whatever its class), it
@@ -819,7 +819,7 @@ step_check() {
   fi
 }
 
-# close_out: collect, record, upload and wipe, whether a step stopped the run
+# close_out: collect, record, send to Grafana, upload and wipe, whether a step stopped the run
 # or not. It runs from the EXIT trap without set -e, so each step checks its
 # own result. Fails when no record was written or the wipe failed.
 close_out() {
@@ -870,9 +870,10 @@ close_out() {
     ok=1
   fi
 
-  # A stop request leaves the upload to the next poll, so the wipe fits in
-  # the unit's TimeoutStopSec.
+  # A stop request leaves Grafana out and the upload to the next poll, so the
+  # wipe fits in the unit's TimeoutStopSec.
   if [ -z "$stop_requested" ]; then
+    grafana_export "$state/runner.json" "$record" "$RUN/traces"
     step "upload"
     "$here/outbox.sh" flush || echo "run.sh: the outbox keeps files for the next poll" >&2
     [ "$ok" -ne 0 ] || set_phase uploaded

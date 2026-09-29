@@ -1,0 +1,74 @@
+# The span, span event and link attributes a traced run's spans keep when
+# they go to Grafana (docs/runner.md, "Grafana"). One key per line; # starts a
+# comment. Every other attribute is dropped, and so is a listed one whose
+# value is not a single scalar or holds "://".
+#
+# A key belongs here only when no value of it can carry a bucket name, an
+# object key, a URL, a path, a query string, SQL text or a network address.
+# The list comes from what ingot, sprue, hilt and piri set at their origin/main
+# of 2026-09-28 and from a local traced run's spans. Left out on purpose:
+# url.*, server.*, client.*, network.peer.*, user_agent.original, user.name,
+# aws.s3.bucket, aws.s3.key, aws.request_id, aws.region, db.query.text,
+# db.namespace, pgx.prepare_stmt.name, ucan.task, space.did, blob.digest,
+# dataset.id, tx, exception.message and exception.stacktrace.
+
+# HTTP (otelhttp, otelecho and ingot's server spans). http.route is the
+# route template, such as /pdp/piece/upload/:uploadUUID.
+http.request.method
+http.response.status_code
+http.route
+http.request.body.size
+http.response.body.size
+network.protocol.version
+
+# RPC: the AWS SDK's calls (rpc.method is the operation, S3/PutObject).
+rpc.system
+rpc.system.name
+rpc.method
+
+# UCAN invocations in sprue and hilt.
+ucan.receipt.ok
+
+# Postgres (otelpgx): the system and the statement's verb, never its text.
+db.system
+db.system.name
+db.operation.name
+db.operation.batch.size
+pgx.rows_affected
+
+# Errors: the class, never the message.
+error.type
+exception.type
+
+# ingot
+ingot.auth.local_hit
+ingot.auth.path
+ingot.blob.bytes
+ingot.blob.result
+ingot.blobs.concluded
+ingot.blobs.total
+ingot.blobs.uploaded
+ingot.body.blobs
+ingot.body.bytes
+ingot.log.attempts
+ingot.log.blocks
+ingot.log.bytes
+ingot.log.plane
+ingot.log.segment_bytes
+ingot.reads.blobs.network
+ingot.reads.blobs.spool
+ingot.reads.blocks.cache
+ingot.reads.blocks.log
+ingot.reads.blocks.network
+ingot.tree.keys_returned
+ingot.tree.keys_scanned
+ingot.tree.versions_returned
+
+# piri. objectstore.name is the store's fixed name (allocations, claims, ...),
+# which piri sets in code; the bucket name adds the box's prefix to it.
+blob.size
+objectstore.found
+objectstore.keys
+objectstore.name
+objectstore.size
+roots.count

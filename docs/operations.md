@@ -212,6 +212,24 @@ The parameters are standard tier, and the secret ones are SecureString under the
 aws ssm get-parameters-by-path --path /forge-perf --query 'Parameters[].[Name,Type]' --output text
 ```
 
+### The Grafana token
+
+Each run sends its results, and a traced run its scrubbed spans, to the `filecoinfoundation` Grafana Cloud stack through its OTLP gateway ([runner.md](runner.md#grafana)). The box authenticates with the stack's instance ID and an access policy token that can write metrics and traces and nothing else. Making the token takes the Admin role in the Grafana Cloud organization.
+
+1. In the Grafana Cloud portal, open the stack's OpenTelemetry (OTLP) configuration. It shows the OTLP endpoint, which must equal `GRAFANA_OTLP_ENDPOINT` in `config/grafana.conf`, and the instance ID, which is the basic auth user.
+2. Under Security, Access Policies, create a policy named `forge-perf`, limited to the `filecoinfoundation` stack, with the scopes `metrics:write` and `traces:write`. Add a token to it; the portal shows the token once.
+3. Store `<instance id>:<token>` as one SecureString. As with the other secrets, the value goes through a temporary file readable only by you, never a command-line argument; `read -rs` keeps the pasted token off the screen and out of the shell history:
+
+   ```sh
+   tmp=$(mktemp)   # created mode 600
+   read -rs token  # paste the token, then Enter
+   printf '%s:%s' <instance id> "$token" >"$tmp"; unset token
+   aws ssm put-parameter --name /forge-perf/grafana-otlp --type SecureString --value "file://$tmp"
+   rm -f "$tmp"
+   ```
+
+The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `results sent` for a run with drill results, and for a traced run the count of trace requests sent. Without the parameter every run logs `grafana: no credential in SSM; nothing sent` and goes on.
+
 ### The `Project` cost allocation tag
 
 Every forge-perf resource carries `Project = forge-perf`. Cost Explorer and the `forge-perf-monthly` budget see the tag only after it is activated as a cost allocation tag, a one-time step for the account. A tag appears in the list up to a day after a resource first carries it.
@@ -433,7 +451,21 @@ The summary's first table has a row per service and span name: count, p50, p95, 
 
 `--jaeger` then runs Jaeger v2 all-in-one, pinned in `scripts/operator/images.lock`, as container `forge-perf-jaeger` listening on 127.0.0.1 only (UI on 16686, OTLP HTTP on 4318). It POSTs each line of `traces.jsonl` to `/v1/traces` and prints the UI's address, http://127.0.0.1:16686/. The UI searches the last hour by default; set Lookback to cover the run's date. The spans live in the container's memory: `docker rm -f forge-perf-jaeger` discards them, and the next `--jaeger` replaces the container.
 
-Traces hold the drill's bucket names, object keys and SQL, and are private like the rest of the raw tarball. Keep them under `local/` or outside the repository, and never paste them into an issue or a pull request.
+The same run's scrubbed spans are in Grafana too. In Explore, pick the stack's Tempo data source and run the TraceQL query
+
+```
+{ resource.forge_perf.run_id = "<run_id>" }
+```
+
+with a time range that covers the run and spans at most 7 days, since Tempo by default refuses a longer search; the table of recent runs on the forge-perf dashboard links each run ID to this search. The scrubbed spans keep their names, timing, parents and the attributes in `config/grafana-span-attributes.txt`, which is enough to follow a request through the four services and to compare `bucket.lock` and `pool.acquire` waits across runs. Adding `&& name = "bucket.lock"` inside the braces narrows the search to one span name. Anything the scrub drops, such as bucket names, object keys and SQL, is only in the raw tarball, which `traces.sh` reads.
+
+The tarball's traces hold the drill's bucket names, object keys and SQL, and are private like the rest of the raw tarball. Keep them under `local/` or outside the repository, and never paste them into an issue or a pull request.
+
+## The Grafana dashboard
+
+[`docs/grafana/forge-perf.json`](grafana/forge-perf.json) is the forge-perf dashboard, in the Grafana dashboard v2 format that fil-forge/infra-central keeps its dashboards in. It shows each run's ingest p5 and median, and its objects written per second, over time with one colour per instance type, and a table of recent runs with their class and run ID, where each run ID links to a Tempo search for its spans over the dashboard's time range. Narrow the range to the week of the run before following the link, since Tempo by default refuses a search longer than 7 days. Variables filter by box and series.
+
+infra-central installs it from `terraform/envs/grafana/dashboards/forge-perf.json`, through a pull request to that repository that copies this file, runs its `scripts/normalise-dashboard.sh`, and lets its `apply-grafana` job apply it. A change starts here and is copied across the same way. The run ID link names the Tempo data source by the UID `grafanacloud-traces`, Grafana Cloud's default; if the stack's Tempo data source has another UID (Connections, Data sources), change it in both places.
 
 ## Rotating secrets
 
@@ -443,10 +475,13 @@ Traces hold the drill's bucket names, object keys and SQL, and are private like 
 | harness deploy key | SSM `/forge-perf/harness-deploy-key`; the public half on fil-one/storage-qualification | yearly, and when someone with access leaves |
 | denylist pattern | SSM `/forge-perf/denylist`; repository secret `PUBLIC_DENYLIST_REGEX` | when the pattern changes |
 | `SLACK_BOT_TOKEN` | repository secret | when the Slack app's token changes |
+| Grafana token | SSM `/forge-perf/grafana-otlp` | yearly, and when someone with access leaves |
 
 **piri's key.** IAM allows two keys per user, so the new key overlaps the old. Hold each box first (`hold.sh main on`), since a run whose preflight reads the parameters between the two writes starts piri with a mismatched pair, and release the hold once both are written. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
 
 **Harness deploy key.** Make and store a new key as in "The harness credential" above, with `--overwrite` on `put-parameter`, and add its public half beside the old one. After the next run fetches the harness, remove the old key from the repository's deploy keys.
+
+**Grafana token.** An access policy holds several tokens at once. Add a new token to the `forge-perf` policy, store it as in "The Grafana token" above with `--overwrite` added to `put-parameter`, and delete the old token once the next run's journal shows `results sent`.
 
 **Slack token.** `gh secret set SLACK_BOT_TOKEN -R fil-forge/forge-perf`, then dispatch `publish.yml` once to confirm a post goes through.
 
@@ -456,6 +491,7 @@ Record each rotation's date here.
 |---|---|
 | piri's S3 key | not yet |
 | harness deploy key | not yet |
+| Grafana token | not yet |
 
 ## Responding to alerts
 

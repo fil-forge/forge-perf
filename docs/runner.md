@@ -76,7 +76,7 @@ The wipe takes `/run/forge-perf/run.lock` on descriptor 9 and waits for it. A ca
 | `phase` | one of `preflight`, `boot`, `drill`, `recorded`, `uploaded`, `wiping` |
 | `run_dir` | the run's directory; default `/mnt/forge-perf/nvme/work/run`, which holds `runner.json` |
 
-With no `current.json` it only flushes the outbox. Otherwise, in order, it stops every container Docker restarted at daemon start. For a phase before `recorded`, or a phase it does not know, it then collects each container's `docker logs --timestamps` and the run directory into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` and writes a `no_data` record with reason `drill_interrupted` to `<run_id>.json` beside it, with `record.py build` from the run's `runner.json`. It then removes the containers, empties the buckets and wipes (all through `wipe.sh`), removes `current.json` and flushes the outbox. From `recorded` on, the run's own files are already in the outbox, so recovery adds none.
+With no `current.json` it only flushes the outbox. Otherwise, in order, it stops every container Docker restarted at daemon start. For a phase before `recorded`, or a phase it does not know, it then collects each container's `docker logs --timestamps` and the run directory into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` and writes a `no_data` record with reason `drill_interrupted` to `<run_id>.json` beside it, with `record.py build` from the run's `runner.json`. It then removes the containers, empties the buckets and wipes (all through `wipe.sh`), removes `current.json` and flushes the outbox. The attempt that writes that record also sends it, with a traced run's scrubbed spans, to Grafana before the wipe ([Grafana](#grafana)). From `recorded` on, the run's own files are already in the outbox, so recovery adds none.
 
 `run.sh` writes a complete `runner.json` to `/var/lib/forge-perf/state/runner.json` on the root volume before it first writes `current.json`, and copies it into the run directory once preflight has created that. A stop/start or resize mid-run leaves the instance store blank, and recovery then reads that copy, so the interrupted run still gets a record.
 
@@ -225,12 +225,13 @@ Each step runs its slow commands under `timeout` with the budget below, and ever
 
 ### Record, upload and wipe
 
-Every run that started ends with these four steps, whether a step stopped it or not, after a traced run's collector has stopped ([Tracing](#tracing)). They run without stopping at a failure, so a run always reaches the wipe.
+Every run that started ends with these five steps, whether a step stopped it or not, after a traced run's collector has stopped ([Tracing](#tracing)). They run without stopping at a failure, so a run always reaches the wipe.
 
 | Step | What it does | Budget |
 |---|---|---|
 | collect | `collect.sh`: the run directory, smelt's `generated/perf-runs/` and each container's `docker logs --timestamps` into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst`, with `*.env`, `provider/` and the lines `piri init` prints its key in left out. The tarball is not written while piri's key ID, piri's secret or the harness credential appears in the collected files, or when piri's key was never read; `runner.json` then gets `raw_missing` | 10 min |
 | record | `time.run_finished_at`; `record.py build` into `/var/lib/forge-perf/outbox/<run_id>.json`, checked against the schema, the denylist (`FORGE_PERF_DENYLIST_FILE`, or SSM `<path>/denylist`, read at preflight) and the credentials; then `current.json` phase `recorded` | |
+| grafana | the run's results and, for a traced run, its scrubbed spans to Grafana Cloud ([Grafana](#grafana)); a failure logs a line and changes nothing else | 2 min |
 | upload | `outbox.sh flush`, raw before record; then phase `uploaded`. A failed upload leaves the files for the next flush | 15 min per file |
 | wipe | phase `wiping`; `wipe.sh` with `FORGE_PERF_LOCK_HELD=1`; then `current.json` is removed | 30 min |
 
@@ -240,7 +241,7 @@ Exit status 0 means the run was recorded and wiped, whatever its class, or reach
 
 ### Stopping a run
 
-`forge-perf-run.service` is `Type=oneshot` with `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty` and no `Restart=`. `systemctl stop`, or the start timeout, sends SIGTERM to `run.sh` alone. During the drill `run.sh` passes it on as SIGINT, so the drill writes its evidence and exits 2 (`timeout` kills it 5 minutes later if it has not), and the record carries `drill_interrupted`. At any other step the run ends at once with the same reason. Either way `run.sh` collects, records and wipes, and leaves the upload to the next flush, so the close-out fits in `TimeoutStopSec`; it exits 143. Whatever is left after that, or after the SIGKILL at `TimeoutStopSec`, `ExecStopPost` wipes. The unit has `Requires=` and `After=` on `forge-perf-recover.service`.
+`forge-perf-run.service` is `Type=oneshot` with `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty` and no `Restart=`. `systemctl stop`, or the start timeout, sends SIGTERM to `run.sh` alone. During the drill `run.sh` passes it on as SIGINT, so the drill writes its evidence and exits 2 (`timeout` kills it 5 minutes later if it has not), and the record carries `drill_interrupted`. At any other step the run ends at once with the same reason. Either way `run.sh` collects, records and wipes, sends nothing to Grafana and leaves the upload to the next flush, so the close-out fits in `TimeoutStopSec`; it exits 143. Whatever is left after that, or after the SIGKILL at `TimeoutStopSec`, `ExecStopPost` wipes. The unit has `Requires=` and `After=` on `forge-perf-recover.service`.
 
 ### What a run reads
 
@@ -249,6 +250,8 @@ Exit status 0 means the run was recorded and wiped, whatever its class, or reach
 | `config/images.tracked` | the smelt variable and `repo:tag` of each image under test; the set supplies the digest |
 | `config/images.lock` | the smelt variable, `repo:tag` and index digest of each third-party image, the netem sidecar and the trace collector |
 | `config/otel-collector.yaml` | the trace collector's configuration |
+| `config/grafana.conf` | the Grafana Cloud OTLP endpoint, the Grafana step's budget and its largest request ([Grafana](#grafana)) |
+| `config/grafana-span-attributes.txt` | the span attributes a traced run's spans keep on their way to Grafana |
 | `config/harness.conf` | `SQ_REPO`; `SQ_PIN`, the harness commit while harness main cannot run the capped drill; `SQ_AUTH`, the harness credential |
 | `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, a smelt commit to hold runs at (empty: smelt main); `MANIFEST_NAME` |
 | `config/smelt-manifest.yml.tmpl` | one piri node on Postgres with its blobs in S3; `@ENDPOINT@`, `@BUCKET_PREFIX@` and `@INSECURE@` come from `config/piri-s3.env` and `box.conf` |
@@ -301,6 +304,28 @@ After the drill, before collect, whether a step stopped the run or not, `run.sh`
 `recover.sh` stops a leftover `forge-perf-otel` with the same minute's grace before the other containers and writes its log to the run's `traces/` when that directory exists. `wipe.sh` removes the container with the rest of the stack, on the box and in skip mode.
 
 `--until` leaves the collector running with the stack; `wipe.sh` removes both.
+
+## Grafana
+
+Every recorded run sends its results to the team's Grafana Cloud stack, `filecoinfoundation`, and a traced run also sends its spans, scrubbed to an allowlist. The step runs after the record and before the upload, in `run.sh` and in the recovery attempt that writes a `no_data` record, never while the drill runs. It has 120 seconds (`GRAFANA_TIMEOUT_S` in `config/grafana.conf`), including at most 20 for reading the credential from SSM. A failure or an overrun logs a line starting `grafana:` and changes nothing else: the record's class, reasons and flags are already written, and the run still uploads and wipes. A stopped run skips the step, as it skips the upload.
+
+`config/grafana.conf` sets `GRAFANA_OTLP_ENDPOINT`, the stack's OTLP gateway; the step POSTs OTLP JSON to `/v1/traces` and `/v1/metrics` under it with HTTP basic auth. The credential is the SSM SecureString `<path>/grafana-otlp`, `<instance id>:<token>` ([operations.md](operations.md#the-grafana-token)). It goes from SSM into `/run/forge-perf/secrets/grafana-otlp`, mode 600, which `scripts/host/grafana-export.py` reads and the step then removes, so it never reaches argv, a log, the run directory, the raw tarball or the record. Without the parameter, or with an empty endpoint, the step logs one line and sends nothing. A local run (skip mode, or `FORGE_PERF_SECRETS` other than `ssm`) sends only when `FORGE_PERF_GRAFANA_CREDENTIALS` names a credential file, and `FORGE_PERF_GRAFANA_ENDPOINT` overrides the endpoint. The exporter sends to `https://` endpoints, and to plain `http://` only on the machine itself. It never follows a redirect, which counts as a failure, so the credential goes only to the configured endpoint.
+
+**Results.** One metrics request per run, sent before any spans so a slow trace upload cannot crowd it out, with the values from the finished record, so they match the page. Each gauge is stamped at the record's `time.run_finished_at`:
+
+| Metric | Record field |
+|---|---|
+| `forge_perf_ingest_p5_bytes_per_second` | `drill.results.ingest_p5_bytes_per_s` |
+| `forge_perf_ingest_median_bytes_per_second` | `drill.results.ingest_median_bytes_per_s` |
+| `forge_perf_writes_per_second` | `drill.results.writes_median_per_s` |
+| `forge_perf_sustained_windows` | `drill.results.sustained_windows` |
+| `forge_perf_bytes_ingested` | `drill.results.bytes_ingested` |
+
+Each carries the labels `box`, `instance_type`, `tier`, `series`, `class`, `traced` (`true` or `false`), `workers`, `size_bytes` (the drill's `stop_ingest_at_bytes`) and `run_id`, under the resource `service.name=forge-perf`. A field that is null leaves its gauge out, and a record without drill results, from a run whose drill never ran, sends no request.
+
+**Spans.** The exporter reads a traced run's `traces.jsonl` line by line and scrubs each span before anything leaves the box. On the resource, only `service.name`, `service.version` and `forge_perf.run_id` stay, and `forge_perf.box`, `forge_perf.instance_type` and `forge_perf.series` are added. On spans, span events and links, only the keys listed in `config/grafana-span-attributes.txt` stay, and only with a single scalar value: a string that holds no `://`, an integer, a number or a boolean. The list holds HTTP methods, status codes and route templates, the AWS SDK's operation names, `ucan.receipt.ok`, the Postgres system and statement verb, error classes, and the counts and fixed-value attributes ingot and piri set. Its header names the keys it leaves out on purpose: URLs, paths, peer addresses, bucket names, object keys, SQL text, invocation CIDs, DIDs and digests. Status messages, trace state, scope attributes and schema URLs are dropped as well. Span names, kinds, status codes, timing, trace and span IDs, parents and links stay. A key joins the list only after a review of every value it can take in all four services, not only in the run at hand.
+
+The scrubbed spans go out in requests of at most 4,000,000 bytes (`GRAFANA_MAX_REQUEST_BYTES`), batching lines together up to that size. A line that does not parse or holds a shape the scrub cannot read, usually the last one of a run a reboot interrupted, is counted and skipped. Once the deadline passes, the rest of the file is neither read nor sent, and the line says the upload stopped there. The step's line reports the requests sent out of those tried, the spans, the unreadable lines and any span too large for a request. Spans keep their original timestamps, so a recovery long after the run sends old spans, which Tempo may refuse; the line then counts the failed requests.
 
 ## Campaigns
 

@@ -12,7 +12,9 @@
 # tarball and write a no_data record with reason drill_interrupted to the
 # outbox; remove the containers, empty the buckets and wipe (wipe.sh); remove
 # current.json; flush the outbox. A later phase already put its files in the
-# outbox, so recovery adds none.
+# outbox, so recovery adds none. The attempt that writes the no_data record
+# also sends it, with a traced run's scrubbed spans, to Grafana before the wipe
+# (docs/runner.md, "Grafana"), best effort like run.sh's step.
 #
 # The record is best effort and the wipe is not. When no record can be built
 # (no usable run_id, no runner.json, or record.py writes nothing), recovery
@@ -236,6 +238,10 @@ PY
     [ "$status" -eq 0 ] || [ "$status" -eq 3 ] || no_record="record.py wrote no record (exit $status)"
   fi
   [ -z "$no_record" ] || echo "recover: $no_record; wiping without a record" >&2
+  # Only the attempt that writes the record sends it, so a retry sends nothing twice.
+  if [ -z "$no_record" ] && [ -s "$amended" ]; then
+    grafana_export "$amended" "$record" "$run_dir/traces" || true
+  fi
 fi
 
 set_aside() {
