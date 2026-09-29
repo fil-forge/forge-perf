@@ -46,6 +46,12 @@ raw/
 *.tar.zst
 .env
 
+# A run's traces fetched by traces.sh --out outside local/, except the test fixture.
+traces.jsonl
+collector.log
+collector-metrics.txt
+!scripts/operator/fixtures/traces/traces.jsonl
+
 # A local run's box.conf and scratch files (docs/runner.md, "Local run").
 local/
 

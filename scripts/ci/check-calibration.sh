@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Runs the tests of scripts/operator/calibration-summary.py,
-# scripts/operator/test_*.py, against fixture records. Standard library only,
-# so they need no install.
+# Runs the tests of scripts/operator/calibration-summary.py and
+# trace-summary.py, scripts/operator/test_*.py, against fixture records and
+# traces. Standard library only, so they need no install.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)/scripts/operator"
