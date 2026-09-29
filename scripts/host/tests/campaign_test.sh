@@ -202,11 +202,34 @@ campaign 0 --set "$work/set.json" --runs 1 --trace 1
 rm "$D/runs.log"
 campaign 0 --set "$work/set.json" --runs 1
 [ "$(runs 'has("trace_ratio")')" = false ] || fail "an untraced run $(cat "$D/runs.log")"
-for bad in 0 0.0 1.5 .1 abc 1e-1 -0.1 "0.1 " 0.1234567; do
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 2 --trace 0
+[ "$(runs '"\(.series)/\(.trace_ratio)"')" = "campaign/0 campaign/0" ] || fail "--trace 0 $(cat "$D/runs.log")"
+grep -q ", untraced" "$work/out" || fail "no word of untraced runs"
+! grep -q "traced at" "$work/out" || fail "--trace 0 said traced"
+for bad in 0.0 00 " 0" 1.5 .1 abc 1e-1 -0.1 "0.1 " 0.1234567; do
   campaign 1 --set "$work/set.json" --runs 1 --trace "$bad"
   grep -q -- "--trace takes a decimal in (0, 1]" "$work/out" || fail "--trace '$bad' accepted"
 done
-echo "ok: --trace puts a validated ratio in every run and keeps the series"
+echo "ok: --trace puts a validated ratio, or 0 for untraced runs, in every run and keeps the series"
+
+# campaign.json's trace_ratio: checked as --trace is; without it, the settings file's.
+setup campaign
+conf '.trace_ratio = "0"'
+campaign 0
+[ "$(runs .trace_ratio)" = "0 0" ] || fail "campaign.json trace_ratio 0 $(cat "$D/runs.log")"
+setup campaign
+conf '.trace_ratio = "0.1"'
+campaign 0
+[ "$(runs .trace_ratio)" = "0.1 0.1" ] || fail "campaign.json trace_ratio 0.1 $(cat "$D/runs.log")"
+for bad in '0' '0.1' '"0.0"' '"0\n"' '"1.5"'; do
+  setup campaign
+  conf ".trace_ratio = $bad"
+  campaign 1
+  grep -qE "trace_ratio|--trace takes" "$work/out" || fail "campaign.json trace_ratio $bad accepted"
+  [ ! -e "$D/runs.log" ] || fail "campaign.json trace_ratio $bad ran"
+done
+echo "ok: campaign.json's trace_ratio sets every run's ratio, \"0\" for untraced runs"
 
 setup campaign
 conf '.caps = {"ingot": "1.0"}'

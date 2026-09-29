@@ -76,7 +76,7 @@ The wipe takes `/run/forge-perf/run.lock` on descriptor 9 and waits for it. A ca
 | `phase` | one of `preflight`, `boot`, `drill`, `recorded`, `uploaded`, `wiping` |
 | `run_dir` | the run's directory; default `/mnt/forge-perf/nvme/work/run`, which holds `runner.json` |
 
-With no `current.json` it only flushes the outbox. Otherwise, in order, it stops every container Docker restarted at daemon start. For a phase before `recorded`, or a phase it does not know, it then collects each container's `docker logs --timestamps` and the run directory into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` and writes a `no_data` record with reason `drill_interrupted` to `<run_id>.json` beside it, with `record.py build` from the run's `runner.json`. It then removes the containers, empties the buckets and wipes (all through `wipe.sh`), removes `current.json` and flushes the outbox. The attempt that writes that record also sends it, with a traced run's scrubbed spans, to Grafana before the wipe ([Grafana](#grafana)). From `recorded` on, the run's own files are already in the outbox, so recovery adds none.
+With no `current.json` it only flushes the outbox. Otherwise, in order, it stops every container Docker restarted at daemon start. For a phase before `recorded`, or a phase it does not know, it then collects each container's `docker logs --timestamps` and the run directory into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst` and writes a `no_data` record with reason `drill_interrupted` to `<run_id>.json` beside it, with `record.py build` from the run's `runner.json`. It then removes the containers, empties the buckets and wipes (all through `wipe.sh`), removes `current.json` and flushes the outbox. The attempt that writes that record also sends it, with a traced run's scrubbed spans, to Grafana before the wipe ([Grafana](#grafana)), under the same budget as `run.sh`, up to 600 seconds of the unit's 30-minute `TimeoutStartSec`. From `recorded` on, the run's own files are already in the outbox, so recovery adds none.
 
 `run.sh` writes a complete `runner.json` to `/var/lib/forge-perf/state/runner.json` on the root volume before it first writes `current.json`, and copies it into the run directory once preflight has created that. A stop/start or resize mid-run leaves the instance store blank, and recovery then reads that copy, so the interrupted run still gets a record.
 
@@ -191,7 +191,7 @@ The hold is a file on the root volume, so it survives a reboot. It stops dispatc
 run.sh [--set FILE] [--series SERIES] [--workers N] [--size SIZE] [--duration DURATION] [--trace RATIO] [--until STEP]
 ```
 
-Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size`, `duration`, `caps` and `trace_ratio` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it. `--trace` traces the run ([Tracing](#tracing)).
+Without `--set` it takes the run the poller or `campaign.sh` left in `/var/lib/forge-perf/state/pending.json` (`{kind, set, superseded, attempt, pairing_id}`, plus `series`, `workers`, `size`, `duration`, `caps` and `trace_ratio` for a campaign) and removes that file, holding `poll.lock` while it does. A held box starts no pending run except a campaign's. When that run ends it writes `last-run.json` for the poller ([Polling](#the-decision)). With `--set` it runs the file as a manual run in `--series`, default `calibration`. While `config/launch.conf` has `SERIES_LIVE=0`, every run is series `calibration`. `--until` stops after the named step, one of preflight through check, and leaves the stack running with no record; `scripts/host/wipe.sh` removes it. `--trace RATIO` sets the run's trace ratio, and `--trace 0` runs it untraced ([Tracing](#tracing)).
 
 A set is the JSON the poller resolves:
 
@@ -231,7 +231,7 @@ Every run that started ends with these five steps, whether a step stopped it or 
 |---|---|---|
 | collect | `collect.sh`: the run directory, smelt's `generated/perf-runs/` and each container's `docker logs --timestamps` into `/var/lib/forge-perf/outbox/<run_id>.raw.tar.zst`, with `*.env`, `provider/` and the lines `piri init` prints its key in left out. The tarball is not written while piri's key ID, piri's secret or the harness credential appears in the collected files, or when piri's key was never read; `runner.json` then gets `raw_missing` | 10 min |
 | record | `time.run_finished_at`; `record.py build` into `/var/lib/forge-perf/outbox/<run_id>.json`, checked against the schema, the denylist (`FORGE_PERF_DENYLIST_FILE`, or SSM `<path>/denylist`, read at preflight) and the credentials; then `current.json` phase `recorded` | |
-| grafana | the run's results and, for a traced run, its scrubbed spans to Grafana Cloud ([Grafana](#grafana)); a failure logs a line and changes nothing else | 2 min |
+| grafana | the run's results and, for a traced run, its scrubbed spans to Grafana Cloud ([Grafana](#grafana)); a failure logs a line and changes nothing else | 2 min, up to 10 with spans |
 | upload | `outbox.sh flush`, raw before record; then phase `uploaded`. A failed upload leaves the files for the next flush | 15 min per file |
 | wipe | phase `wiping`; `wipe.sh` with `FORGE_PERF_LOCK_HELD=1`; then `current.json` is removed | 30 min |
 
@@ -278,7 +278,7 @@ The default is `app`, set up as in [operations.md](operations.md#the-harness-cre
 
 ## Tracing
 
-A traced run samples a share of the drill's requests end to end, from ingot through sprue, hilt and piri, and keeps the spans in the run's private raw tarball. The ratio is `--trace RATIO`, a pending run's `trace_ratio` (from `campaign.sh --trace`), or the settings file's `TRACE_RATIO`, in that order. It is a decimal in (0, 1] with at most six decimal places, such as `0.1`; empty means untraced, the default in every committed settings file. A malformed ratio refuses the run with exit status 2. A traced run keeps its series. `runner.json` carries `"trace": {"ratio": "0.1"}`, or `"trace": null` for an untraced run.
+A traced run samples a share of the drill's requests end to end, from ingot through sprue, hilt and piri, and keeps the spans in the run's private raw tarball. The ratio is `--trace RATIO`, a pending run's `trace_ratio` (from `campaign.sh --trace` or `campaign.json`), or the settings file's `TRACE_RATIO`, in that order. It is a decimal in (0, 1] with at most six decimal places, such as `0.1`. Both box settings files set `TRACE_RATIO=0.1`, so box runs are traced by default; `local.env` leaves it empty, and a local run is untraced. `--trace 0`, or a pending `trace_ratio` of `"0"`, runs untraced whatever the settings file says; `0` is the only spelling of off, and `0.0` is refused like any other malformed ratio. A malformed ratio refuses the run with exit status 2. A traced run keeps its series. `runner.json` carries `"trace": {"ratio": "0.1"}`, or `"trace": null` for an untraced run.
 
 In the boot step, after `forge-network` exists and before `make up`, `run.sh` starts the collector:
 
@@ -305,9 +305,27 @@ After the drill, before collect, whether a step stopped the run or not, `run.sh`
 
 `--until` leaves the collector running with the stack; `wipe.sh` removes both.
 
+### Size at 10%
+
+The local shakedown traced a 2 GB run at ratio 1: 1.93 GB ingested as 14 objects gave a 17.4 MB `traces.jsonl` with 29,452 spans in 1,723 traces. Reads made most of it: the drill's read-back and restore GETs account for 81% of the bytes, and the drill reads back every byte it writes, so the file grows with the bytes ingested. At 10% that is about 0.9 MB, 1,500 spans and 90 traces per GB. On tier 2:
+
+| | Trigger run, 500 GB | Nightly, 1,200 GB |
+|---|---|---|
+| `traces.jsonl` | 450 MB | 1.1 GB |
+| Spans / traces | 760,000 / 45,000 | 1,800,000 / 107,000 |
+| Raw tarball, zstd at about 16:1 | +28 MB | +66 MB |
+| Scrubbed for Grafana, 62% of the file | 280 MB, 70 requests | 675 MB, 170 requests |
+| Grafana budget | 187 s | 282 s |
+
+These are estimates from one local run at ratio 1; head sampling at 0.1 has not yet run end to end on a box.
+
+The collector handles a nightly with its limits unchanged. Tier 2 at 64 workers ingests about 1 GB/s, so at 10% the services send up to about 1,500 spans and 0.9 MB of spans a second, most from the read-back and restore GETs. In the shakedown the collector spent 1.14 CPU-seconds on 29,452 spans, at most 39 µs a span, so 1,500 spans a second take about a twentieth of one of its 2 CPUs. Its memory follows the spans in flight, one batch at a time, not the size of the file: the shakedown's collector held 216 MB resident when scraped after the drill, far below `memory_limiter`'s 1,536 MiB.
+
+The Grafana step's flat 120 seconds is too short for a nightly. The exporter scrubs about 50 MB of `traces.jsonl` a second on a laptop core, and sends one 4 MB request at a time; at 0.5 to 1 s a request to the gateway, which no box run has measured yet, a trigger run's spans take 45 to 80 s and a nightly's 105 to 190 s. The budget therefore grows by 150 s per GB of `traces.jsonl` (`GRAFANA_TRACE_S_PER_GB`), up to 600 s (`GRAFANA_TIMEOUT_MAX_S`), which allows about a second per request. A run traced at 1, or a 10% run above about 3,500 GB, reaches the cap, and the upload stops there as it does at any deadline. `record.py` reads a nightly's file in about 7 s, and the collect step's zstd adds seconds, well inside their limits.
+
 ## Grafana
 
-Every recorded run sends its results to the team's Grafana Cloud stack, `filecoinfoundation`, and a traced run also sends its spans, scrubbed to an allowlist. The step runs after the record and before the upload, in `run.sh` and in the recovery attempt that writes a `no_data` record, never while the drill runs. It has 120 seconds (`GRAFANA_TIMEOUT_S` in `config/grafana.conf`), including at most 20 for reading the credential from SSM. A failure or an overrun logs a line starting `grafana:` and changes nothing else: the record's class, reasons and flags are already written, and the run still uploads and wipes. A stopped run skips the step, as it skips the upload.
+Every recorded run sends its results to the team's Grafana Cloud stack, `filecoinfoundation`, and a traced run also sends its spans, scrubbed to an allowlist. The step runs after the record and before the upload, in `run.sh` and in the recovery attempt that writes a `no_data` record, never while the drill runs. It has 120 seconds (`GRAFANA_TIMEOUT_S` in `config/grafana.conf`), plus 150 for each GB of a traced run's `traces.jsonl` (`GRAFANA_TRACE_S_PER_GB`) up to 600 in all (`GRAFANA_TIMEOUT_MAX_S`), including at most 20 for reading the credential from SSM ([Size at 10%](#size-at-10)). A failure or an overrun logs a line starting `grafana:` and changes nothing else: the record's class, reasons and flags are already written, and the run still uploads and wipes. A stopped run skips the step, as it skips the upload.
 
 `config/grafana.conf` sets `GRAFANA_OTLP_ENDPOINT`, the stack's OTLP gateway; the step POSTs OTLP JSON to `/v1/traces` and `/v1/metrics` under it with HTTP basic auth. The credential is the SSM SecureString `<path>/grafana-otlp`, `<instance id>:<token>` ([operations.md](operations.md#the-grafana-token)). It goes from SSM into `/run/forge-perf/secrets/grafana-otlp`, mode 600, which `scripts/host/grafana-export.py` reads and the step then removes, so it never reaches argv, a log, the run directory, the raw tarball or the record. Without the parameter, or with an empty endpoint, the step logs one line and sends nothing. A local run (skip mode, or `FORGE_PERF_SECRETS` other than `ssm`) sends only when `FORGE_PERF_GRAFANA_CREDENTIALS` names a credential file, and `FORGE_PERF_GRAFANA_ENDPOINT` overrides the endpoint. The exporter sends to `https://` endpoints, and to plain `http://` only on the machine itself. It never follows a redirect, which counts as a failure, so the credential goes only to the configured endpoint.
 
@@ -347,11 +365,11 @@ campaign.sh --set calibration/sets/cal-1.json --runs 3 --cap ingot=1.0,piri-0=1.
 
 Each `SERVICE` is a compose service that `config/groups.conf` lists, named once, and each `CPUS` a positive decimal. The caps go into every run's `pending.json` as `"caps": {"ingot": "1.0", "piri-0": "1.0"}`. After setup, before `netem.sh apply`, `run.sh` runs `docker update --cpus <CPUS>` on each service's container and reads back `HostConfig.NanoCpus`; a failed update or a value that does not match stops the run with `runner_error`. `docker update` restarts nothing, and `netem.sh apply` records start times and addresses after it, so the post-check sees no change. `runner.json` keeps the caps for the raw tarball. The record carries only the flag `cpu_capped`, and a capped run is series `calibration` whatever the workers or `SERIES_LIVE` say, so it never lights a gate or moves the mercury. `--cap` runs only by hand on a held persistent box; `campaign.json` takes no caps, and `campaign.sh` refuses one that names them.
 
-`--trace RATIO` traces every run of the campaign at RATIO, checked as `run.sh` checks it and written into each `pending.json` as `"trace_ratio": "0.1"`. The runs keep their series. The overhead check compares traced and untraced runs of the same set:
+`--trace RATIO` traces every run of the campaign at RATIO, checked as `run.sh` checks it and written into each `pending.json` as `"trace_ratio": "0.1"`. `--trace 0` writes `"trace_ratio": "0"`, and the runs are untraced whatever the settings file says; without `--trace` they take the settings file's ratio. The runs keep their series. The overhead check compares traced and untraced runs of the same set:
 
 ```
 campaign.sh --set calibration/sets/cal-1.json --runs 3 --pairing pair-20261001-t1 --trace 0.1
-campaign.sh --set calibration/sets/cal-1.json --runs 3 --pairing pair-20261001-t2
+campaign.sh --set calibration/sets/cal-1.json --runs 3 --pairing pair-20261001-t2 --trace 0
 ```
 
 On a campaign box (`FORGE_PERF_MODE=campaign`) it takes no arguments and reads `/etc/forge-perf/campaign.json`, which the box's user data writes:
@@ -360,6 +378,8 @@ On a campaign box (`FORGE_PERF_MODE=campaign`) it takes no arguments and reads `
 {"mode": "campaign", "set": "calibration/sets/cal-1.json", "runs": 3, "size": "2000GB",
  "workers": [64], "duration": "4h", "forge_perf_sha": "<40-hex>", "expires_at": "2026-10-01T18:00:00Z"}
 ```
+
+An optional `"trace_ratio"`, a string checked as `--trace` is, sets every run's ratio, and `"0"` runs them untraced; without it each run takes the settings file's ratio, so a campaign box traces at 0.1 by default.
 
 It checks out `forge_perf_sha` if the checkout is elsewhere and starts again from it; the box never runs `update.sh`. The bootstrap already armed a persistent `forge-perf-expire.timer` for `expires_at`; if that timer is not active, it schedules `systemctl poweroff` at `expires_at` with `systemd-run --on-calendar`, a transient timer that each boot sets again. Past that time it powers off at once. In mode `campaign` an error that stops it flushes the outbox and powers off once it has read `campaign.json`, so a checkout that fails does not leave the box idle until `expires_at`; the bootstrap's own failure powers the box off the same way. Mode `calibration` stops after the timer, leaving the box to the ceiling measurements, and an error leaves it up for the operator. Otherwise it runs the set, keeping its progress in `state/campaign-progress.json` so a reboot resumes after the last run that ended, flushes the outbox up to three times, and powers off. Before each run it checks that the run's duration plus 45 minutes for setup, record and wipe ends before `expires_at`; the first run that would not ends the campaign there. `forge-perf-campaign.service` starts it at every boot, and the bootstrap starts it on the first.
 

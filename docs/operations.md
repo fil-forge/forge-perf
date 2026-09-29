@@ -228,7 +228,7 @@ Each run sends its results, and a traced run its scrubbed spans, to the `filecoi
    rm -f "$tmp"
    ```
 
-The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `results sent` for a run with drill results, and for a traced run the count of trace requests sent. Without the parameter every run logs `grafana: no credential in SSM; nothing sent` and goes on.
+The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `results sent` for a run with drill results, and for a traced run the count of trace requests sent. A tier 2 nightly's spans take a few minutes to send; the step's budget grows with the trace file, up to 10 minutes ([runner.md](runner.md#size-at-10)). Without the parameter every run logs `grafana: no credential in SSM; nothing sent` and goes on.
 
 ### The `Project` cost allocation tag
 
@@ -438,7 +438,7 @@ When a valid run's p5 reaches gate 1:
 
 ## Reading a run's traces
 
-A traced run (`campaign.sh --trace RATIO`, or `TRACE_RATIO` in the type's settings file) keeps its spans in the raw tarball under `run/traces/`: the collector's `traces.jsonl`, one OTLP JSON export request per line, with `collector-metrics.txt` and `collector.log` beside it. The record carries only counts. Reading the spans takes operator credentials for the dev account, since the results role cannot read `raw/`:
+Box runs are traced at 10% by default (`TRACE_RATIO=0.1` in each box type's settings file); `--trace RATIO` on `run.sh` or `campaign.sh` sets another ratio for a run, and `--trace 0` runs it untraced ([runner.md](runner.md#tracing)). A traced run keeps its spans in the raw tarball under `run/traces/`: the collector's `traces.jsonl`, one OTLP JSON export request per line, with `collector-metrics.txt` and `collector.log` beside it. The record carries only counts. Reading the spans takes operator credentials for the dev account, since the results role cannot read `raw/`:
 
 ```sh
 scripts/operator/traces.sh <run_id>                  # to local/traces/<run_id>/

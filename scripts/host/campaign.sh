@@ -29,7 +29,9 @@
 # for every run, as the tier 1 falsification check does (docs/DESIGN.md §9);
 # a capped run is series calibration. campaign.json takes no caps. --trace
 # traces every run at RATIO, a decimal in (0, 1] (docs/runner.md, "Tracing");
-# a traced run keeps its series.
+# a traced run keeps its series. --trace 0 runs every run untraced, whatever
+# the settings file says. campaign.json's trace_ratio, a string, does the
+# same on a campaign box; without it each run takes the settings file's ratio.
 #
 # For each run it writes pending.json with kind campaign under poll.lock and
 # runs `systemctl start --wait forge-perf-run.service`. The poller leaves a
@@ -130,6 +132,9 @@ if [ -n "$from_conf" ]; then
   set_file="$(jq -r '.set // ""' <<<"$c")" runs="$(jq -r '.runs // ""' <<<"$c")"
   size="$(jq -r '.size // ""' <<<"$c")" duration="$(jq -r '.duration // ""' <<<"$c")"
   workers="$(jq -r '.workers // [] | map(tostring) | join(",")' <<<"$c")"
+  # trace_ratio, a string checked as --trace is: "0" runs untraced.
+  trace="$(jq -re '.trace_ratio // "" | strings | select(contains("\n") | not)' <<<"$c")" ||
+    die "campaign.json has a trace_ratio that is not a string such as \"0.1\" or \"0\""
 elif [ "${FORGE_PERF_MODE:-persistent}" != campaign ] && [ ! -e "$state/hold" ]; then
   die "hold the box first (scripts/operator/hold.sh <box> on), so the poller starts nothing between runs"
 fi
@@ -138,8 +143,10 @@ fi
 [[ -z "$workers" || "$workers" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "workers is a number or a comma list"
 [[ -z "$pairing" || "$pairing" =~ ^pair-[0-9]{8}-[a-z0-9]{1,12}$ ]] || die "--pairing is pair-<yyyymmdd>-<id>"
 # --trace: the share of requests each run traces, as run.sh checks it, with at
-# most six decimal places.
-[[ -z "$trace" || ( "$trace" =~ ^(0\.[0-9]*[1-9][0-9]*|1(\.0+)?)$ && ! "$trace" =~ \.[0-9]{7} ) ]] || die "--trace takes a decimal in (0, 1], such as 0.1"
+# most six decimal places; 0 runs every run untraced whatever the settings
+# file says.
+[[ -z "$trace" || "$trace" == 0 || ( "$trace" =~ ^(0\.[0-9]*[1-9][0-9]*|1(\.0+)?)$ && ! "$trace" =~ \.[0-9]{7} ) ]] ||
+  die "--trace takes a decimal in (0, 1], such as 0.1, or 0 for untraced runs"
 # --cap: SERVICE=CPUS pairs, each service one config/groups.conf names once,
 # as {"ingot": "1.0"} in every run's pending.json.
 caps='{}'
@@ -225,7 +232,9 @@ for ((i = start; i < total; i++)); do
     + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration) + opt("trace_ratio"; $trace)
     + (if $caps == {} then {} else {caps: $caps} end)' | write_durable "$state/pending.json"
   exec 8>&-
-  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}${trace:+, traced at $trace}"
+  traced="${trace:+, traced at $trace}"
+  [ "$trace" != 0 ] || traced=", untraced"
+  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}$traced"
   if ! host_op systemctl start --wait forge-perf-run.service; then
     # run.sh moves a pending run it refuses to pending.json.rejected, and
     # writes no record for it.
