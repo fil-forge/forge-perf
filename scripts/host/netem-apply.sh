@@ -17,8 +17,13 @@ set -euo pipefail
 
 die() { echo "netem-apply: $*" >&2; exit 1; }
 
+# The awk programs below read to the end instead of exiting at the match: an
+# early exit closes the pipe while ip may still be writing, and under pipefail
+# ip's SIGPIPE (141) ends the script with no message.
 dev_for() {
-  ip -o -4 addr show | awk -v ip="$1" '{ split($4, a, "/"); if (a[1] == ip) { sub(/@.*/, "", $2); print $2; exit } }'
+  ip -o -4 addr show | awk -v ip="$1" '
+    dev == "" { split($4, a, "/"); if (a[1] == ip) { dev = $2; sub(/@.*/, "", dev) } }
+    END { if (dev != "") print dev }'
 }
 
 # median: the middle value of the numbers on stdin, or empty.
@@ -44,7 +49,8 @@ case "$mode" in
     shift 2
     [ "$#" -gt 0 ] || die "apply: no central addresses"
     for c in "$@"; do
-      via="$(ip route get "$c" | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')"
+      via="$(ip route get "$c" | awk 'via == "" { for (i = 1; i < NF; i++) if ($i == "dev") { via = $(i + 1); break } }
+        END { if (via != "") print via }')"
       [ "$via" = "$dev" ] || die "route to $c leaves by ${via:-nothing}, not $dev"
     done
     tc qdisc del dev "$dev" root 2>/dev/null || true
