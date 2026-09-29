@@ -74,6 +74,9 @@ case "$args" in
         [ -e "$D/harness-app" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
         cat "$D/harness-app" ;;
       *denylist*) echo FORBIDDEN-WORD ;;
+      *grafana-otlp*)
+        [ -e "$D/grafana-cred" ] || { echo "An error occurred (ParameterNotFound)" >&2; exit 254; }
+        cat "$D/grafana-cred" ;;
     esac ;;
   *" put-object "*)
     [ ! -e "$D/s3-down" ] || exit 1
@@ -275,6 +278,44 @@ assert trace["spans"] == 8, trace
 PY2
   fail "recovery did not pass the run's traces/ to record.py"
 echo "ok: recovery of a traced run records the run's trace file"
+has "$work/out" "grafana: no credential in SSM; nothing sent"
+
+# The attempt that writes a traced run's no_data record sends its scrubbed
+# spans to Grafana before the wipe; the record has no drill results to send.
+# A later attempt, with the record already in the outbox, sends nothing.
+stub_pid=""
+trap '[ -z "$stub_pid" ] || kill "$stub_pid" 2>/dev/null; rm -rf "$work"' EXIT
+setup
+jq '.trace = {"ratio": "0.1"}' "$host/fixtures/stack-boot-failed/runner.json" >"$work/box/nvme/work/run/runner.json"
+mkdir -p "$work/box/nvme/work/run/traces"
+cp "$host/tests/grafana-span.json" "$work/box/nvme/work/run/traces/traces.jsonl"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
+echo "123456:glc_fake-grafana-token-value" >"$D/grafana-cred"
+python3 "$host/tests/grafana-stub.py" "$D/grafana" "$work/grafana-port" &
+stub_pid=$!
+for _ in $(seq 50); do [ ! -e "$work/grafana-port" ] || break; sleep 0.1; done
+touch "$D/s3-down"
+FORGE_PERF_GRAFANA_ENDPOINT="http://127.0.0.1:$(cat "$work/grafana-port")/otlp" "$host/recover.sh" >"$work/out" 2>&1 ||
+  { cat "$work/out"; fail "recover (grafana) failed"; }
+[ "$(cat "$D"/grafana/*.json | jq -r .path | tr '\n' ' ')" = "/otlp/v1/traces " ] ||
+  fail "recovery sent: $(cat "$D"/grafana/*.json 2>/dev/null | jq -r .path)"
+jq -r .body "$D/grafana/000.json" >"$work/sent"
+lacks "$work/sent" "secret-object-key"
+lacks "$work/sent" "piri-0-allocations"
+has "$work/sent" '"forge_perf.run_id","value":{"stringValue":"main-20261001t200000z"}'
+has "$work/out" "no results to send"
+[ "$(grep -n '=== grafana ===' "$work/out" | cut -d: -f1)" -lt "$(grep -n '=== wipe ===' "$work/out" | cut -d: -f1)" ] ||
+  fail "grafana after the wipe"
+lacks "$work/out" "glc_fake-grafana-token-value"
+[ ! -e "$work/box/run/secrets/grafana-otlp" ] || fail "the credential file was left on /run"
+rm -rf "$D/grafana"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
+"$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover (second) failed"; }
+[ ! -d "$D/grafana" ] || fail "a second attempt sent again"
+rm -f "$D/s3-down"
+{ kill "$stub_pid" && wait "$stub_pid"; } 2>/dev/null || true
+stub_pid=""
+echo "ok: the recovery attempt that writes a traced run's record sends its scrubbed spans before the wipe, once"
 
 # --- recovery failure paths ---------------------------------------------------------
 current="$work/box/state/current.json"

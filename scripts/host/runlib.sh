@@ -169,3 +169,65 @@ run_active() {
   esac
   return 1
 }
+
+# grafana_export RUNNER RECORD TRACES_DIR: send the run's results from RECORD
+# and, for a traced run, its scrubbed spans from TRACES_DIR/traces.jsonl to
+# config/grafana.conf's endpoint (docs/runner.md, "Grafana"). The credential,
+# SSM <path>/grafana-otlp, goes through a mode-600 file under
+# $FORGE_PERF_RUNTIME/secrets that the step removes, never argv or a log. A
+# local run sends only with FORGE_PERF_GRAFANA_CREDENTIALS naming such a file;
+# FORGE_PERF_GRAFANA_ENDPOINT overrides the endpoint. Best effort under
+# GRAFANA_TIMEOUT_S: whatever happens it logs a line and returns 0, so the
+# run's class, reasons and flags, its upload and its wipe never depend on it.
+# Callers under set -e add `|| true`, which keeps a failing command inside
+# from ending the caller.
+grafana_export() {
+  local runner="$1" record="$2" traces="$3" conf="$FORGE_PERF_CHECKOUT/config/grafana.conf"
+  local endpoint creds status=0 own_creds="" started=$SECONDS left ssm_s
+  step "grafana"
+  local GRAFANA_OTLP_ENDPOINT="" GRAFANA_TIMEOUT_S=120 GRAFANA_MAX_REQUEST_BYTES=4000000
+  # shellcheck source=../../config/grafana.conf
+  . "$conf" 2>/dev/null || { echo "grafana: cannot read config/grafana.conf; nothing sent" >&2; return 0; }
+  [[ "$GRAFANA_TIMEOUT_S" =~ ^[1-9][0-9]{0,3}$ ]] || GRAFANA_TIMEOUT_S=120
+  endpoint="${FORGE_PERF_GRAFANA_ENDPOINT:-$GRAFANA_OTLP_ENDPOINT}"
+  if [ -z "$endpoint" ]; then
+    echo "grafana: no endpoint in config/grafana.conf; nothing sent" >&2
+    return 0
+  fi
+  if [ -n "${FORGE_PERF_GRAFANA_CREDENTIALS:-}" ]; then
+    creds="$FORGE_PERF_GRAFANA_CREDENTIALS"
+  elif host_ops_skipped || [ "${FORGE_PERF_SECRETS:-ssm}" != ssm ]; then
+    echo "grafana: a local run sends only with FORGE_PERF_GRAFANA_CREDENTIALS set; nothing sent" >&2
+    return 0
+  else
+    creds="$FORGE_PERF_RUNTIME/secrets/grafana-otlp" own_creds=1
+    mkdir -p "$FORGE_PERF_RUNTIME/secrets"
+    # The SSM read spends from the same budget, capped at 20 s (a sixth of a
+    # short one), so the whole step stays inside GRAFANA_TIMEOUT_S.
+    ssm_s=$((GRAFANA_TIMEOUT_S >= 120 ? 20 : GRAFANA_TIMEOUT_S / 6 + 2))
+    if ! (umask 077 && timeout --kill-after=2 "$ssm_s" aws ssm get-parameter --with-decryption \
+      --name "${FORGE_PERF_GRAFANA_PARAM:-${FORGE_PERF_SSM_PATH:-/forge-perf}/grafana-otlp}" \
+      --query Parameter.Value --output text >"$creds" 2>/dev/null) || [ ! -s "$creds" ]; then
+      rm -f "$creds"
+      echo "grafana: no credential in SSM; nothing sent" >&2
+      return 0
+    fi
+  fi
+  left=$((GRAFANA_TIMEOUT_S - (SECONDS - started)))
+  [ "$left" -ge 2 ] || left=2
+  set -- --endpoint "$endpoint" --credentials "$creds" --runner "$runner" \
+    --span-attributes "$FORGE_PERF_CHECKOUT/config/grafana-span-attributes.txt" \
+    --max-request-bytes "$GRAFANA_MAX_REQUEST_BYTES" \
+    --deadline $((left > 20 ? left - 10 : left / 2))
+  [ ! -s "$record" ] || set -- "$@" --record "$record"
+  [ ! -e "$traces/traces.jsonl" ] || set -- "$@" --traces "$traces/traces.jsonl"
+  timeout --kill-after=5 "$left" python3 "$FORGE_PERF_CHECKOUT/scripts/host/grafana-export.py" "$@" ||
+    status=$?
+  [ -z "$own_creds" ] || rm -f "$creds"
+  case "$status" in
+    0) ;;
+    124 | 137) echo "grafana: ran over ${GRAFANA_TIMEOUT_S}s; the run goes on" >&2 ;;
+    *) echo "grafana: grafana-export.py exited $status; the run goes on" >&2 ;;
+  esac
+  return 0
+}
