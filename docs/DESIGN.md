@@ -86,7 +86,7 @@ Every five minutes a poll resolves a set: the smelt SHA, the harness SHA and the
 |---|---|---|
 | `ghcr.io/fil-forge/{ingot,piri,sprue,hilt,swarf,delegator,piri-signing-service,did-method-plc,indexing-service}:main`, `guppy:main-dev` | anonymous GHCR manifest `HEAD` | yes |
 | smelt main, storage-qualification main | `git ls-remote`; mirrors also fetch `refs/pull/*/head`, so a SHA outlives its branch | yes |
-| postgres, openbao, dynamodb-local, redis, smtp4dev, storetheindex, filecoin-localdev, minio, netshoot | digests in `config/images.lock` | no; a bump is an instrument change |
+| postgres, openbao, dynamodb-local, redis, smtp4dev, storetheindex, filecoin-localdev, minio, netshoot, otelcol-contrib (trace collector) | digests in `config/images.lock` | no; a bump is an instrument change |
 | forge-perf | `update.sh` between runs | no |
 
 Runs follow storage-qualification main, which accepts the `--stop-ingest-at` flag smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`). Setting `SQ_PIN` in `config/harness.conf` holds the harness at one commit instead, and harness main then does not trigger runs.
@@ -240,7 +240,7 @@ Five upstream PRs give smelt every setting forge-perf needs. Each is opt-in and 
 | 4. Record what ran | full SHAs; each image's digest and revision (today short sibling SHAs, `smelt/scripts/perf-lib.sh:37-67`); all settings; `PERF_EXTRA_METADATA` | run ID, series, box |
 | 5. Drill flags, disk check | one recorded variable per drill flag; `DISK_FACTOR` in place of the fixed 2.5; host check only on Docker Desktop | §4 flags, `DISK_FACTOR=1.25` |
 
-PR 5 stacks on PR 4; the others are independent. piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`minio-go/api.go:299-303`). A sixth PR, for the tracing phase, passes `OTEL_RESOURCE_ATTRIBUTES` to ingot, sprue and hilt, which already read it (`ingot/cmd/telemetry.go:51`).
+PR 5 stacks on PR 4; the others are independent. piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`minio-go/api.go:299-303`). A sixth PR, for the tracing phase, passes `OTEL_TRACES_SAMPLER_ARG` and `OTEL_RESOURCE_ATTRIBUTES` to ingot, sprue and hilt, which already read them (`ingot/cmd/telemetry.go:51`), and gives each piri node a trace endpoint when one is set.
 
 ## 9. Calibration and ceilings
 
@@ -287,7 +287,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 
 **Dev as deployed.** After ingot's spool cleanup lands, a 5 to 10 GB drill after each dev deploy becomes its own series: schema v2 adds `dev` to `series` and a `target`. With 2 to 7 windows per run, that series reports the median.
 
-**Tracing.** Every run records its ID and absolute times, and the record reserves `trace`. Tracing needs smelt PR 6, a piri change to read `OTEL_RESOURCE_ATTRIBUTES`, traces shipped before the wipe, and sampling, since a 500 GB run makes about 340,000 requests. Turning it on is an instrument change.
+**Tracing.** A 500 GB run makes about 340,000 requests, so a traced run samples a share of them at ingot, and the services it calls follow its decision. `TRACE_RATIO` in the settings file, or `--trace` on `run.sh` or `campaign.sh`, sets the share; it is empty, and runs untraced, until paired traced and untraced runs show the overhead sits inside the noise band. A traced run starts a collector, `forge-perf-otel`, on `forge-network` before the stack boots. The collector is otelcol-contrib pinned in `config/images.lock`, outside smelt's services, so netem never delays it. It stamps the run ID on every span, which spares piri a change to read `OTEL_RESOURCE_ATTRIBUTES`, and writes OTLP JSON into the run directory. After the drill the run scrapes the collector's counters and stops it, so the traces reach the private raw tarball through the collect step before the wipe (docs/runner.md, "Tracing"). The services receive the ratio and run ID through smelt PR 6, which also gives piri a trace endpoint. Turning tracing on is an instrument change.
 
 **Manual runs and bisect.** `run.sh --set <file>` ships with the first version; a later queue only writes set files. Some old digests will not boot against current smelt.
 

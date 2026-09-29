@@ -8,6 +8,7 @@
 #       /etc/forge-perf/campaign.json, which the box's user data wrote
 #   campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE]
 #               [--duration DURATION] [--pairing ID] [--cap SERVICE=CPUS[,...]]
+#               [--trace RATIO]
 #       by hand on a persistent box that is held (status.sh hold)
 #
 # A campaign box stays at campaign.json's forge_perf_sha and never updates.
@@ -26,7 +27,9 @@
 # yet. --pairing puts the same pairing ID in each record (pair-<yyyymmdd>-<id>).
 # --cap limits each named compose service to CPUS CPUs (a positive decimal)
 # for every run, as the tier 1 falsification check does (docs/DESIGN.md §9);
-# a capped run is series calibration. campaign.json takes no caps.
+# a capped run is series calibration. campaign.json takes no caps. --trace
+# traces every run at RATIO, a decimal in (0, 1] (docs/runner.md, "Tracing");
+# a traced run keeps its series.
 #
 # For each run it writes pending.json with kind campaign under poll.lock and
 # runs `systemctl start --wait forge-perf-run.service`. The poller leaves a
@@ -42,7 +45,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 
 conf="${FORGE_PERF_CAMPAIGN_CONF:-/etc/forge-perf/campaign.json}"
-set_file="" runs="" workers="" size="" duration="" pairing="" cap="" from_conf=""
+set_file="" runs="" workers="" size="" duration="" pairing="" cap="" trace="" from_conf=""
 [ $# -gt 0 ] || from_conf=1
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
@@ -54,6 +57,7 @@ while [ $# -gt 0 ]; do
     --duration) duration="$2" ;;
     --pairing) pairing="$2" ;;
     --cap) cap="$2" ;;
+    --trace) trace="$2" ;;
     *) usage ;;
   esac
   shift 2
@@ -133,6 +137,9 @@ fi
 [[ "$runs" =~ ^[1-9][0-9]*$ ]] && [ "$runs" -le 20 ] || die "runs takes 1 to 20"
 [[ -z "$workers" || "$workers" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "workers is a number or a comma list"
 [[ -z "$pairing" || "$pairing" =~ ^pair-[0-9]{8}-[a-z0-9]{1,12}$ ]] || die "--pairing is pair-<yyyymmdd>-<id>"
+# --trace: the share of requests each run traces, as run.sh checks it, with at
+# most six decimal places.
+[[ -z "$trace" || ( "$trace" =~ ^(0\.[0-9]*[1-9][0-9]*|1(\.0+)?)$ && ! "$trace" =~ \.[0-9]{7} ) ]] || die "--trace takes a decimal in (0, 1], such as 0.1"
 # --cap: SERVICE=CPUS pairs, each service one config/groups.conf names once,
 # as {"ingot": "1.0"} in every run's pending.json.
 caps='{}'
@@ -210,14 +217,15 @@ for ((i = start; i < total; i++)); do
     flock -w 300 8 || die "a poll has held poll.lock for 5 minutes"
   fi
   jq -n --argjson set "$set_json" --arg series "$series" --arg w "$w" --arg size "$size" \
-    --arg duration "$duration" --arg pairing "$pairing" --argjson caps "$caps" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    --arg duration "$duration" --arg pairing "$pairing" --argjson caps "$caps" --arg trace "$trace" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     def opt($k; $v): if $v == "" then {} else {($k): $v} end;
     {kind: "campaign", series: $series, set: $set, superseded: 0, first_seen_at: $at,
      pairing_id: (if $pairing == "" then null else $pairing end)}
-    + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration)
+    + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration) + opt("trace_ratio"; $trace)
     + (if $caps == {} then {} else {caps: $caps} end)' | write_durable "$state/pending.json"
   exec 8>&-
-  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}"
+  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}${trace:+, traced at $trace}"
   if ! host_op systemctl start --wait forge-perf-run.service; then
     # run.sh moves a pending run it refuses to pending.json.rejected, and
     # writes no record for it.

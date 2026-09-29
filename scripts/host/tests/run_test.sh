@@ -59,6 +59,21 @@ case "$*" in
       postgres: {image: env.POSTGRES_IMAGE}, ipni: {image: env.IPNI_IMAGE}}
       + if $old == "" then {} else {"piri-minio": {image: env.POSTGRES_IMAGE}} end)}' ;;
   "compose ps -q "*) echo "cid-${!#}" ;;
+  # The trace collector: it writes one line into the directory mounted at
+  # /traces while it runs. OTEL_DIES: it exits during the boot. SCRAPE_FAIL:
+  # its metrics endpoint does not answer.
+  "run -d --name forge-perf-otel"*)
+    for a; do case "$a" in *:/traces) echo '{"resourceSpans":[]}' >"${a%:/traces}/traces.jsonl" ;; esac; done
+    touch "$D/otel" ;;
+  "inspect -f {{.State.Running}} forge-perf-otel")
+    if [ -n "${OTEL_DIES:-}" ]; then echo false; else echo true; fi ;;
+  "inspect forge-perf-otel") [ -e "$D/otel" ] ;;
+  "run --rm --network forge-network nicolaka/netshoot@"*" curl "*"http://otel-collector:8888/metrics")
+    [ -z "${SCRAPE_FAIL:-}" ] || { echo partial; exit 22; }
+    echo 'otelcol_receiver_accepted_spans{receiver="otlp",transport="http"} 1' ;;
+  "stop -t 60 forge-perf-otel") ;;
+  "logs forge-perf-otel") echo "collector log" ;;
+  "rm -f forge-perf-otel") rm -f "$D/otel" ;;
   # A CPU cap: UPDATE_FAIL fails the update, NANO_WRONG reads back another
   # value. The cap must land after setup and before netem.sh apply.
   "update --cpus"*)
@@ -115,8 +130,9 @@ cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
-  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE)=' |
+  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
     sort >"$D/up.env"
+  [ ! -e "$D/otel" ] || touch "$D/otel-at-up"
   [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
   exit "${UP_EXIT:-0}"
 fi
@@ -247,6 +263,10 @@ setup() {
   # repository ships.
   sed 's/^SERIES_LIVE=.*/SERIES_LIVE=0/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
   mv "$work/launch.conf" "$work/checkout/config/launch.conf"
+  # Untraced unless a case sets TRACE_RATIO.
+  for f in "$work/checkout/config/settings/"*.env; do
+    sed 's/^TRACE_RATIO=.*/TRACE_RATIO=/' "$f" >"$work/settings.env" && mv "$work/settings.env" "$f"
+  done
   # The wipe itself is tested in wipe_test.sh; here it clears the stubs' state.
   cat >"$work/checkout/scripts/host/wipe.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -352,6 +372,12 @@ grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
 [ "$(runner '[.images[] | select(.variable == "POSTGRES_IMAGE") | .revision, .source] | map(tostring) | join(" ")')" = \
   "null null" ] || fail "postgres labels"
 lacks "$D/docker.log" "update --cpus"
+[ "$(runner .trace)" = null ] || fail "an untraced run has trace $(runner .trace)"
+lacks "$D/docker.log" "forge-perf-otel"
+! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+  fail "an untraced run exported tracing variables: $(grep ^OTEL_ "$D/up.env")"
+[ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services | length] | join(",")')" = 0 ] ||
+  fail "an untraced run maps the collector image to a service"
 echo "ok: a clean run reaches setup with every image pinned; the harness pin comes through a pull ref"
 
 # piri's key reaches compose through the environment only, never the disk.
@@ -712,3 +738,118 @@ setup
 run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 -- --set "$work/set.json" --workers 16
 [ "$(cat "$D/netem.env")" = "1 40" ] || fail "netem.sh saw $(cat "$D/netem.env")"
 echo "ok: a local netem tolerance reaches netem.sh"
+
+# A traced run: the collector starts on forge-network after the network and
+# before the stack, smelt sees the endpoint, ratio and run ID, and after the
+# drill its counters, file and log land in the raw tarball before the wipe.
+setup
+run 0 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 0.1
+id="$(runner .run_id)"
+[ "$(runner '.trace | tojson')" = '{"ratio":"0.1"}' ] || fail "trace $(runner '.trace | tojson')"
+[ "$(runner .series)" = calibration ] || fail "series $(runner .series)"
+otel="$(awk '$1 == "OTEL_COLLECTOR_IMAGE" { sub(/:[^:\/]*$/, "", $2); print $2 "@" $3 }' "$repo/config/images.lock")"
+has "$D/docker.log" "docker run -d --name forge-perf-otel --network forge-network --network-alias otel-collector \
+--cpus 2 --memory 2g -e FORGE_PERF_RUN_ID=$id -v $work/box/nvme/work/run/traces:/traces \
+-v $work/checkout/config/otel-collector.yaml:/etc/forge-perf/otel-collector.yaml:ro $otel \
+--config /etc/forge-perf/otel-collector.yaml"
+[ "$(grep -n 'network create' "$D/docker.log" | cut -d: -f1)" -lt "$(grep -n 'run -d --name forge-perf-otel' "$D/docker.log" | cut -d: -f1)" ] ||
+  fail "the collector started before forge-network"
+[ -e "$D/otel-at-up" ] || fail "the stack booted without the collector"
+has "$D/up.env" "OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318"
+has "$D/up.env" "OTEL_ENDPOINT=http://otel-collector:4318"
+has "$D/up.env" "OTEL_TRACES_SAMPLER_ARG=0.1"
+has "$D/up.env" "OTEL_RESOURCE_ATTRIBUTES=forge_perf.run_id=$id"
+[ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services[]] | join(",")')" = otel-collector ] ||
+  fail "the collector image's services"
+order="$(grep -nE 'otel-collector:8888/metrics|stop -t 60 forge-perf-otel|logs forge-perf-otel|rm -f forge-perf-otel' \
+  "$D/docker.log" | cut -d: -f2- | awk '{ print $2 }' | tr '\n' ' ')"
+[ "$order" = "run stop logs rm " ] || fail "close order: $order"
+[ ! -e "$D/otel" ] || fail "the collector was not removed"
+zstd -dc "$D/raw.tar.zst" | tar -tf - >"$work/list"
+has "$work/list" "./run/traces/traces.jsonl"
+has "$work/list" "./run/traces/collector-metrics.txt"
+has "$work/list" "./run/traces/collector.log"
+zstd -dc "$D/raw.tar.zst" | tar -xOf - ./run/traces/collector-metrics.txt | grep -q otelcol_receiver_accepted_spans ||
+  fail "no collector counters"
+[ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
+python3 "$repo/scripts/host/schemacheck.py" "$repo/schema/run-record.v1.json" "$D/record.json" >/dev/null || fail "schema"
+echo "ok: a traced run starts the collector before the stack and ships its traces in the raw tarball"
+
+# A collector that exits during the boot stops the run, and its log is kept.
+setup
+run 1 OTEL_DIES=1 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 1
+[ "$(runner '.reasons | join(",")')" = stack_boot_failed ] || fail "reasons $(runner .reasons)"
+grep -q "the trace collector stopped while the stack booted" "$work/out" || fail "no collector message"
+zstd -dc "$D/raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/collector.log || fail "no collector log in the tarball"
+[ ! -e "$D/otel" ] || fail "the collector was not removed"
+echo "ok: a collector that dies during the boot stops the run as stack_boot_failed"
+
+# A failed scrape leaves no partial metrics file, and the run still ships the
+# collector's traces and log.
+setup
+run 0 SCRAPE_FAIL=1 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 0.1
+grep -q "cannot scrape the trace collector's metrics" "$work/out" || fail "no word of the failed scrape"
+zstd -dc "$D/raw.tar.zst" | tar -tf - >"$work/list"
+lacks "$work/list" "./run/traces/collector-metrics.txt"
+has "$work/list" "./run/traces/traces.jsonl"
+has "$work/list" "./run/traces/collector.log"
+[ ! -e "$D/otel" ] || fail "the collector was not removed"
+echo "ok: a failed scrape of the collector's counters drops the file and keeps the traces"
+
+# A traced --until run leaves the collector up beside the stack for wipe.sh.
+setup
+run 0 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 0.1 --until setup
+[ -e "$D/otel" ] || fail "--until removed the collector"
+lacks "$D/docker.log" "stop -t 60 forge-perf-otel"
+has "$D/up.env" "OTEL_TRACES_SAMPLER_ARG=0.1"
+echo "ok: a traced --until run leaves the collector running"
+
+# An untraced run drops tracing variables from the caller's environment, so
+# the services see none of them.
+setup
+run 0 OTEL_ENDPOINT=http://elsewhere:4318 OTEL_EXPORTER_OTLP_ENDPOINT=http://elsewhere:4318 \
+  OTEL_TRACES_SAMPLER_ARG=1 OTEL_RESOURCE_ATTRIBUTES=x=y -- --set "$work/set.json" --workers 16 --until setup
+[ "$(runner .trace)" = null ] || fail "trace $(runner .trace)"
+! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+  fail "stray tracing variables reached make up: $(grep ^OTEL_ "$D/up.env")"
+echo "ok: an untraced run passes no caller OTEL_* variable to smelt"
+
+# Where the ratio comes from: --trace over a pending trace_ratio over the
+# settings file's TRACE_RATIO. A campaign's traced run keeps series campaign.
+traced_campaign() {
+  setup
+  sed 's/^SERIES_LIVE=.*/SERIES_LIVE=1/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
+  mv "$work/launch.conf" "$work/checkout/config/launch.conf"
+  sed "s/^TRACE_RATIO=.*/TRACE_RATIO=$1/" "$work/checkout/config/settings/m9gd.2xlarge.env" >"$work/settings.env"
+  mv "$work/settings.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
+  git -C "$work/checkout" commit -qam traced
+  jq --argjson t "$2" '{kind: "campaign", series: "campaign", set: ., superseded: 0, workers: "16"}
+    + (if $t == null then {} else {trace_ratio: $t} end)' "$work/set.json" >"$work/box/state/pending.json"
+  echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+}
+traced_campaign "" '"0.5"'
+run 0 -- --until preflight
+[ "$(runner '"\(.series) \(.trace.ratio)"')" = "campaign 0.5" ] || fail "pending ratio $(runner '[.series, .trace]')"
+traced_campaign 0.25 '"0.5"'
+run 0 -- --until preflight --trace 1
+[ "$(runner .trace.ratio)" = 1 ] || fail "--trace did not win: $(runner .trace)"
+traced_campaign 0.25 null
+run 0 -- --until preflight
+[ "$(runner .trace.ratio)" = 0.25 ] || fail "TRACE_RATIO not read: $(runner .trace)"
+echo "ok: --trace wins over a pending trace_ratio, which wins over TRACE_RATIO, and a traced campaign run stays campaign"
+
+for bad in 0 0.0 1.5 .1 abc 1e-1 -0.1 0.1234567 0.0000001; do
+  setup
+  run 2 -- --set "$work/set.json" --workers 16 --trace "$bad"
+  grep -q -- "--trace takes a decimal in (0, 1]" "$work/out" || fail "--trace $bad accepted"
+done
+for bad in '"0"' '0.1' '"2"'; do
+  traced_campaign "" "$bad"
+  run 2 --
+  grep -q "pending.json has a trace_ratio" "$work/out" || fail "trace_ratio $bad accepted"
+  [ -e "$work/box/state/pending.json.rejected" ] || fail "pending not moved aside for trace_ratio $bad"
+done
+traced_campaign 2 null
+run 2 --
+grep -q "TRACE_RATIO in .* is not empty or a decimal" "$work/out" || fail "TRACE_RATIO=2 accepted"
+echo "ok: a malformed ratio from the command line, pending.json or the settings file does not start the run"
