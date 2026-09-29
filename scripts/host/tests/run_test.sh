@@ -840,12 +840,56 @@ run 0 -- --until preflight
 [ "$(runner .trace.ratio)" = 0.25 ] || fail "TRACE_RATIO not read: $(runner .trace)"
 echo "ok: --trace wins over a pending trace_ratio, which wins over TRACE_RATIO, and a traced campaign run stays campaign"
 
-for bad in 0 0.0 1.5 .1 abc 1e-1 -0.1 0.1234567 0.0000001; do
+# The boxes trace by default: each committed box settings file sets 0.1, and a
+# run with no --trace and no pending ratio takes it. local.env stays untraced.
+for f in "$repo"/config/settings/m9gd.*.env; do
+  grep -qx "TRACE_RATIO=0.1" "$f" || fail "${f##*/} does not trace at 0.1 by default"
+done
+grep -qx "TRACE_RATIO=" "$repo/config/settings/local.env" || fail "local.env traces by default"
+setup
+cp "$repo/config/settings/m9gd.2xlarge.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
+git -C "$work/checkout" commit -qam "committed settings"
+run 0 -- --set "$work/set.json" --workers 16 --until preflight
+[ "$(runner '.trace | tojson')" = '{"ratio":"0.1"}' ] || fail "default trace $(runner '.trace | tojson')"
+echo "ok: a box run traces at the settings file's 0.1 by default"
+
+# untraced_run: the run started no collector, exported no tracing variable,
+# and runner.json and the record say untraced.
+untraced_run() {
+  [ "$(runner .trace)" = null ] || fail "$1: runner.json trace $(runner .trace)"
+  [ "$(jq -c .trace "$D/record.json")" = null ] || fail "$1: record trace $(jq -c .trace "$D/record.json")"
+  lacks "$D/docker.log" "forge-perf-otel"
+  ! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+    fail "$1: exported tracing variables: $(grep ^OTEL_ "$D/up.env")"
+  [ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services | length] | join(",")')" = 0 ] ||
+    fail "$1: the collector image maps to a service"
+  [ "$(outcome)" = "valid " ] || fail "$1: outcome $(jq -c .outcome "$D/record.json")"
+}
+
+# --trace 0 turns off the settings file's ratio for one run.
+setup
+cp "$repo/config/settings/m9gd.2xlarge.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
+git -C "$work/checkout" commit -qam "committed settings"
+run 0 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 0
+untraced_run "--trace 0"
+echo "ok: --trace 0 runs untraced although the settings file sets a ratio"
+
+# So does a pending trace_ratio of "0", which --trace still overrides.
+traced_campaign 0.25 '"0"'
+run 0 FORGE_PERF_TRACE_SETTLE_S=0 --
+untraced_run 'pending "0"'
+[ "$(jq -r .series "$D/record.json")" = campaign ] || fail "an untraced campaign run left series campaign"
+traced_campaign 0.25 '"0"'
+run 0 -- --until preflight --trace 0.5
+[ "$(runner .trace.ratio)" = 0.5 ] || fail "--trace did not win over a pending 0: $(runner .trace)"
+echo "ok: a pending trace_ratio of \"0\" runs untraced although the settings file sets a ratio"
+
+for bad in 0.0 00 1.5 .1 abc 1e-1 -0.1 0.1234567 0.0000001; do
   setup
   run 2 -- --set "$work/set.json" --workers 16 --trace "$bad"
   grep -q -- "--trace takes a decimal in (0, 1]" "$work/out" || fail "--trace $bad accepted"
 done
-for bad in '"0"' '0.1' '"2"'; do
+for bad in '"0.0"' '0' '0.1' '"2"' '"0\n"' '"0.1\n"'; do
   traced_campaign "" "$bad"
   run 2 --
   grep -q "pending.json has a trace_ratio" "$work/out" || fail "trace_ratio $bad accepted"

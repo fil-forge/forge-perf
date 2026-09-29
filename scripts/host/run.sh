@@ -15,7 +15,8 @@
 # calibration. --trace RATIO, a pending run's trace_ratio (campaign.sh --trace)
 # or the settings file's TRACE_RATIO, in that order, traces the run: a
 # collector runs beside the stack and the services sample RATIO of requests
-# (docs/runner.md, "Tracing"). The steps are preflight, checkout, images,
+# (docs/runner.md, "Tracing"). --trace 0, or a pending trace_ratio of "0",
+# runs it untraced whatever the settings file says. The steps are preflight, checkout, images,
 # boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
@@ -71,7 +72,8 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 [ -z "$until" ] || grep -qw -- "$until" <<<"$STEPS" || refuse "--until takes one of: $STEPS"
-[ -z "$trace" ] || ratio_ok "$trace" || refuse "--trace takes a decimal in (0, 1], such as 0.1"
+[ -z "$trace" ] || [ "$trace" = 0 ] || ratio_ok "$trace" ||
+  refuse "--trace takes a decimal in (0, 1], such as 0.1, or 0 for an untraced run"
 
 runner_init
 mkdir -p "$FORGE_PERF_RUNTIME" "$FORGE_PERF_STATE_DIR"
@@ -140,9 +142,10 @@ else
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
   done
   if [ -z "$trace" ]; then
-    trace="$(jq -re '.trace_ratio // "" | strings' <<<"$pending")" ||
-      refuse "pending.json has a trace_ratio that is not a decimal in (0, 1]"
-    [ -z "$trace" ] || ratio_ok "$trace" || refuse "pending.json has a trace_ratio that is not a decimal in (0, 1]"
+    trace="$(jq -re '.trace_ratio // "" | strings | select(contains("\n") | not)' <<<"$pending")" ||
+      refuse "pending.json has a trace_ratio that is not \"0\" or a decimal in (0, 1]"
+    [ -z "$trace" ] || [ "$trace" = 0 ] || ratio_ok "$trace" ||
+      refuse "pending.json has a trace_ratio that is not \"0\" or a decimal in (0, 1]"
   fi
 fi
 set_json="$(jq -c --arg smelt "${SMELT_REF:-}" --arg pin "${SQ_PIN:-}" '
@@ -166,9 +169,14 @@ grep -qxE 'per-trigger|nightly|campaign|calibration' <<<"$series" || refuse "unk
 # A capped run is the falsification check: it never lights a gate.
 [ "$caps" = '{}' ] || series=calibration
 
-# A traced run keeps its series; the record says it was traced.
-trace="${trace:-${TRACE_RATIO:-}}"
-[ -z "$trace" ] || ratio_ok "$trace" || refuse "TRACE_RATIO in $settings is not empty or a decimal in (0, 1]"
+# A traced run keeps its series; the record says it was traced. A ratio of 0
+# from the command line or pending.json turns off the settings file's.
+if [ "$trace" = 0 ]; then
+  trace=""
+else
+  trace="${trace:-${TRACE_RATIO:-}}"
+  [ -z "$trace" ] || ratio_ok "$trace" || refuse "TRACE_RATIO in $settings is not empty or a decimal in (0, 1]"
+fi
 WORKERS="${workers:-${WORKERS:-}}"
 [[ "$WORKERS" =~ ^[1-9][0-9]*$ ]] || refuse "WORKERS is empty in $settings and no --workers was given"
 if [ "$kind" = nightly ]; then
