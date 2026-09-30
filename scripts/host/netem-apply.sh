@@ -3,8 +3,8 @@
 # container's network namespace, fed on stdin (`bash -s -- <mode> ...`). It has
 # no host dependencies: only ip, tc, ping, curl and iperf3 from the image.
 #
-#   apply <ip> <rtt-ms> <central-ip>...  prio qdisc, netem on band 4, one u32
-#                                        filter per central address
+#   apply <ip> <rtt-ms> <target-ip>...   prio qdisc, netem on band 4, one u32
+#                                        filter per target address
 #   show <ip>                            dev, root qdisc kind, netem delay, filters
 #   clear <ip>                           remove the root qdisc
 #   ping <target-ip>...                  20 pings each, in parallel
@@ -12,7 +12,7 @@
 #   iperf <server-ip> <bytes>            iperf3 client; prints Mbit/s received
 #
 # The interface is the one holding <ip>, the container's forge-network address:
-# piri-0 also sits on piri-storage-net, and Docker decides the order.
+# a container on two networks gets them in an order Docker decides.
 set -euo pipefail
 
 die() { echo "netem-apply: $*" >&2; exit 1; }
@@ -47,7 +47,7 @@ case "$mode" in
   apply)
     rtt="$2"
     shift 2
-    [ "$#" -gt 0 ] || die "apply: no central addresses"
+    [ "$#" -gt 0 ] || die "apply: no target addresses"
     for c in "$@"; do
       via="$(ip route get "$c" | awk 'via == "" { for (i = 1; i < NF; i++) if ($i == "dev") { via = $(i + 1); break } }
         END { if (via != "") print via }')"

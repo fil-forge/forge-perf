@@ -104,7 +104,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
-| Post-check | latency, restarts, central addresses, image IDs | `invalid` |
+| Post-check | latency, restarts, addresses, image IDs | `invalid` |
 | Record, upload, wipe | build and check the record; upload raw, then record; wipe (§6) | minimal `no_data` record |
 
 Each step runs under `timeout`; an overrun is reason `step_timeout`. `INGOT_URL` points the drill at ingot's bridge address (`smelt/scripts/s3-key.sh:67-68, 136`), bypassing Docker's userspace proxy.
@@ -127,26 +127,26 @@ bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
 
 ## 5. Latency simulation
 
-A fixed 25 ms round trip, with no jitter and no bandwidth cap, separates the node group from the central group. netem, the Linux kernel's delay-and-loss queueing discipline, runs in each node container's network namespace and delays only packets addressed to central containers.
+A fixed 25 ms round trip, with no jitter and no bandwidth cap, separates the node group from the central group. netem, the Linux kernel's delay-and-loss queueing discipline, runs in each central container's network namespace and delays only packets addressed to node containers. The node containers keep Docker's default `noqueue` interface, so ingot's uploads to piri-0 and piri-0's writes to S3 never wait in a container's qdisc. With a qdisc on the node interfaces, the tier 2 box ingested 1.0 GB/s at 64 workers: TCP retransmitted 3.8% of the nodes' segments while the originals still waited in the queue, and congestion windows averaged 2.4 segments. Removing the qdiscs mid-run, delay included, raised ingest to 1.9 GB/s and cut retransmissions to 0.02%.
 
 | Group (`config/groups.conf`) | Services | Treatment |
 |---|---|---|
-| node | `ingot`, `ingot-postgres`, `ingot-openbao`, `piri-0`; `piri-postgres` sits only on `piri-storage-net` | prio qdisc with netem |
-| central | `upload`, `postgres`, `hilt`, `hilt-postgres`, `hilt-vault`, `swarf`, `swarf-postgres`, `plc`, `plc-postgres`, `delegator`, `signing-service`, `dynamodb-local`, `minio` | filter targets |
+| node | `ingot`, `ingot-postgres`, `ingot-openbao`, `piri-0`; `piri-postgres` sits only on `piri-storage-net` | filter targets |
+| central | `upload`, `postgres`, `hilt`, `hilt-postgres`, `hilt-vault`, `swarf`, `swarf-postgres`, `plc`, `plc-postgres`, `delegator`, `signing-service`, `dynamodb-local`, `minio` | prio qdisc with netem |
 | other | `blockchain`, `email`, `guppy`, `indexer`, `redis`, `ipni`, `piri-minio`, the host, AWS S3 | undelayed |
 | one-shot | `ingot-openbao-init`, `piri-postgres-init`, `upload-init`, `hilt-init`, `ipni-init` | must have exited 0 |
 
-A service in no list stops the run. `netem.sh apply` runs a pinned netshoot sidecar with `NET_ADMIN` in each shaped container, picks the interface holding its forge-network address (piri-0 has two), and installs:
+A service in no list stops the run. `netem.sh apply` runs a pinned netshoot sidecar with `NET_ADMIN` in each shaped container, picks the interface holding its forge-network address, and installs:
 
 ```sh
 tc qdisc add dev "$dev" root handle 1: prio bands 4 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
 tc qdisc add dev "$dev" parent 1:4 handle 40: netem delay 25ms limit 100000
-tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip dst <central-ip>/32 flowid 1:4
+tc filter add dev "$dev" parent 1: protocol ip prio 1 u32 match ip dst <node-ip>/32 flowid 1:4
 ```
 
-The all-zero priomap keeps unfiltered traffic in band 1. Delaying node egress adds one round trip to every exchange across the boundary, handshakes included. Healthchecks and Docker's DNS stay on loopback, undelayed.
+The all-zero priomap keeps unfiltered traffic in band 1. Delaying central egress to node addresses adds one round trip to every exchange across the boundary, handshakes included: a node's request reaches a central service at once and the reply waits, and a central service's call to piri-0 waits on the way out. No heavy traffic crosses a central container's interface: the central MinIO serves only the upload service. Healthchecks and Docker's DNS stay on loopback, undelayed.
 
-`netem.sh verify` runs before and after the drill. Across the boundary, in both directions, the median of 20 pings per pair and the median of 10 TCP connects must fall between 22.5 and 27.5 ms; within a group, and from the host to ingot, the median stays under 1 ms. A container that is gone or not running fails the check, and its probes are skipped. Afterwards the qdiscs must be present, and central addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) can return on an address the filter no longer matches. Calibration also moves 1 GiB from ingot to piri-0 with and without the qdisc; the rates must agree within 5%.
+`netem.sh verify` runs before and after the drill. Across the boundary, in both directions, the median of 20 pings per pair and the median of 10 TCP connects must fall between 22.5 and 27.5 ms; within a group, and from the host to ingot, the median stays under 1 ms. A container that is gone or not running fails the check, and its probes are skipped. Afterwards the qdiscs must be present, and addresses, container IDs and restart counts unchanged. A failure makes the run `invalid`, numbers kept. A restarted central container (`restart: unless-stopped`, `smelt/systems/upload/compose.yml:41`) comes back without its qdisc, and any restarted container can return on an address the filters or probes no longer match. Calibration also moves 1 GiB from upload to minio, two central containers whose traffic crosses band 1 undelayed, with and without the qdiscs; the rates must agree within 5%.
 
 ## 6. Storage and the wipe
 

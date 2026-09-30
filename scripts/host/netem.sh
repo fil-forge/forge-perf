@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Adds a fixed round trip between smelt's node and central groups and checks it.
 #
-#   netem.sh apply              shape every node container (docs/DESIGN.md §5)
+#   netem.sh apply              shape every central container (docs/DESIGN.md §5)
 #   netem.sh verify pre|post    measure round trips and check the qdiscs; post
 #                               also checks that nothing restarted or moved
 #   netem.sh clear              remove the qdiscs
-#   netem.sh throughput         iperf3 from ingot to piri-0 without and with
+#   netem.sh throughput         iperf3 from upload to minio, traffic that
+#                               crosses a qdisc undelayed, without and with
 #                               the qdiscs; leaves them applied
 #
 # Groups come from config/groups.conf, the round trip and subnet from
@@ -17,7 +18,7 @@
 #   docker network create --subnet 172.30.0.0/24 forge-network
 #
 # State and results go to $NETEM_DIR, default $RUN/netem, else ./netem:
-# containers.tsv and central-ips (recorded at apply), latency.json (both
+# containers.tsv and node-ips (recorded at apply), latency.json (both
 # verify passes), throughput.json, and the sidecar and docker events output.
 #
 # The environment can name another project (COMPOSE_PROJECT_NAME, default
@@ -131,8 +132,8 @@ row() { awk -v s="$1" -v c="$2" '$1 == s { print $c }' "$state/containers.tsv"; 
 
 cmd_apply() {
   discover
-  rm -f "$state/containers.tsv" "$state/central-ips"
-  local svc cid f group status code started restarts ip central=""
+  rm -f "$state/containers.tsv" "$state/node-ips"
+  local svc cid f group status code started restarts ip nodes="" centrals=0
   for svc in $ONESHOT; do
     cid="$(cid_of "$svc")"
     [ -n "$cid" ] || continue
@@ -153,33 +154,35 @@ cmd_apply() {
     [ "$status" = running ] || harness "$svc is $status"
     if [ "$ip" = - ]; then
       [ "$group" = node ] || harness "central $svc has no $network address"
-      echo "netem: $svc has no $network address; not shaped"
+      echo "netem: $svc has no $network address; no filter targets it"
     else
       in_subnet "$ip" "$NET_SUBNET" || harness "$svc address $ip is outside NET_SUBNET $NET_SUBNET"
+      [ "$group" = central ] || nodes="$nodes $ip"
     fi
-    [ "$group" = node ] || central="$central $ip"
+    [ "$group" = node ] || centrals=$((centrals + 1))
     echo "$svc $group $cid $started $restarts $ip" >>"$state/containers.tmp"
   done
-  [ -n "$central" ] || harness "no central containers are running"
+  [ "$centrals" -gt 0 ] || harness "no central containers are running"
+  [ -n "$nodes" ] || harness "no node container has a $network address"
   # shellcheck disable=SC2086
-  printf '%s\n' $central | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n >"$state/central-ips"
+  printf '%s\n' $nodes | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n >"$state/node-ips"
   mv "$state/containers.tmp" "$state/containers.tsv"
   local ips shaped=0
-  ips="$(tr '\n' ' ' <"$state/central-ips")"
+  ips="$(tr '\n' ' ' <"$state/node-ips")"
   while read -r svc group cid _ _ ip; do
-    [ "$group" = node ] && [ "$ip" != - ] || continue
-    # shellcheck disable=SC2086 # one argument per central address
+    [ "$group" = central ] || continue
+    # shellcheck disable=SC2086 # one argument per node address
     sidecar "container:$cid" apply "$ip" "$RTT_MS" $ips >"$state/apply-$svc.out" 2>&1 ||
       harness "sidecar could not shape $svc: $(tail -n 1 "$state/apply-$svc.out")"
     shaped=$((shaped + 1))
   done <"$state/containers.tsv"
-  echo "netem: $shaped node containers delay ${RTT_MS} ms to $(wc -l <"$state/central-ips" | tr -d ' ') central addresses"
+  echo "netem: $shaped central containers delay ${RTT_MS} ms to $(wc -l <"$state/node-ips" | tr -d ' ') node addresses"
 }
 
 cmd_clear() {
   discover
   local svc cid f status ip
-  for svc in $NODE; do
+  for svc in $CENTRAL; do
     cid="$(cid_of "$svc")"
     [ -n "$cid" ] || continue
     f="$(facts "$cid")" || harness "cannot inspect $svc"
@@ -234,9 +237,10 @@ cmd_verify() {
     fi
     [ "$pass" = post ] || continue
     [ "$now_started" = "$started" ] && [ "$now_restarts" = "$restarts" ] ||
-      fail "$svc restarted after apply (a node loses its qdisc; a central container can return on another address)"
-    [ "$group" != central ] || [ "$now_ip" = "$ip" ] ||
-      fail "$svc address changed from $ip to $now_ip; the filters no longer match it"
+      fail "$svc restarted after apply (a central container loses its qdisc; any container can return on another address)"
+    # A stopped container has no address and has already failed above.
+    [ "$now_status" != running ] || [ "$now_ip" = "$ip" ] ||
+      fail "$svc address changed from $ip to $now_ip; the filters and probes no longer match it"
   done <"$state/containers.tsv"
   if [ "$pass" = post ]; then
     docker events --since "$(cat "$state/applied-at")" --until "$(date +%s)" \
@@ -298,18 +302,18 @@ cmd_verify() {
     fi
   done
 
-  # The qdiscs: present, the configured delay, filters equal to the central set.
+  # The qdiscs: present, the configured delay, filters equal to the node set.
   local want
-  want="$(tr '\n' ' ' <"$state/central-ips")"
+  want="$(tr '\n' ' ' <"$state/node-ips")"
   while read -r svc group cid _ _ ip; do
-    [ "$group" = node ] && [ "$ip" != - ] || continue
+    [ "$group" = central ] || continue
     [ "${down#* "$svc" }" = "$down" ] || continue
     out="$(sidecar "container:$cid" show "$ip" 2>&1)" || { fail "$svc: cannot read its qdiscs"; continue; }
     [ "$(echo "$out" | awk '$1 == "root" { print $2 }')" = prio ] || fail "$svc: no prio root qdisc"
     echo "$out" | awk -v r="$RTT_MS" '$1 == "delay" { v = $2 + 0; if ($2 ~ /us$/) v /= 1000; else if ($2 ~ /[0-9]s$/) v *= 1000; ok = (v == r) } END { exit !ok }' ||
       fail "$svc: netem delay is not ${RTT_MS} ms"
     [ "$(echo "$out" | awk '$1 == "filter" { print $2 }' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tr '\n' ' ')" = "$want" ] ||
-      fail "$svc: filters do not match the central addresses recorded at apply"
+      fail "$svc: filters do not match the node addresses recorded at apply"
   done <"$state/containers.tsv"
 
   if [ "$pass" = post ]; then
@@ -368,22 +372,25 @@ write_json() {
   printf '{"pre":%s,"post":%s}\n' "$pre" "$post" >"$state/latency.json"
 }
 
+# The node interfaces carry no qdisc, so the traffic the shaping could slow
+# without delaying it is inside the central group, in band 1. upload and minio
+# are both central; the pair stands for any exchange within the group.
 cmd_throughput() {
   discover
-  local ingot piri piri_ip f status without with diff
-  ingot="$(cid_of ingot)"
-  piri="$(cid_of piri-0)"
-  [ -n "$ingot" ] && [ -n "$piri" ] || harness "throughput needs ingot and piri-0"
-  f="$(facts "$piri")" || harness "cannot inspect piri-0"
-  read -r status _ _ _ piri_ip <<<"$f"
-  [ "$status" = running ] && [ "$piri_ip" != - ] || harness "piri-0 is $status with address $piri_ip"
+  local client server server_ip f status without with diff
+  client="$(cid_of upload)"
+  server="$(cid_of minio)"
+  [ -n "$client" ] && [ -n "$server" ] || harness "throughput needs upload and minio"
+  f="$(facts "$server")" || harness "cannot inspect minio"
+  read -r status _ _ _ server_ip <<<"$f"
+  [ "$status" = running ] && [ "$server_ip" != - ] || harness "minio is $status with address $server_ip"
   measure() {
     local name="forge-perf-iperf-$$" out
-    docker run -d --rm --name "$name" --network "container:$piri" "$netshoot" iperf3 -s -1 >/dev/null ||
-      harness "cannot start the iperf3 server in piri-0"
-    out="$(sidecar "container:$ingot" iperf "$piri_ip" "$THROUGHPUT_BYTES")" || {
+    docker run -d --rm --name "$name" --network "container:$server" "$netshoot" iperf3 -s -1 >/dev/null ||
+      harness "cannot start the iperf3 server in minio"
+    out="$(sidecar "container:$client" iperf "$server_ip" "$THROUGHPUT_BYTES")" || {
       docker rm -f "$name" >/dev/null 2>&1 || true
-      harness "iperf3 from ingot to piri-0 failed"
+      harness "iperf3 from upload to minio failed"
     }
     docker rm -f "$name" >/dev/null 2>&1 || true
     echo "$out" | awk '$1 == "iperf" { print $2 }'
@@ -396,7 +403,7 @@ cmd_throughput() {
   diff="$(awk -v a="$without" -v b="$with" 'BEGIN { d = (b - a) / a * 100; printf "%.2f", (d < 0 ? -d : d) }')"
   printf '{"bytes":"%s","without_mbps":%s,"with_mbps":%s,"difference_pct":%s}\n' \
     "$THROUGHPUT_BYTES" "$without" "$with" "$diff" >"$state/throughput.json"
-  echo "netem: ingot -> piri-0 without the qdisc $without Mbit/s, with it $with Mbit/s, $diff% apart"
+  echo "netem: upload -> minio without the qdiscs $without Mbit/s, with them $with Mbit/s, $diff% apart"
   between "$diff" 0 "$THROUGHPUT_TOLERANCE_PCT" || {
     echo "netem: throughput differs by more than $THROUGHPUT_TOLERANCE_PCT%" >&2
     exit 1
