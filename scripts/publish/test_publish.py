@@ -125,6 +125,15 @@ class Publish(unittest.TestCase):
         self.put("published/main/heartbeat.json", dict({"box": "main", "at": at, "state": "idle",
                                                           "poll_failures": 0, "run_started_at": None}, **fields))
 
+    def waker(self, requested_at, **fields):
+        self.put("published/main/waker.json", dict({
+            "schema": "forge-perf.waker/v1", "box": "main", "requested_at": requested_at, "reason": "wake_at",
+            "detail": "2026-10-01T23:00:00Z", "result": "started", "error": None, "first_failed_at": None,
+            "woke_for": {}}, **fields))
+
+    def conditions(self):
+        return json.loads((self.results / "status/main.json").read_text(encoding="utf-8"))["conditions"]
+
     def ingest(self, now=NOW, expect_status=0):
         out = self.tmp / "github_output"
         out.write_text("", encoding="utf-8")
@@ -263,6 +272,111 @@ class Publish(unittest.TestCase):
         self.heartbeat("2026-10-02T15:55:00Z")
         self.assertEqual(self.ingest(now="2026-10-02T16:00:00Z")["alerts"],
                          ["forge-perf main: no record in 26 hours. https://fil-forge.github.io/forge-perf/"])
+
+    def test_an_asleep_box_raises_no_heartbeat_condition(self):
+        self.record(fixture_record("valid", 12))
+        # Four hours without a heartbeat, and the last pass's counts, mean nothing while it sleeps.
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-02T02:55:00Z", poll_failures=6,
+                       run_started_at="2026-10-01T10:00:00Z")
+        got = self.ingest()
+        self.assertEqual(got["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+        self.assertEqual(json.loads(got["heartbeats"])["main"],
+                         {"at": "2026-10-01T20:00:00Z", "state": "asleep", "wake_at": "2026-10-02T02:55:00Z",
+                          "poll_failures": 6, "run_started_at": "2026-10-01T10:00:00Z"})
+        # An awake box's wake_at is null, and the summary says so.
+        self.heartbeat("2026-10-01T23:55:00Z", wake_at=None)
+        self.assertIsNone(json.loads(self.ingest()["heartbeats"])["main"]["wake_at"])
+
+    def test_no_record_holds_for_an_asleep_box(self):
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-02T02:55:00Z")
+        self.assertEqual(self.ingest()["alerts"], ["forge-perf main: no record yet. https://fil-forge.github.io/forge-perf/"])
+        self.record(fixture_record("valid", 12))
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.heartbeat("2026-10-02T04:00:00Z", state="asleep", wake_at="2026-10-03T02:55:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T15:00:00Z")["alerts"],
+                         ["forge-perf main: no record in 26 hours. https://fil-forge.github.io/forge-perf/"])
+
+    def test_an_asleep_heartbeat_without_a_wake_time_is_not_asleep(self):
+        self.record(fixture_record("valid", 12))
+        for wake_at in (None, "soon", "2026-02-30T00:00:00Z"):
+            with self.subTest(wake_at=wake_at):
+                (self.results / "status/main.json").unlink(missing_ok=True)
+                self.heartbeat("2026-10-01T23:00:00Z", state="asleep", wake_at=wake_at)
+                got = self.ingest()
+                self.assertEqual(got["alerts"],
+                                 ["forge-perf main: no heartbeat for 60 minutes. https://fil-forge.github.io/forge-perf/"])
+                self.assertEqual(json.loads(got["heartbeats"])["main"]["state"], None)
+
+    def test_a_box_that_sleeps_past_its_wake_time_alerts_once(self):
+        self.record(fixture_record("valid", 12))
+        # Inside the 20 minutes the waker and the first poll may take.
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-01T23:45:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-01T23:30:00Z")
+        line = "forge-perf main: the box slept past its wake time 2026-10-01T23:30:00Z. https://fil-forge.github.io/forge-perf/"
+        self.assertEqual(self.ingest()["alerts"], [line])
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), ["wake_failed"])
+        # A wake from before this sleep says nothing about it.
+        (self.results / "status/main.json").unlink()
+        self.waker("2026-10-01T18:00:00Z")
+        self.assertEqual(self.ingest()["alerts"], [line])
+        # The box reports again: the condition ends without a message.
+        self.heartbeat("2026-10-01T23:58:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+
+    def test_a_waker_that_cannot_start_the_box_alerts(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-01T23:00:00Z")
+        self.waker("2026-10-01T23:55:00Z", result="failed", error="InsufficientInstanceCapacity",
+                   first_failed_at="2026-10-01T23:45:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.waker("2026-10-01T23:55:00Z", result="failed", error="InsufficientInstanceCapacity",
+                   first_failed_at="2026-10-01T23:00:03Z")
+        self.assertEqual(self.ingest()["alerts"],
+                         ["forge-perf main: the waker cannot start the box (InsufficientInstanceCapacity). "
+                          "https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), ["wake_failed"])
+        # Only an error code reaches Slack.
+        (self.results / "status/main.json").unlink()
+        self.waker("2026-10-01T23:55:00Z", result="failed", error="An error occurred: <details>",
+                   first_failed_at="2026-10-01T23:00:03Z")
+        self.assertEqual(self.ingest()["alerts"],
+                         ["forge-perf main: the waker cannot start the box (no error code). "
+                          "https://fil-forge.github.io/forge-perf/"])
+        # An operator started the box: the old failure no longer holds.
+        self.heartbeat("2026-10-01T23:58:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+
+    def test_a_started_box_that_never_reports_alerts(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-01T23:00:00Z")
+        # The wake time is long past, but the waker started the box 10 minutes ago.
+        self.waker("2026-10-01T23:50:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.waker("2026-10-01T23:30:00Z")
+        self.assertEqual(self.ingest()["alerts"],
+                         ["forge-perf main: the waker started the box at 2026-10-01T23:30:00Z and it has not reported "
+                          "since. https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.conditions(), ["wake_failed"])
+        self.heartbeat("2026-10-01T23:58:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+
+    def test_an_unusable_waker_record_is_no_waker_information(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T20:00:00Z", state="asleep", wake_at="2026-10-02T02:55:00Z")
+        started = {"requested_at": "2026-10-01T23:00:00Z", "result": "started"}
+        for value in ("not json", "[]", {"result": "started"}, dict(started, requested_at="2026-02-30T00:00:00Z"),
+                      dict(started, result="maybe"), dict(started, woke_for={"x" * 70000: "y"})):
+            with self.subTest(value=str(value)[:40]):
+                self.put("published/main/waker.json", value)
+                self.assertEqual(self.ingest()["alerts"], [])
+                self.assertEqual(self.conditions(), [])
 
     def test_box_and_instrument_faults_alert_invalid(self):
         hour = 1

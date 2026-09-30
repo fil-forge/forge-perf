@@ -126,6 +126,11 @@ test("heartbeat lines", () => {
   assert.equal(M.heartbeatLine({ at: "2026-10-10T11:59:00Z", state: "held", poll_failures: 0 }, NOW), "held, last poll 1 min ago");
   assert.equal(M.heartbeatLine({ at: "2026-10-10T10:10:00Z", state: "idle" }, NOW), "no heartbeat for 110 min");
   assert.equal(M.heartbeatLine({ at: "2026-10-10T08:00:00Z", state: "idle" }, NOW), "no heartbeat for 4 h");
+  // An asleep box is not stale, however old its heartbeat.
+  assert.equal(M.heartbeatLine({ at: "2026-10-10T08:00:00Z", state: "asleep", wake_at: "2026-10-11T02:55:00Z", poll_failures: 0 }, NOW),
+    "asleep for 4 h, next wake 2026-10-11 02:55 UTC");
+  assert.equal(M.heartbeatLine({ at: "2026-10-10T08:00:00Z", state: "asleep", wake_at: "2026-10-10T11:00:00Z" }, NOW),
+    "asleep for 4 h, due to wake 2026-10-10 11:00 UTC");
 });
 
 test("history marks the first run on a new box type once, and rings the incoming paired box", () => {
