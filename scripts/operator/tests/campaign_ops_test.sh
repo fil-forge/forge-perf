@@ -16,6 +16,9 @@ tree="$work/tree" ops="$work/tree/scripts/operator"
 mkdir -p "$tree/scripts" "$tree/calibration" "$tree/terraform/envs/box/main"
 cp -R "$repo/scripts/operator" "$tree/scripts/"
 cp -R "$repo/config" "$tree/"
+# The input tests use tier 3's type as the one without settings, so the
+# repo's file for it is set aside and put back for the test that needs it.
+mv "$tree/config/settings/m9gd.16xlarge.env" "$work/m9gd.16xlarge.env"
 cp -R "$repo/calibration/sets" "$tree/calibration/"
 # The reaper tests check fake boxes against tier 1's type, so a resize in the
 # repo leaves them alone.
@@ -88,6 +91,14 @@ jq '.images = {}' "$tree/calibration/sets/shakedown.json" >"$tree/calibration/se
 inputs 1 SET=calibration/sets/partial.json
 grep -q "digest for every image" "$work/out" || fail "a set without digests"
 echo "ok: hours 0 and 25, a type without settings, a missing or partial set, a run over 4h and malformed values are refused"
+
+# The repo's tier 3 settings take a campaign at the default size and their
+# own workers value.
+cp "$work/m9gd.16xlarge.env" "$tree/config/settings/m9gd.16xlarge.env"
+inputs 0 INSTANCE_TYPE=m9gd.16xlarge WORKERS= SIZE=2000GB DURATION=2h HOURS=6
+inputs 0 INSTANCE_TYPE=m9gd.16xlarge WORKERS=64,128 SIZE=2000GB DURATION=1h HOURS=8 RUNS=2
+rm "$tree/config/settings/m9gd.16xlarge.env"
+echo "ok: the tier 3 settings take a campaign and a sweep"
 
 inputs 1 HOURS=6 RUNS=3 DURATION=4h
 grep -q "3 run(s) of 4h need up to 15 hours; hours is 6" "$work/out" || fail "runs that cannot end before ExpiresAt"

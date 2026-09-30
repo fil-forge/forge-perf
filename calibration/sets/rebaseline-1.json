@@ -1,0 +1,21 @@
+{
+  "harness": {
+    "main": null,
+    "pinned": true,
+    "sha": "86528f0bbeaeadf667bacacc5bc0190d57ebd152"
+  },
+  "images": {
+    "ghcr.io/fil-forge/delegator:main": "sha256:30b1757986ce213a8eecacbd7a463142a242b0f3932180796aad62c2f2ccc2fe",
+    "ghcr.io/fil-forge/did-method-plc:main": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+    "ghcr.io/fil-forge/guppy:main-dev": "sha256:52c717f7fcb09773e560bba9ffbbbb5ddc3c4f8e7957e21cd9b3156eee8efd8b",
+    "ghcr.io/fil-forge/hilt:main": "sha256:ec46c707a2aebd1e8f4f6a9cc9a0c0e35781c777a744be2b077d35755a0a3559",
+    "ghcr.io/fil-forge/indexing-service:main": "sha256:70b4c9919a0d3fa3ad4d658b4d70b23b334fe210a2af96767173fdd63ee9966b",
+    "ghcr.io/fil-forge/ingot:main": "sha256:f84a61c556122bb319ca1b89e23533ab477e4fd3d269dfd844ce8ca95288d125",
+    "ghcr.io/fil-forge/piri-signing-service:main": "sha256:b7ef5f0ea7e035c183d69ae90c98f30a4e04b944dfbf7ccbf27608e1b904e461",
+    "ghcr.io/fil-forge/piri:main": "sha256:c16a9f9301a717a520569046466dfedcb8901f1390269b45e28760033c652ae0",
+    "ghcr.io/fil-forge/sprue:main": "sha256:400091e828c8900bcb7af66ca87465d5fa8f19898befb9ec7256a977bda1a123",
+    "ghcr.io/fil-forge/swarf:main": "sha256:b090ceb720eed695f48afba8c22b1f2946781bb4584316b8176b247598f0e2bf"
+  },
+  "resolved_at": "2026-09-30T04:43:53Z",
+  "smelt": "09216cde0d6e01e22dda3dfb3b4d4dbba94fb6c3"
+}
