@@ -109,7 +109,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `latency.pairs` | cross-boundary pairs in the pre pass; 0 when it did not run |
 | `latency.before`, `latency.after` | a summary of the pre and post passes (`rtt`, below); null when the pass did not run |
 | `latency.max_drift_pct` | the largest `abs(median_ms - rtt_ms) / rtt_ms × 100` over both passes' cross pairs, rounded to 2 places; null with no measured pair |
-| `latency.central_ips_stable` | false when the post pass has an `address changed from` line; null without a post pass |
+| `latency.central_ips_stable` | false when the post pass has an `address changed from` line, which `netem.sh` writes for a node or central container; null without a post pass |
 | `network.allowance_exceeded` | runner `nic.allowance_exceeded`; null when `ethtool -S` failed or the drill never started |
 | `network.allowance_exceeded.bw_in`, `network.allowance_exceeded.bw_out`, `network.allowance_exceeded.pps`, `network.allowance_exceeded.conntrack`, `network.allowance_exceeded.linklocal` | the start-to-end delta of the ENA counters `bw_in_allowance_exceeded`, `bw_out_allowance_exceeded`, `pps_allowance_exceeded`, `conntrack_allowance_exceeded`, `linklocal_allowance_exceeded` |
 | `network.egress_bytes_per_s_median` | runner `nic`: the median of the interface's one-second transmit rate over the drill; null when the samples are missing or the drill never started |
@@ -200,7 +200,7 @@ For a traced run, a `traces.jsonl` that is missing or cannot be read gives `trac
 | `integrity_failure` | `failed` | evidence `drill.integrity_failures` above 0, or failure code `integrity_failure` |
 | `drill_failure` | `failed` | a failure code other than `availability_error`, `read_back_incomplete`, `ingest_cutoff_before_measurement`, `wrote_nothing`, `integrity_failure` and `interrupted`; or drill exit 1 with neither a failure code nor an integrity failure; or drill exit 1 with no other reason |
 | `rtt_out_of_band` | `invalid` | a netem round trip or connect outside the band, or no reply |
-| `central_ip_changed` | `invalid` | a central container's address changed after apply |
+| `central_ip_changed` | `invalid` | a running node or central container's address changed after apply |
 | `netem_missing` | `invalid` | a qdisc, delay or filter missing at verify |
 | `container_restarted` | `invalid` | a node or central container restarted, stopped or disappeared after apply; the services go in `outcome.restarted_services` |
 | `image_changed` | `invalid` | a container's image ID at the post-check differs from its pinned digest's |

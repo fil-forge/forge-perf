@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Behavior of netem-apply.sh, the sidecar half, with ip, tc and ping stubbed on
-# PATH. The stubbed namespace looks like piri-0's: eth0 on piri-storage-net,
+# PATH. The stubbed namespace has two networks, eth0 on another network and
 # eth1 on forge-network, so the interface has to be chosen by address.
 #
 # Each check is a condition string that check() evals after the run, so its
@@ -102,10 +102,10 @@ check "apply succeeds" '[ "$status" -eq 0 ]'
 check "apply shapes the forge-network interface" 'grep -qx "dev eth1" "$work/out"'
 check "apply installs the prio root" 'grep -qx "tc qdisc add dev eth1 root handle 1: prio bands 4 priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" "$LOG"'
 check "apply installs netem on band 4" 'grep -qx "tc qdisc add dev eth1 parent 1:4 handle 40: netem delay 15ms limit 100000" "$LOG"'
-check "apply adds one filter per central address" '[ "$(grep -c "u32 match ip dst 172.30.0.[0-9]*/32 flowid 1:4" "$LOG")" -eq 2 ]'
+check "apply adds one filter per target address" '[ "$(grep -c "u32 match ip dst 172.30.0.[0-9]*/32 flowid 1:4" "$LOG")" -eq 2 ]'
 
 run apply 172.30.0.5 15 172.30.0.2 10.213.1.9
-check "a central address routed by another interface stops apply" '[ "$status" -eq 1 ] && grep -q "route to 10.213.1.9 leaves by eth0" "$work/out"'
+check "a target address routed by another interface stops apply" '[ "$status" -eq 1 ] && grep -q "route to 10.213.1.9 leaves by eth0" "$work/out"'
 check "nothing is installed after a route mismatch" '! grep -q "qdisc add" "$LOG"'
 
 run apply 172.30.0.99 15 172.30.0.2

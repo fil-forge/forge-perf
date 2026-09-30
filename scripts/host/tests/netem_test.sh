@@ -121,10 +121,15 @@ expect() {
 }
 
 fixture
-expect 0 "apply shapes the four node containers" "4 node containers delay 15 ms to 13 central" -- apply
-[ "$(grep -c ' apply ' "$FIX/log")" -eq 4 ] || { echo "FAIL: apply ran $(grep -c ' apply ' "$FIX/log") sidecars, want 4"; failures=$((failures + 1)); }
-grep -q "c-piri-postgres" "$FIX/log" && { echo "FAIL: piri-postgres was shaped"; failures=$((failures + 1)); }
-[ "$(head -n 1 "$work/state/central-ips")" = "$(ip_of upload)" ] || { echo "FAIL: central-ips not sorted"; failures=$((failures + 1)); }
+expect 0 "apply shapes the thirteen central containers" "13 central containers delay 15 ms to 4 node addresses" -- apply
+[ "$(grep -c ' apply ' "$FIX/log")" -eq 13 ] || { echo "FAIL: apply ran $(grep -c ' apply ' "$FIX/log") sidecars, want 13"; failures=$((failures + 1)); }
+for svc in $node; do
+  grep -q "^container:c-$svc apply " "$FIX/log" && { echo "FAIL: node $svc was shaped"; failures=$((failures + 1)); }
+done
+[ "$(tr '\n' ' ' <"$work/state/node-ips")" = "$(ip_of ingot) $(ip_of ingot-postgres) $(ip_of ingot-openbao) $(ip_of piri-0) " ] ||
+  { echo "FAIL: node-ips is not the sorted node addresses"; cat "$work/state/node-ips"; failures=$((failures + 1)); }
+[ "$(tr '\n' ' ' <"$FIX/applied-container_c-hilt")" = "$(tr '\n' ' ' <"$work/state/node-ips")" ] ||
+  { echo "FAIL: hilt filters are not the node addresses"; failures=$((failures + 1)); }
 expect 0 "verify pre passes at 15 ms" "verify pre passed" -- verify pre
 grep -q '"node_to_central_median_ms":15,"central_to_node_median_ms":15,"intra_group_max_ms":0.1,"host_to_ingot_ms":0.1' "$work/state/latency.json" ||
   { echo "FAIL: latency.json summary"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
@@ -149,21 +154,28 @@ expect 1 "a restarted central container fails post" "upload restarted after appl
 echo "running 0 2026-09-25T01:00:00Z 1 172.30.0.200" >"$FIX/inspect/c-upload"
 expect 1 "a central container on a new address fails post" "upload address changed from $(ip_of upload) to 172.30.0.200" -- verify post
 echo "running 0 2026-09-25T00:00:00Z 0 $(ip_of upload)" >"$FIX/inspect/c-upload"
+echo "running 0 2026-09-25T00:00:00Z 0 172.30.0.201" >"$FIX/inspect/c-piri-0"
+expect 1 "a node container on a new address fails post" "piri-0 address changed from $(ip_of piri-0) to 172.30.0.201" -- verify post
+echo "running 0 2026-09-25T00:00:00Z 0 $(ip_of piri-0)" >"$FIX/inspect/c-piri-0"
 echo "c-piri-0 die {}" >"$FIX/events"
 expect 1 "a die event after apply fails post" "piri-0: die event after apply" -- verify post
 rm "$FIX/events"
-rm "$FIX/applied-container_c-piri-0"
-expect 1 "a missing qdisc fails verify" "piri-0: no prio root qdisc" -- verify pre
+sed -i.bak '$d' "$FIX/applied-container_c-hilt"
+expect 1 "a missing filter fails verify" "hilt: filters do not match the node addresses recorded at apply" -- verify pre
+rm "$FIX/applied-container_c-upload"
+expect 1 "a missing qdisc fails verify" "upload: no prio root qdisc" -- verify pre
 
 # A crashed node container is a failed check with the post record kept.
 fixture
 expect 0 "apply before a crash" - -- apply
 expect 0 "verify pre before a crash" - -- verify pre
-echo "exited 137 2026-09-25T00:00:00Z 0 $(ip_of piri-0)" >"$FIX/inspect/c-piri-0"
+# docker inspect gives a stopped container no address.
+echo "exited 137 2026-09-25T00:00:00Z 0 -" >"$FIX/inspect/c-piri-0"
 echo "c-piri-0 die {}" >"$FIX/events"
 expect 1 "an exited node container fails post" "piri-0 is exited" -- verify post
 grep -q "piri-0 is not running; its round trips were not measured" "$out" ||
   { echo "FAIL: skipped probes not reported"; failures=$((failures + 1)); }
+grep -q "address changed" "$out" && { echo "FAIL: a stopped container reported as a moved address"; failures=$((failures + 1)); }
 grep -q '"post":{"pass":"post"' "$work/state/latency.json" && [ -s "$work/state/events-post" ] ||
   { echo "FAIL: post record lost after a crash"; cat "$work/state/latency.json"; failures=$((failures + 1)); }
 ! command -v python3 >/dev/null || python3 -m json.tool "$work/state/latency.json" >/dev/null ||
@@ -201,13 +213,28 @@ fixture
 echo 1 >"$FIX/sidecar-status"
 expect 2 "a sidecar failure is a harness error" "sidecar could not shape" -- apply
 fixture
+echo "running 0 2026-09-25T00:00:00Z 0 172.30.0.100" >"$FIX/inspect/c-ingot"
+expect 0 "apply with an address above .99" - -- apply
+[ "$(tr '\n' ' ' <"$work/state/node-ips")" = "$(ip_of ingot-postgres) $(ip_of ingot-openbao) $(ip_of piri-0) 172.30.0.100 " ] ||
+  { echo "FAIL: node-ips is not sorted numerically"; cat "$work/state/node-ips"; failures=$((failures + 1)); }
+fixture
+for svc in $node; do echo "running 0 2026-09-25T00:00:00Z 0 -" >"$FIX/inspect/c-$svc"; done
+expect 2 "no node address stops apply" "no node container has a forge-network address" -- apply
+[ ! -e "$work/state/containers.tsv" ] || { echo "FAIL: apply recorded state after stopping"; failures=$((failures + 1)); }
+fixture
+grep -v -E "^($(echo "$central" | tr ' ' '|')) " "$FIX/ps" >"$FIX/ps.new" && mv "$FIX/ps.new" "$FIX/ps"
+expect 2 "no central container stops apply" "no central containers are running" -- apply
+[ ! -e "$work/state/containers.tsv" ] || { echo "FAIL: apply recorded state after stopping"; failures=$((failures + 1)); }
+fixture
 expect 2 "verify without apply is a harness error" "run apply first" -- verify pre
 
 fixture
 printf '1000\n990\n' >"$FIX/iperf"
-expect 0 "throughput within 5% passes" "without the qdisc 1000 Mbit/s, with it 990 Mbit/s, 1.00% apart" -- throughput
+expect 0 "throughput within 5% passes" "upload -> minio without the qdiscs 1000 Mbit/s, with them 990 Mbit/s, 1.00% apart" -- throughput
 grep -q '"without_mbps":1000,"with_mbps":990' "$work/state/throughput.json" || { echo "FAIL: throughput.json"; failures=$((failures + 1)); }
-[ -f "$FIX/applied-container_c-ingot" ] || { echo "FAIL: throughput left the qdiscs cleared"; failures=$((failures + 1)); }
+[ "$(grep -c "^container:c-upload iperf $(ip_of minio) " "$FIX/log")" -eq 2 ] ||
+  { echo "FAIL: throughput did not run iperf3 from upload to minio twice"; grep iperf "$FIX/log"; failures=$((failures + 1)); }
+[ -f "$FIX/applied-container_c-upload" ] || { echo "FAIL: throughput left the qdiscs cleared"; failures=$((failures + 1)); }
 printf '1000\n900\n' >"$FIX/iperf"
 expect 1 "throughput 10% apart fails" "differs by more than 5%" -- throughput
 

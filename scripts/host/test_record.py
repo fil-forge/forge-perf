@@ -678,16 +678,16 @@ class NetemLines(unittest.TestCase):
     def test_each_documented_line(self):
         cases = {
             "harness error: docker inspect failed": ("runner_error", None),
-            "upload restarted after apply (a node loses its qdisc)": ("container_restarted", "upload"),
+            "upload restarted after apply (a central container loses its qdisc)": ("container_restarted", "upload"),
             "upload address changed from 172.30.0.12 to 172.30.0.19; the filters no longer match it":
                 ("central_ip_changed", None),
             "hilt: container 0123abcd is gone": ("container_restarted", "hilt"),
             "ingot is not running; its round trips were not measured": ("container_restarted", "ingot"),
             "piri-0: die event after apply": ("container_restarted", "piri-0"),
-            "piri-0: cannot read its qdiscs": ("netem_missing", None),
-            "ingot: no prio root qdisc": ("netem_missing", None),
-            "ingot: netem delay is not 15 ms": ("netem_missing", None),
-            "ingot: filters do not match the central addresses recorded at apply": ("netem_missing", None),
+            "hilt: cannot read its qdiscs": ("netem_missing", None),
+            "upload: no prio root qdisc": ("netem_missing", None),
+            "upload: netem delay is not 15 ms": ("netem_missing", None),
+            "upload: filters do not match the node addresses recorded at apply": ("netem_missing", None),
             "no reply from upload to ingot": ("rtt_out_of_band", None),
             "no TCP connection from ingot to upload:80": ("rtt_out_of_band", None),
             "ingot -> upload median round trip 18.2 ms is outside 13.5-16.5 ms": ("rtt_out_of_band", None),
