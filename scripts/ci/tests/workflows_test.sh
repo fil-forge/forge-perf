@@ -62,3 +62,11 @@ if [ "$(echo "$refs" | wc -l | tr -d ' ')" != 1 ] || ! echo "$refs" | grep -q "r
 fi
 [ "$(echo "$refs" | awk '{ print $1 }')" -ge 5 ] || { echo "FAIL: fewer than five forge-perf checkouts: $refs" >&2; exit 1; }
 echo "ok: pr-run.yml checks forge-perf out at its own commit"
+
+# Comments and reactions go through the issues API, which issues: write
+# covers; the one pull request call reads it. No job may ask for more.
+if grep -nE '^\s*pull-requests:\s*write' "$pr_run"; then
+  echo "FAIL: pr-run.yml asks for pull-requests: write" >&2
+  exit 1
+fi
+echo "ok: pr-run.yml only reads pull requests"

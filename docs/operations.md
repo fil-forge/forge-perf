@@ -415,13 +415,13 @@ jobs:
        startsWith(github.event.comment.body, fromJSON('"/forge-perf\n"'))) &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     uses: fil-forge/forge-perf/.github/workflows/pr-run.yml@<forge-perf commit, 40 hex> # main
-    permissions: {contents: read, packages: write, pull-requests: write, issues: write, id-token: write}
+    permissions: {contents: read, packages: write, pull-requests: read, issues: write, id-token: write}
     with: {service: <repo>, dockerfile: Dockerfile, target: prod}
 ```
 
 The inputs are `service` (the repository's name, which the workflow checks), `dockerfile` and `context` (paths from the repository root, `Dockerfile` and `.` by default), `target` (empty for the last stage) and `build-args`, one `NAME=value` per line. In `build-args`, `{commit}`, `{sha7}`, `{pr}` and `{tag}` become the head commit, its first seven characters, the pull request number and the image tag, since the caller's own `github.sha` is main's on a comment. The build must produce the flavour `config/images.tracked` follows: the prod target for ingot, sprue, hilt and swarf, `Dockerfile.dev` for guppy, the plain Dockerfile for the rest. The `if` starts a run only for a comment that begins with `/forge-perf`, alone or followed by a space, tab or line break, so a comment such as `/forge-performance` starts nothing. The role `forge-perf-ci-request` trusts the main branch of ingot, piri, sprue and hilt, where comment-triggered workflows run. Another repository needs its entry in `request_repositories` in `terraform/envs/bootstrap/account/main.tf`, applied, before its comments can file a request.
 
-The build job runs the branch's Dockerfile with `packages: write` and no AWS access. The request and wait jobs hold the role, and run only forge-perf's `scripts/ci/pr_run.py`. Every job checks it out at `job.workflow_sha`, the commit the caller pins. That role can write `requests/*` and read `status/*`, and nothing else.
+The workflow reads the pull request and writes its comment and reaction through the issues API, so it needs `pull-requests: read` and `issues: write`. The build job runs the branch's Dockerfile with `packages: write` and no AWS access. The request and wait jobs hold the role, and run only forge-perf's `scripts/ci/pr_run.py`. Every job checks it out at `job.workflow_sha`, the commit the caller pins. That role can write `requests/*` and read `status/*`, and nothing else.
 
 **Moving the pin.** A change to `pr-run.yml` or `scripts/ci/pr_run.py` reaches a repository when its `forge-perf.yml` names a newer forge-perf commit, through a pull request in that repository. Until then a forge-perf change cannot run with that repository's `packages: write`, which covers every tag of its image. forge-perf has no release tags, so Dependabot leaves the pin alone.
 
