@@ -22,6 +22,10 @@ case "${2:-}" in
 esac
 TIMEOUT_SECONDS=25200
 WAIT_SECONDS="${HOLD_WAIT_SECONDS:-$((TIMEOUT_SECONDS + 60))}"
+# A command still Pending after this long is taken for one sent to a box that
+# was powering off to sleep: EC2 and Session Manager go on reporting such a box
+# as up for a moment. Waking the box again lets the command be delivered.
+REWAKE_SECONDS="${BOX_PENDING_REWAKE_SECONDS:-60}"
 POLL_SECONDS="${HOLD_POLL_SECONDS:-15}"
 
 require aws
@@ -34,6 +38,7 @@ COMMAND_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_
 echo "status.sh ${command[*]} on box '$BOX' ($INSTANCE_ID), command $COMMAND_ID" >&2
 
 deadline=$((SECONDS + WAIT_SECONDS))
+rewake_at=$((SECONDS + REWAKE_SECONDS))
 while :; do
   status="$(aws ssm get-command-invocation --region "$REGION" \
     --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
@@ -43,6 +48,10 @@ while :; do
     *) break ;;
   esac
   [ "$SECONDS" -lt "$deadline" ] || die "still $status after ${WAIT_SECONDS}s; command $COMMAND_ID"
+  if [ "$status" = Pending ] && [ "$SECONDS" -ge "$rewake_at" ]; then
+    box_wake "$BOX" >/dev/null
+    rewake_at=$((SECONDS + REWAKE_SECONDS))
+  fi
   sleep "$POLL_SECONDS"
 done
 

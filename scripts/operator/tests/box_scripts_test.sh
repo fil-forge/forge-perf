@@ -16,11 +16,14 @@ mkdir -p "$work/bin"
 export LOG="$work/calls" WORK="$work"
 
 # Arguments one per line, a blank line between calls. describe-instances
-# prints the IDs in $WORK/instances; every instance is in the state on the
-# first line of $WORK/states. A file of answers ($WORK/states, $WORK/pings,
-# $WORK/statuses) is walked one line per call, then repeats the last: states
-# by each lookup that asks for the state, pings by describe-instance-information
-# and statuses by get-command-invocation.
+# prints the IDs in $WORK/instances. A file of answers ($WORK/states,
+# $WORK/pings, $WORK/statuses) is walked one line per call, then repeats the
+# last: states by each lookup that asks for the state, pings by
+# describe-instance-information and statuses by get-command-invocation. Every
+# instance is in the state the last such lookup gave, and carries the
+# ExpiresAt tag in $WORK/expires, None when the file is missing.
+# describe-instance-information fails with the message in $WORK/ping-fails
+# when that file exists.
 cat >"$work/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" "" >>"$LOG"
@@ -32,14 +35,21 @@ case "$1 $2" in
   "ec2 describe-instances")
     case " $* " in
       *" Name=instance-state-name,Values=running "*)
-        [ "$(head -1 "$WORK/states")" != running ] || cat "$WORK/instances" ;;
+        [ "$(cat "$WORK/state-now" 2>/dev/null || head -1 "$WORK/states")" != running ] || cat "$WORK/instances" ;;
       *)
         state="$(walk "$WORK/states")"
-        for id in $(cat "$WORK/instances"); do printf '%s\t%s\n' "$id" "$state"; done ;;
+        echo "$state" >"$WORK/state-now"
+        expires="$(cat "$WORK/expires" 2>/dev/null || echo None)"
+        for id in $(cat "$WORK/instances"); do printf '%s\t%s\t%s\n' "$id" "$state" "$expires"; done ;;
     esac ;;
   "ec2 start-instances") [ ! -e "$WORK/start-fails" ] || exit 254 ;;
   "ec2 describe-images") echo "ami-0abc1234567890def	ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-20261001	2026-10-01T00:00:00.000Z" ;;
-  "ssm describe-instance-information") walk "$WORK/pings" ;;
+  "ssm describe-instance-information")
+    if [ -e "$WORK/ping-fails" ]; then
+      printf '\n%s\n' "$(cat "$WORK/ping-fails")" >&2
+      exit 254
+    fi
+    walk "$WORK/pings" ;;
   "ssm start-session") echo "session started" ;;
   "ssm send-command") echo cmd-0test ;;
   "ssm get-command-invocation")
@@ -71,6 +81,7 @@ calls() { grep -cxF -- "$1" "$LOG" || true; }
 # once it is running, one per check.
 box() {
   printf '%s\n' "$@" >"$work/states"
+  rm -f "$work/state-now"
   echo Online >"$work/pings"
 }
 
@@ -96,6 +107,7 @@ if run 0 "box-update main" bash "$dir/box-update.sh" main; then
   asked "AWS-RunShellScript" && asked 'commands=["/opt/forge-perf/scripts/host/update.sh"],executionTimeout=["1800"]' &&
     asked "i-0main" && grep -q "=== updated ===" "$work/out" &&
     [ "$(grep -c '^get-command-invocation$' "$LOG")" -eq 4 ] &&
+    [ "$(calls describe-instances)" -eq 2 ] &&
     echo "ok: box-update.sh runs update.sh on main, waits for it and prints its output" || fail "box-update: calls"
 fi
 printf 'InProgress\nFailed\n' >"$work/statuses"
@@ -143,6 +155,19 @@ run 1 "a box that never comes online" env BOX_WAKE_WAIT_SECONDS=0 bash "$dir/box
   grep -q "box 'main' (i-0main) is running but not online in Session Manager after 0s" "$work/out" &&
   [ "$(calls send-command)" -eq 0 ] &&
   echo "ok: a box that never reaches SSM Online is an error and nothing is sent" || fail "never online"
+box stopped stopped stopped pending running
+run 0 "a box EC2 still calls stopped after the start" bash "$dir/wake.sh" main &&
+  [ "$(calls start-instances)" -eq 1 ] && [ "$(tail -1 "$work/out")" = i-0main ] &&
+  echo "ok: a box still reported stopped after the start is not started twice" || fail "wake: started twice"
+grep -q 'wait="${BOX_WAKE_WAIT_SECONDS:-600}"' "$dir/lib.sh" &&
+  echo "ok: the wait for a box to come up is 10 minutes unless overridden" || fail "wake: default wait"
+box running
+echo "An error occurred (AccessDeniedException) when calling the DescribeInstanceInformation operation" >"$work/ping-fails"
+run 1 "a ping check that fails" env BOX_WAKE_WAIT_SECONDS=0 bash "$dir/wake.sh" main &&
+  grep -q "^ERROR: box 'main' (i-0main) is running, and its Session Manager status could not be read: An error occurred (AccessDeniedException).* after 0s" "$work/out" &&
+  echo "ok: a Session Manager check that fails is reported with AWS's error" || fail "ping fails"
+rm "$work/ping-fails"
+
 box stopped
 run 1 "a box that never starts" env BOX_WAKE_WAIT_SECONDS=0 bash "$dir/wake.sh" main &&
   grep -q "box 'main' (i-0main) is stopped after 0s" "$work/out" && ! grep -qx i-0main "$work/out" &&
@@ -167,6 +192,30 @@ run 1 "wake a malformed box name" bash "$dir/wake.sh" 'main;x' && ! grep -q desc
 run 1 "wake with no box name" bash "$dir/wake.sh" && grep -q "usage: wake.sh <box>" "$work/out" &&
   echo "ok: wake.sh wants a box name" || fail "wake: usage"
 
+# A box with ExpiresAt (campaign, scratch) powers off for good: its campaign
+# unit would resume the runs at boot. It is reached while it is up and never
+# started.
+echo i-0main >"$work/instances"
+echo 2026-10-01T00:00:00Z >"$work/expires"
+for script in wake.sh ssm-session.sh box-update.sh "hold.sh on"; do
+  box stopped pending running
+  # shellcheck disable=SC2086  # "hold.sh on" is a script and its argument
+  set -- $script
+  run 1 "$1 on a stopped campaign box" bash "$dir/$1" campaign ${2:+"$2"} &&
+    grep -q "^ERROR: box 'campaign' (i-0main) is stopped; it powered off when its runs ended or at its ExpiresAt, and only a box that sleeps is woken" "$work/out" &&
+    [ "$(calls start-instances)" -eq 0 ] && [ "$(calls start-session)" -eq 0 ] && [ "$(calls send-command)" -eq 0 ] &&
+    echo "ok: $1 does not start a stopped box that carries ExpiresAt" || fail "$1: stopped campaign box"
+done
+box stopping stopped
+run 1 "wake a campaign box that is powering off" env BOX_WAKE_WAIT_SECONDS=2 bash "$dir/wake.sh" campaign &&
+  grep -q "is stopped; it powered off" "$work/out" && [ "$(calls start-instances)" -eq 0 ] &&
+  echo "ok: a box with ExpiresAt that is stopping is not started once it has stopped" || fail "wake: stopping campaign box"
+box running
+run 0 "ssm-session on a running campaign box" bash "$dir/ssm-session.sh" campaign &&
+  [ "$(calls start-instances)" -eq 0 ] && asked "start-session" &&
+  echo "ok: a running box with ExpiresAt is reached as before" || fail "ssm-session: running campaign box"
+rm "$work/expires"
+
 # The scripts that reach a box wake it first.
 echo i-0main >"$work/instances"
 box stopped pending running
@@ -190,6 +239,30 @@ if run 0 "hold on a sleeping box" bash "$dir/hold.sh" main on; then
     asked 'commands=["/opt/forge-perf/scripts/host/status.sh hold --wait-idle"],executionTimeout=["25200"]' &&
     asked "i-0main" && [ "$(calls get-command-invocation)" -eq 3 ] &&
     echo "ok: hold.sh on wakes a sleeping box, sets the hold and waits for it" || fail "hold on: sleeping"
+fi
+# A box that went to sleep just after it was found: Run Command accepts the
+# command and it stays Pending until the box is up again.
+box running stopped pending running
+printf 'Pending\nPending\nSuccess\n' >"$work/statuses"
+if run 0 "box-update on a box that slept under the command" env BOX_PENDING_REWAKE_SECONDS=0 bash "$dir/box-update.sh" main; then
+  [ "$(calls start-instances)" -eq 1 ] && [ "$(calls send-command)" -eq 1 ] &&
+    [ "$(sed '/^start-instances$/q' "$LOG" | grep -c '^send-command$')" -eq 1 ] &&
+    grep -q "=== updated ===" "$work/out" &&
+    echo "ok: box-update.sh wakes a box again when its command stays Pending" || fail "box-update: pending"
+fi
+box running stopped pending running
+printf 'Pending\nPending\nSuccess\n' >"$work/statuses"
+if run 0 "hold on a box that slept under the command" env BOX_PENDING_REWAKE_SECONDS=0 bash "$dir/hold.sh" main on; then
+  [ "$(calls start-instances)" -eq 1 ] && [ "$(calls send-command)" -eq 1 ] &&
+    [ "$(sed '/^start-instances$/q' "$LOG" | grep -c '^send-command$')" -eq 1 ] &&
+    echo "ok: hold.sh wakes a box again when its command stays Pending" || fail "hold: pending"
+fi
+box stopped pending running
+echo Success >"$work/statuses"
+if run 0 "hold off on a sleeping box" bash "$dir/hold.sh" main off; then
+  [ "$(calls start-instances)" -eq 1 ] &&
+    asked 'commands=["/opt/forge-perf/scripts/host/status.sh release"],executionTimeout=["25200"]' &&
+    echo "ok: hold.sh off wakes a sleeping box too, then releases the hold" || fail "hold off: sleeping"
 fi
 box running
 echo Success >"$work/statuses"
