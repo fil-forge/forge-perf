@@ -172,10 +172,11 @@ Every pass ends by writing `s3://$FORGE_PERF_RESULTS_BUCKET/published/<box>/hear
 ```json
 {"box": "main", "at": "2026-09-26T06:00:09Z", "forge_perf_sha": "<40-hex>", "state": "running",
  "run_id": "main-20260926t055512z", "run_started_at": "2026-09-26T05:55:12Z",
- "pending_kind": "trigger", "poll_failures": 0, "experiments_queued": 0}
+ "pending_kind": "trigger", "poll_failures": 0, "experiments_queued": 0,
+ "seen_keys": ["<64-hex>"], "wake_at": null}
 ```
 
-`state` is `running` during a run, else `held` while the hold exists, else `idle`. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. `experiments_queued` counts the checked requests waiting, the one going excluded. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
+`state` is `running` during a run, else `held` while the hold exists, else `idle`, or `asleep` in the last heartbeat before the box powers itself off ([Sleeping](#sleeping)). `seen_keys` and `wake_at` are for the waker and are described there. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. `experiments_queued` counts the checked requests waiting, the one going excluded. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
 
 ### Holds and status
 
@@ -187,6 +188,31 @@ scripts/operator/hold.sh <box> on|off       # the same over SSM; `on` waits for 
 ```
 
 The hold is a file on the root volume, so it survives a reboot. It stops dispatch and updates; a run already going finishes, and pending sets keep coalescing, so the newest one starts after `release`. A pass reads the hold after it resolves the set, just before it would dispatch, and `run.sh` reads it again under `poll.lock` before it takes `pending.json`, leaving the file in place when the box is held. `hold --wait-idle` waits for `poll.lock` once before it checks for a run, so a pass that decided to start a run before the hold has either started it, which then counts as going, or finished.
+
+## Sleeping
+
+With `SLEEP_WHEN_IDLE=1` in `config/launch.conf`, the persistent box powers itself off at the end of a pass that finds nothing to do, and a waker in AWS starts it again. The default is 0, and the box stays on. A powered-off instance is stopped: the root volume, with the state files and the outbox, is kept, and the NVMe and `/run` are blank at the next boot, as after any stop. A campaign box never runs `poll.sh` and is unaffected.
+
+A pass puts the box to sleep only when every row holds. The first row that fails is logged as `poll: staying up: <reason>`.
+
+| Condition | Why |
+|---|---|
+| `SLEEP_WHEN_IDLE=1` | |
+| the pass reached its last branch, the one that only flushes the outbox, and no run is going when the pass ends | no run or experiment is going, the box is not held, and the pass started no update, run or experiment |
+| the set resolved and the requests bucket was listed, both this pass | otherwise the box does not know whether there is work |
+| `state/pending.json` does not exist | a retry waiting for its `not_before`, or a run waiting for a settings file, keeps the box up |
+| `state/experiment.json` does not exist, and no experiment is queued, or the queued ones wait only for the daily count | an experiment whose last status has not gone up is still owed to its requester; between 02:30 and 03:30 UTC a queued experiment keeps the box up |
+| the outbox is empty, and neither `forge-perf-outbox` nor `forge-perf-update` is active | a poweroff would cut the upload or the provision |
+| the box has been up `SLEEP_MIN_AWAKE_S` seconds (600) | a box woken at 02:55 UTC is still up when the nightly timer fires at 03:00 |
+| `state/hold` does not exist, read again at this point | `status.sh hold` does not wait for the pass, so a hold can arrive after the pass read it |
+
+The pass then writes the heartbeat with `state: asleep`, `run_id` and `run_started_at` null, `poll_failures` 0 and a `wake_at`, logs `poll: idle; asleep until <wake_at>`, and runs `systemctl poweroff`. It still holds `poll.lock`, so no run starts in between. When the heartbeat does not go up the box stays on and the pass exits 1: the waker starts only a box whose heartbeat says `asleep`. In skip mode the poweroff is logged and not run.
+
+`wake_at` is an RFC 3339 UTC time to the second, and null in every other state. It is the earlier of the next 02:55:00 UTC, five minutes before the nightly timer, and 00:01:00 UTC tomorrow when queued experiments wait for the daily count. The nightly timer is `Persistent=true`, so a box that boots after 03:00 runs the nightly pass once at that boot.
+
+**The waker key.** The waker also starts the box when the set changed, and it cannot look up the harness head, which is in a private repository. So it compares sets by a key without the harness: the bytes `jq -cS '{smelt, images}'` prints, without the trailing newline, hashed with SHA-256 and written as lowercase hex. Every heartbeat, in every state, carries `seen_keys`: the distinct hashes of the sets in `last-started.json`, `pending.json` and `pending.json.rejected`, or `[]` when none exists. Those are the sets a pass compares a resolved set with ([The decision](#the-decision)), so a set that failed, or that `run.sh` rejected, does not wake the box again. A harness change alone wakes nothing; the next pass on a box that is up picks it up, as does the nightly run. `calibration/sets/rebaseline-1.json` hashes to `fcc24b38e5e7d98d5194106d971053bdcd015e3ba3cea03c4ec7dffa7dcf203c`, which the tests of both sides assert.
+
+A held box never sleeps, so `scripts/operator/hold.sh <box> on` is how an operator keeps it up.
 
 ## A run
 
@@ -262,7 +288,7 @@ Exit status 0 means the run was recorded and wiped, whatever its class, or reach
 | `config/smelt.conf` | `SMELT_REPO`; `SMELT_REF`, a smelt commit to hold runs at (empty: smelt main); `MANIFEST_NAME` |
 | `config/smelt-manifest.yml.tmpl` | one piri node on Postgres with its blobs in S3; `@ENDPOINT@`, `@BUCKET_PREFIX@` and `@INSECURE@` come from `config/piri-s3.env` and `box.conf` |
 | `config/settings/<instance type>.env` | `BOX_TIER`, `BASELINE_BYTES_PER_S`, the size and duration per kind of run, one smelt variable per drill flag, and `TRACE_RATIO`; `WORKERS` stays empty until calibration freezes it |
-| `config/launch.conf` | `SERIES_LIVE` |
+| `config/launch.conf` | `SERIES_LIVE` (`poll.sh` reads `SLEEP_WHEN_IDLE` and `SLEEP_MIN_AWAKE_S` from it) |
 
 Every image variable is exported as `<repo>@sha256:<digest>`, so each compose call of the run, smelt's scripts included, sees the same images. `run.sh` also exports `PIRI_INDEXER=off`, empty `SPRUE_INDEXER_ENDPOINT` and `SPRUE_INDEXER_DID`, `SMELT_WORKSPACE=0`, `SMELT_MANIFEST`, piri's key as `SMELT_PIRI_S3_ACCESS_KEY_ID` and `SMELT_PIRI_S3_SECRET_ACCESS_KEY`, and `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` under `/run/forge-perf/aws`, where `s3-key.sh` writes the drill's key. `AWS_REGION` is the box's region (`FORGE_PERF_REGION`, default `us-east-2`) for the host's own calls; smelt's scripts run without it and without any `AWS_ENDPOINT_URL` or `AWS_ACCESS_KEY_ID`, since the drill's profile carries ingot's own. On the box Go uses `GOCACHE` and `GOMODCACHE` under `/var/cache/forge-perf/go` with `GOTOOLCHAIN=local`.
 

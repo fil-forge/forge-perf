@@ -22,7 +22,9 @@
 #      otherwise starts the pending run, else the oldest queued experiment
 #      when the start rules allow, or flushes the outbox when nothing can
 #      start;
-#   6. writes the heartbeat to published/<box>/heartbeat.json.
+#   6. writes the heartbeat to published/<box>/heartbeat.json;
+#   7. with SLEEP_WHEN_IDLE=1 and nothing left to do, says so in that
+#      heartbeat and powers the box off (docs/runner.md, "Sleeping").
 #
 # Exit status 1 when the set could not be resolved, update.sh failed, or the
 # heartbeat did not go up; the pass still does everything else.
@@ -64,6 +66,8 @@ fi
 . "$cfg/harness.conf"
 # shellcheck source=../../config/smelt.conf
 . "$cfg/smelt.conf"
+# shellcheck source=../../config/launch.conf
+. "$cfg/launch.conf"
 INFRA_REASONS="image_pull_failed secrets_unavailable s3_unreachable mirror_fetch_failed go_module_fetch_failed"
 RETRIES=3 RETRY_AFTER=900
 bucket="${FORGE_PERF_RESULTS_BUCKET:-forge-perf-results-654654381893}"
@@ -83,6 +87,9 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # The trigger key of the set on stdin: the inputs a change of which starts a run.
 key() { jq -cS '{smelt, harness: .harness.sha, images}'; }
 same_key() { [ -e "$1" ] && [ "$(jq '.set // .' "$1" | key)" = "$(key <<<"$2")" ]; }
+# The waker key hash of the set on stdin. The waker cannot look up the harness
+# head, so its key leaves the harness out (docs/runner.md, "Sleeping").
+waker_key() { jq -cSj '{smelt, images}' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1; }
 put() { write_durable "$state/$1"; }
 
 # --- 1. the last run ---------------------------------------------------------------
@@ -296,8 +303,9 @@ settle_experiment() {
 
 # requests: list requests/ oldest first, check up to NEW_REQUESTS_PER_PASS
 # new ones, and send each queued request its position. `queued` holds their
-# IDs in that order. A queue entry whose object is gone is dropped.
-queued=()
+# IDs in that order, and `listed_ok` is set once the bucket answered. A queue
+# entry whose object is gone is dropped.
+queued=() listed_ok=""
 requests() {
   local listing key id size running="" position=0 checked=0 listed=" " f
   for f in "$unsent"/*.json; do
@@ -309,6 +317,7 @@ requests() {
   done
   listing="$(limited aws s3api list-objects-v2 --bucket "$(requests_bucket)" --prefix requests/ --output json)" ||
     { echo "poll: cannot list the requests bucket; the queue waits" >&2; return 0; }
+  listed_ok=1
   [ ! -e "$state/experiment.json" ] || running="$(jq -r '.id // ""' "$state/experiment.json")"
   while IFS=$'\t' read -r key size; do
     [ -n "$key" ] || continue
@@ -423,7 +432,9 @@ ready() {
 # live is pending, the time is outside 02:30 to
 # 03:30 UTC around the nightly run, fewer than EXPERIMENTS_PER_DAY started
 # this UTC day, and no outbox flush is uploading. The caller has already
-# found the box free, not held and not updating.
+# found the box free, not held and not updating. `capped` is set when the
+# daily count alone keeps the queue waiting.
+capped=""
 experiment_ready() {
   local hm n
   [ "${#queued[@]}" -gt 0 ] || return 1
@@ -441,6 +452,7 @@ experiment_ready() {
   n="$(grep -c "^$(date -u +%F) " "$started_log" 2>/dev/null || true)"
   if [ "${n:-0}" -ge "$EXPERIMENTS_PER_DAY" ]; then
     echo "poll: $n experiments started today (UTC); the queue waits for tomorrow"
+    capped=1
     return 1
   fi
   if ! host_ops_skipped && systemctl is-active --quiet forge-perf-outbox.service; then
@@ -486,7 +498,9 @@ dispatch() {
 
 # --- the pass ------------------------------------------------------------------------------
 
-active="" held="" resolved_ok=""
+# `busy` says what kept the pass out of its last branch, the one that only
+# flushes the outbox.
+active="" held="" resolved_ok="" busy=""
 ! run_active || active=1
 if [ -z "$active" ]; then
   settle_last_run
@@ -517,15 +531,19 @@ requests
 [ ! -e "$state/hold" ] || held=1
 if [ -n "$active" ]; then
   echo "poll: a run is going; the pending run starts after it"
+  busy="a run is going"
 elif [ -n "$held" ]; then
   echo "poll: the box is held; nothing starts (scripts/host/status.sh release)"
   flush
+  busy="the box is held"
 elif update; then
-  :
+  busy="update.sh is starting or still going"
 elif ready; then
   dispatch
+  busy="a run is pending"
 elif experiment_ready; then
   start_experiment
+  busy="an experiment started"
 else
   flush
 fi
@@ -534,9 +552,72 @@ fi
   update_failures=0
 echo "$update_failures" | put update-failures
 
-# --- 6. the heartbeat --------------------------------------------------------------------
+# --- 6. the heartbeat, 7. sleep -----------------------------------------------------------
 
-run_id=null started=null box_state=idle
+# seen_keys: the distinct waker key hashes of the sets this box counts as
+# seen, which are the ones want() compares a resolved set with.
+seen_keys() {
+  local f set
+  for f in last-started.json pending.json pending.json.rejected; do
+    set="$(jq -c '.set // .' "$state/$f" 2>/dev/null)" || continue
+    waker_key <<<"$set"
+  done | jq -Rn '[inputs] | unique'
+}
+
+# uptime_s: seconds since boot. FORGE_PERF_UPTIME_S stands in for the tests.
+uptime_s() {
+  if [ -n "${FORGE_PERF_UPTIME_S:-}" ]; then
+    echo "$FORGE_PERF_UPTIME_S"
+  else
+    cut -d. -f1 /proc/uptime
+  fi
+}
+
+# awake_reason: the first reason the box stays up, or nothing when it may
+# sleep (docs/runner.md, "Sleeping"). The run and the hold are read again
+# here: both can have changed since the pass chose its branch.
+awake_reason() {
+  local unit up
+  [ "${SLEEP_WHEN_IDLE:-0}" = 1 ] || { echo "SLEEP_WHEN_IDLE is 0"; return 0; }
+  [ -z "$busy" ] || { echo "$busy"; return 0; }
+  ! run_active || { echo "a run is going"; return 0; }
+  [ -n "$resolved_ok" ] || { echo "the set did not resolve this pass"; return 0; }
+  [ -n "$listed_ok" ] || { echo "the requests bucket could not be listed this pass"; return 0; }
+  [ ! -e "$state/pending.json" ] || { echo "a run is pending"; return 0; }
+  [ ! -e "$state/experiment.json" ] || { echo "an experiment is not settled"; return 0; }
+  # Queued experiments that wait only for tomorrow's count let the box sleep
+  # until then (wake_time).
+  [ "${#queued[@]}" -eq 0 ] || [ -n "$capped" ] || { echo "an experiment is queued"; return 0; }
+  [ -z "$(ls -A "$FORGE_PERF_OUTBOX" 2>/dev/null)" ] || { echo "the outbox holds files"; return 0; }
+  for unit in forge-perf-outbox forge-perf-update; do
+    if ! host_ops_skipped && systemctl is-active --quiet "$unit.service"; then
+      echo "$unit is going"
+      return 0
+    fi
+  done
+  up="$(uptime_s 2>/dev/null)" || up=""
+  if [[ ! "$up" =~ ^[0-9]+$ ]]; then
+    echo "the uptime is unknown"
+  elif [ "$up" -lt "${SLEEP_MIN_AWAKE_S:-600}" ]; then
+    echo "up $up s, under SLEEP_MIN_AWAKE_S (${SLEEP_MIN_AWAKE_S:-600})"
+  elif [ -e "$state/hold" ]; then
+    echo "the box is held"
+  fi
+}
+
+# wake_time: when the waker starts a sleeping box again whatever else it
+# sees: the next 02:55 UTC, five minutes before the nightly timer, or 00:01
+# UTC tomorrow when queued experiments wait for the daily count, whichever is
+# first. FORGE_PERF_UTC_EPOCH stands in for the clock in the tests.
+wake_time() {
+  jq -rn --argjson now "${FORGE_PERF_UTC_EPOCH:-$(date -u +%s)}" \
+    --argjson capped "$([ -n "$capped" ] && echo true || echo false)" '
+    ($now - $now % 86400) as $day | ($day + 2 * 3600 + 55 * 60) as $nightly |
+    [(if $nightly > $now then $nightly else $nightly + 86400 end), (if $capped then $day + 86400 + 60 else empty end)]
+    | min | todate'
+}
+
+run_id=null started=null box_state=idle wake_at=""
 [ ! -e "$state/hold" ] || box_state=held
 [ -z "$active" ] || box_state=running
 if [ -n "$active" ] && [ -e "$state/current.json" ]; then
@@ -544,16 +625,30 @@ if [ -n "$active" ] && [ -e "$state/current.json" ]; then
   started="$(jq -c --argjson id "$run_id" 'if .run_id == $id then .time.run_started_at else null end' \
     "$state/runner.json" 2>/dev/null || echo null)"
 fi
+poll_failures=$((failures + update_failures))
+awake="$(awake_reason)"
+if [ -z "$awake" ]; then
+  box_state=asleep poll_failures=0 wake_at="$(wake_time)"
+fi
 jq -n --arg box "$FORGE_PERF_BOX_ID" --arg at "$(now)" --arg sha "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" \
   --arg state "$box_state" \
-  --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$((failures + update_failures))" \
+  --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$poll_failures" \
   --argjson kind "$(jq -c '.kind // null' "$state/pending.json" 2>/dev/null || echo null)" \
-  --argjson queued "${#queued[@]}" \
+  --argjson queued "${#queued[@]}" --argjson seen "$(seen_keys)" --arg wake "$wake_at" \
   '{box: $box, at: $at, forge_perf_sha: $sha, state: $state, run_id: $run_id, run_started_at: $started,
-    pending_kind: $kind, poll_failures: $failures, experiments_queued: $queued}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
+    pending_kind: $kind, poll_failures: $failures, experiments_queued: $queued, seen_keys: $seen,
+    wake_at: (if $wake == "" then null else $wake end)}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
 if ! limited aws s3api put-object --bucket "$bucket" --key "published/$FORGE_PERF_BOX_ID/heartbeat.json" \
   --body "$FORGE_PERF_RUNTIME/heartbeat.json" --content-type application/json >/dev/null; then
   echo "poll: the heartbeat did not go up" >&2
   status=1
+  # The waker starts only a box whose heartbeat says asleep.
+  [ -n "$awake" ] || awake="the heartbeat did not go up"
+fi
+if [ -n "$awake" ]; then
+  echo "poll: staying up: $awake"
+else
+  echo "poll: idle; asleep until $wake_at"
+  host_op systemctl poweroff
 fi
 exit "$status"
