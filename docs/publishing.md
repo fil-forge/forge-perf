@@ -5,12 +5,12 @@ The box writes run records to a private bucket. `.github/workflows/publish.yml` 
 ```
 box ──► s3://forge-perf-results-654654381893/published/<box>/<run_id>.json   one record per run
     └─► s3://forge-perf-results-654654381893/published/<box>/heartbeat.json  written by every poll
-publish.yml, at minutes 7, 22, 37 and 52, one run at a time
+publish.yml, dispatched when a record lands, and at minutes 7, 22, 37 and 52, one run at a time
     ingest  (role forge-perf-ci-results)  check, commit to results, post alerts
     deploy  (environment github-pages)    build _site from site/, data/ and results; deploy Pages
 ```
 
-A push to main that touches the site, the schemas, `data/` or these scripts also runs the workflow. Runs share the concurrency group `publish` without cancelling, so a second run waits for the first to finish its commit.
+A new record dispatches the workflow through EventBridge within a minute or two ([operations.md](operations.md#publishing-on-each-record)). GitHub starts the schedule hours late, so it serves as the fallback. A push to main that touches the site, the schemas, `data/` or these scripts also runs the workflow. Runs share the concurrency group `publish` without cancelling, so a second run waits for the first to finish its commit.
 
 ## The results branch
 

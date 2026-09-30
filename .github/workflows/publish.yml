@@ -7,6 +7,10 @@
 # environment presents an environment OIDC subject, which the results role
 # does not trust. Runs never overlap, and a queued run waits rather than
 # cancelling one half-way through a commit.
+#
+# Each new record in the results bucket dispatches this workflow through
+# EventBridge (terraform/envs/bootstrap/account, "Publishing on each record").
+# GitHub starts the schedule hours late, so it is the fallback.
 
 name: publish
 

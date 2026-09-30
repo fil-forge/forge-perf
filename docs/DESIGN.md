@@ -177,7 +177,7 @@ smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data`
 
 ## 7. Results and the page
 
-Raw run data stays in a private bucket. The public record carries a fixed allowlist: rates, counts, outcome class, settings, measured round trips, box facts, full SHAs and image digests. A scheduled Action reads records through an OIDC role, commits them to the `results` branch and deploys GitHub Pages, so the box holds no GitHub write credential and no Slack credential.
+Raw run data stays in a private bucket. The public record carries a fixed allowlist: rates, counts, outcome class, settings, measured round trips, box facts, full SHAs and image digests. An Action reads records through an OIDC role, commits them to the `results` branch and deploys GitHub Pages, so the box holds no GitHub write credential and no Slack credential. Each new record dispatches it through EventBridge, whose connection holds the only GitHub token, and a schedule catches anything missed.
 
 ```
 box ──► s3://forge-perf-results-654654381893/raw/<box>/<run_id>/raw.tar.zst   private

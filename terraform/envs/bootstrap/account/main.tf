@@ -1,6 +1,7 @@
 # Bootstrap for the dev account: the state bucket every other root in this
 # repository keeps its state in, the roles GitHub Actions assumes, the results
-# bucket, piri's IAM user and the cost budget.
+# bucket and the dispatch that publishes each record, piri's IAM user and the
+# cost budget.
 #
 # It lives in its own root because of a chicken-and-egg problem. The bucket is
 # what every other root's backend points at, so it cannot be created by an
@@ -237,6 +238,127 @@ resource "aws_s3_bucket_policy" "results" {
   bucket     = aws_s3_bucket.results.id
   policy     = data.aws_iam_policy_document.results_bucket.json
   depends_on = [aws_s3_bucket_public_access_block.results]
+}
+
+# ---------------------------------------------------------------------------
+# Publishing on each record.
+#
+# GitHub starts publish.yml's schedule hours late, so a record landing in
+# published/<box>/ dispatches publish.yml at once. The bucket sends its events
+# to EventBridge, a rule keeps run records (published/<box>/<run_id>.json, never
+# heartbeat.json), and an API destination posts the dispatch to GitHub. The
+# schedule stays as the fallback.
+#
+# The GitHub token lives in the EventBridge connection, which this root creates
+# with a placeholder. An operator sets the token by hand (docs/operations.md,
+# "Publishing on each record"), so it never reaches this file or its state, and
+# the box still holds no GitHub credential.
+
+resource "aws_s3_bucket_notification" "results" {
+  bucket      = aws_s3_bucket.results.id
+  eventbridge = true
+}
+
+resource "aws_cloudwatch_event_rule" "record_published" {
+  name        = "forge-perf-record-published"
+  description = "A run record landed in published/<box>/ of the results bucket."
+  event_pattern = jsonencode({
+    source        = ["aws.s3"]
+    "detail-type" = ["Object Created"]
+    detail = {
+      bucket = { name = [module.constants.results_bucket_name] }
+      object = { key = [{ wildcard = "published/*/*-*.json" }] }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_connection" "github" {
+  name               = "forge-perf-github-dispatch"
+  description        = "GitHub token that dispatches publish.yml, set by hand."
+  authorization_type = "API_KEY"
+
+  auth_parameters {
+    api_key {
+      key   = "Authorization"
+      value = "Bearer set-by-operator"
+    }
+
+    invocation_http_parameters {
+      header {
+        key   = "Accept"
+        value = "application/vnd.github+json"
+      }
+      header {
+        key   = "X-GitHub-Api-Version"
+        value = "2022-11-28"
+      }
+    }
+  }
+
+  # The operator's update-connection replaces the placeholder; an apply must
+  # not put it back.
+  lifecycle {
+    ignore_changes = [auth_parameters]
+  }
+}
+
+resource "aws_cloudwatch_event_api_destination" "publish_dispatch" {
+  name                             = "forge-perf-publish-dispatch"
+  description                      = "workflow_dispatch of publish.yml on main."
+  invocation_endpoint              = "https://api.github.com/repos/fil-forge/forge-perf/actions/workflows/publish.yml/dispatches"
+  http_method                      = "POST"
+  invocation_rate_limit_per_second = 1
+  connection_arn                   = aws_cloudwatch_event_connection.github.arn
+}
+
+data "aws_iam_policy_document" "publish_dispatch_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [module.constants.nonprod_account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "publish_dispatch" {
+  name               = "forge-perf-publish-dispatch"
+  assume_role_policy = data.aws_iam_policy_document.publish_dispatch_trust.json
+}
+
+data "aws_iam_policy_document" "publish_dispatch" {
+  statement {
+    actions   = ["events:InvokeApiDestination"]
+    resources = [aws_cloudwatch_event_api_destination.publish_dispatch.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "publish_dispatch" {
+  name   = "invoke-publish-dispatch"
+  role   = aws_iam_role.publish_dispatch.id
+  policy = data.aws_iam_policy_document.publish_dispatch.json
+}
+
+# publish.yml queues rather than cancels, so a burst of records ends in one or
+# two publishes. A dispatch GitHub refuses, such as with an expired token, is
+# retried for an hour and then dropped; the schedule catches up.
+resource "aws_cloudwatch_event_target" "publish_dispatch" {
+  rule     = aws_cloudwatch_event_rule.record_published.name
+  arn      = aws_cloudwatch_event_api_destination.publish_dispatch.arn
+  role_arn = aws_iam_role.publish_dispatch.arn
+  input    = jsonencode({ ref = "main" })
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 20
+  }
 }
 
 # ---------------------------------------------------------------------------
