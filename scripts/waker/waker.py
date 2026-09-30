@@ -7,12 +7,16 @@ five minutes and starts the box again for one of three reasons, in order:
 
     wake_at   the heartbeat's wake time has come (the nightly run, or the day
               a queued experiment's daily cap lifts)
-    request   the requests bucket holds a requests/<id>.json
+    request   the requests bucket holds a requests/<id>.json the box has not
+              seen: one modified later than five minutes before its heartbeat
+              (a request it left queued at the daily cap waits for wake_at)
     set       smelt's main or a tracked image moved to a set the box has not
               seen (the heartbeat's seen_keys)
 
 It starts only a stopped instance whose heartbeat says `asleep`, so a box an
-operator stopped stays stopped. Each attempt is written to
+operator stopped stays stopped once it has reported after its last start (the
+heartbeat still says `asleep` until the woken box's first pass). Each attempt
+is written to
 published/<box>/waker.json, which publish reads and which keeps one reason
 from starting the box twice within six hours.
 
@@ -23,6 +27,16 @@ Environment: BOX (default main), RESULTS_BUCKET, REQUESTS_BUCKET. The package
 carries images.tracked and smelt.conf beside this file; in the repository
 they are read from config/. Standard library only, plus boto3 from the Lambda
 runtime, imported where a client is made so the tests run without it.
+
+What the function needs from its infrastructure:
+
+- s3:ListBucket on the results bucket for published/<box>/*. Without it S3
+  answers AccessDenied for a missing waker.json, which only the waker creates,
+  and every tick raises before it starts anything.
+- A timeout of 90 s or more: resolving the set can take about 70 s (10 s for
+  smelt, the 40 s budget, an image in flight).
+- A redeploy whenever images.tracked or smelt.conf changes. With a stale copy
+  the resolved set is never in seen_keys and starts the box every six hours.
 
     cd scripts/waker && python3 -m unittest -v test_waker
 """
@@ -48,6 +62,10 @@ WOKE_FOR_KEPT = 20
 # requests/<id>.json as poll.sh accepts it; it deletes any other object there.
 REQUEST_KEY = re.compile(r"requests/[a-z0-9][a-z0-9-]{0,99}\.json")
 REQUEST_KEYS_LISTED = 20
+# The box lists requests and then writes its heartbeat within one pass, which
+# takes under 240 s. A request older than the heartbeat by more than this was
+# in that listing.
+REQUEST_SEEN_MARGIN = datetime.timedelta(seconds=300)
 # The Accept header of ghcr_digest in scripts/host/poll.sh.
 MANIFEST_TYPES = ("application/vnd.oci.image.index.v1+json, "
                   "application/vnd.docker.distribution.manifest.list.v2+json, "
@@ -139,6 +157,25 @@ def woke_for(previous):
     return {token: at for token, at in entries.items() if parse_time(at)}
 
 
+def new_request_keys(requests, heartbeat):
+    """The keys of the listed (key, modified) requests the sleeping box has not seen.
+
+    The box keeps a queued request's object and may sleep with it queued when
+    the daily cap blocks it; wake_at covers that one. A request with no usable
+    time, or a heartbeat with none, counts as new.
+    """
+    at = parse_time(heartbeat.get("at"))
+    keys = []
+    for key, modified in requests:
+        if at and isinstance(modified, datetime.datetime):
+            if modified.tzinfo is None:
+                modified = modified.replace(tzinfo=datetime.timezone.utc)
+            if modified <= at - REQUEST_SEEN_MARGIN:
+                continue
+        keys.append(key)
+    return keys
+
+
 def reasons(heartbeat, request_keys, key_hash, now):
     """Every reason to wake that holds now, in the order they are tried."""
     found = []
@@ -157,7 +194,7 @@ def decide(box, state, heartbeat, request_keys, key_hash, previous, now):
     """(action, waker.json) for one tick.
 
     state is the instance's, heartbeat the parsed heartbeat.json or None,
-    request_keys the requests/<id>.json keys listed, key_hash the resolved
+    request_keys the requests/<id>.json keys the box has not seen, key_hash the resolved
     waker key hash or None when resolution failed, previous the parsed
     waker.json or None. The action is `awake`, `stopped, not asleep`,
     `asleep, nothing to do` or `start`. Only `start` carries a record, the one
@@ -180,11 +217,19 @@ def decide(box, state, heartbeat, request_keys, key_hash, previous, now):
     return "asleep, nothing to do", None
 
 
-def failed(record, previous, error):
-    """decide()'s record for a start that failed: the token is not recorded, so the next tick retries."""
+def failed(record, previous, error, heartbeat=None):
+    """decide()'s record for a start that failed: the token is not recorded, so the next tick retries.
+
+    The waker writes only on attempts, so a failed record outlives a box an
+    operator woke. A heartbeat newer than that attempt means the box ran since,
+    and this failure is the first of a new run.
+    """
     first = None
     if isinstance(previous, dict) and previous.get("result") == "failed" and parse_time(previous.get("first_failed_at")):
-        first = previous["first_failed_at"]
+        attempted = parse_time(previous.get("requested_at"))
+        slept = parse_time(heartbeat.get("at")) if isinstance(heartbeat, dict) else None
+        if not (attempted and slept and slept > attempted):
+            first = previous["first_failed_at"]
     return dict(record, result="failed", error=error, first_failed_at=first or record["requested_at"],
                 woke_for=woke_for(previous))
 
@@ -302,14 +347,15 @@ def read_json(s3, bucket, key):
         return None
 
 
-def list_request_keys(s3, bucket):
-    """The requests/<id>.json keys among the first few objects, or [] when the listing fails."""
+def list_requests(s3, bucket):
+    """(key, modified) of the requests/<id>.json among the first few objects, or [] when the listing fails."""
     try:
         answer = s3.list_objects_v2(Bucket=bucket, Prefix="requests/", MaxKeys=REQUEST_KEYS_LISTED)
     except Exception as exc:
         log.warning("cannot list requests: %r", exc)
         return []
-    return [item["Key"] for item in answer.get("Contents", []) if REQUEST_KEY.fullmatch(item["Key"])]
+    return [(item["Key"], item.get("LastModified")) for item in answer.get("Contents", [])
+            if REQUEST_KEY.fullmatch(item["Key"])]
 
 
 def run(env, now, ec2, s3, opener):
@@ -331,7 +377,7 @@ def run(env, now, ec2, s3, opener):
         return closed
     record_key = f"published/{box}/waker.json"
     previous = read_json(s3, env["RESULTS_BUCKET"], record_key)
-    request_keys = list_request_keys(s3, env["REQUESTS_BUCKET"])
+    request_keys = new_request_keys(list_requests(s3, env["REQUESTS_BUCKET"]), heartbeat)
     # The set costs 21 HTTP calls and is the last reason tried, so it is
     # resolved only when no earlier reason starts the box.
     action, record = decide(box, state, heartbeat, request_keys, None, previous, now)
@@ -343,7 +389,7 @@ def run(env, now, ec2, s3, opener):
         ec2.start_instances(InstanceIds=[instance_id])
     except Exception as exc:
         log.warning("cannot start %s for %s %s: %r", instance_id, record["reason"], record["detail"], exc)
-        record = failed(record, previous, error_code(exc))
+        record = failed(record, previous, error_code(exc), heartbeat)
     else:
         log.info("started %s for %s %s", instance_id, record["reason"], record["detail"])
     s3.put_object(Bucket=env["RESULTS_BUCKET"], Key=record_key, Body=json.dumps(record).encode(),

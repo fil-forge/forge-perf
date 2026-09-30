@@ -11,6 +11,7 @@ import logging
 import tempfile
 import unittest
 import urllib.error
+from unittest import mock
 from pathlib import Path
 
 import waker
@@ -53,8 +54,8 @@ def advertisement(main=SMELT):
     """What GitHub answers to info/refs?service=git-upload-pack."""
     return (pkt(b"# service=git-upload-pack\n") + b"0000"
             + pkt(b"1111111111111111111111111111111111111111 HEAD\0multi_ack symref=HEAD:refs/heads/main\n")
-            + pkt(b"2222222222222222222222222222222222222222 refs/heads/main-old\n")
             + pkt(main.encode() + b" refs/heads/main\n")
+            + pkt(b"2222222222222222222222222222222222222222 refs/heads/main-old\n")
             + pkt(b"3333333333333333333333333333333333333333 refs/tags/v1\n") + b"0000")
 
 
@@ -84,18 +85,24 @@ class FakeEc2:
 
 
 class FakeS3:
-    def __init__(self, objects=None, request_keys=()):
+    """request_keys holds keys, modified at NOW, or (key, modified) pairs."""
+
+    def __init__(self, objects=None, request_keys=(), denied=()):
         self.objects = dict(objects or {})
         self.request_keys, self.listed, self.puts = list(request_keys), [], []
+        self.denied = denied
 
     def get_object(self, Bucket, Key):
+        if Key in self.denied:
+            raise AwsError("AccessDenied")
         if (Bucket, Key) not in self.objects:
             raise AwsError("NoSuchKey")
         return {"Body": io.BytesIO(self.objects[(Bucket, Key)])}
 
     def list_objects_v2(self, **kwargs):
         self.listed.append(kwargs)
-        return {"Contents": [{"Key": k} for k in self.request_keys]} if self.request_keys else {}
+        items = [k if isinstance(k, tuple) else (k, NOW) for k in self.request_keys]
+        return {"Contents": [{"Key": k, "LastModified": at} for k, at in items]} if items else {}
 
     def put_object(self, Bucket, Key, Body, ContentType):
         self.puts.append((Bucket, Key, ContentType))
@@ -121,9 +128,10 @@ class FakeWeb:
 
     def __init__(self, digests=None, main=SMELT, down=()):
         self.digests = rebaseline()["images"] if digests is None else digests
-        self.main, self.down, self.calls = main, down, []
+        self.main, self.down, self.calls, self.timeouts = main, down, [], []
 
     def __call__(self, request, timeout):
+        self.timeouts.append(timeout)
         url, method = request.full_url, request.get_method()
         self.calls.append((method, url, dict(request.header_items())))
         if any(part in url for part in self.down):
@@ -235,6 +243,15 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(len(web.calls), 21)
         self.assertEqual(web.calls[0][:2],
                          ("GET", "https://github.com/fil-forge/smelt.git/info/refs?service=git-upload-pack"))
+        self.assertEqual(web.timeouts, [10] * 21)
+
+    def test_resolution_stops_at_its_budget(self):
+        # Each look at the clock is 9 s after the last: the deadline is set at 0 s
+        # and the fifth image is reached past 40 s.
+        web = FakeWeb()
+        with mock.patch.object(waker.time, "monotonic", side_effect=range(0, 9000, 9)):
+            self.assertIsNone(waker.resolve_key_hash(web))
+        self.assertEqual(len(web.calls), 1 + 2 * 4)
 
     def test_smelt_pin_skips_the_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -354,6 +371,33 @@ class DecideTests(unittest.TestCase):
                          ("2026-10-01T03:00:03Z", "2026-10-01T02:55:03Z"))
         self.assertIsNone(self.decide(previous=again, now=later)[1]["first_failed_at"])
 
+    def test_a_failure_before_the_box_last_slept_does_not_start_the_run(self):
+        previous = {"result": "failed", "requested_at": "2026-09-20T02:55:03Z",
+                    "first_failed_at": "2026-09-20T02:55:03Z", "woke_for": {}}
+        started = self.decide(previous=previous)[1]
+        # The heartbeat is ten days newer than that attempt: the box ran in between.
+        record = waker.failed(started, previous, "InsufficientInstanceCapacity", heartbeat())
+        self.assertEqual(record["first_failed_at"], "2026-10-01T02:55:03Z")
+        # Same second, or times that cannot be compared: the run is unbroken.
+        for beat in (heartbeat(at="2026-09-20T02:55:03Z"), heartbeat(at="junk"), None):
+            record = waker.failed(started, previous, "InsufficientInstanceCapacity", beat)
+            self.assertEqual(record["first_failed_at"], "2026-09-20T02:55:03Z")
+        record = waker.failed(started, dict(previous, requested_at=None), "X", heartbeat())
+        self.assertEqual(record["first_failed_at"], "2026-09-20T02:55:03Z")
+
+    def test_new_request_keys(self):
+        at = datetime.datetime(2026, 9, 30, 20, 0, 0, tzinfo=datetime.timezone.utc)  # the heartbeat's
+        margin = datetime.timedelta(seconds=300)
+        listed = [("requests/seen.json", at - margin), ("requests/edge.json", at - margin + datetime.timedelta(seconds=1)),
+                  ("requests/new.json", at + datetime.timedelta(hours=1)), ("requests/undated.json", None)]
+        self.assertEqual(waker.new_request_keys(listed, heartbeat()),
+                         ["requests/edge.json", "requests/new.json", "requests/undated.json"])
+        # A heartbeat without a usable time has seen nothing.
+        for beat in (heartbeat(at="junk"), heartbeat(at=None)):
+            self.assertEqual(len(waker.new_request_keys(listed, beat)), 4)
+        naive = [("requests/seen.json", (at - margin).replace(tzinfo=None))]
+        self.assertEqual(waker.new_request_keys(naive, heartbeat()), [])
+
     def test_error_code(self):
         self.assertEqual(waker.error_code(AwsError("InsufficientInstanceCapacity")), "InsufficientInstanceCapacity")
         self.assertEqual(waker.error_code(TimeoutError("a message")), "TimeoutError")
@@ -408,6 +452,27 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.run_waker(FakeEc2(), s3), "started")
         self.assertEqual((written(s3)["reason"], written(s3)["detail"]), ("request", "requests/a-1.json"))
 
+    def test_a_request_the_box_slept_on_does_not_start_it(self):
+        # The daily cap: the box listed this request, left it queued and slept
+        # until 00:01. Only a request newer than its heartbeat is a reason.
+        beat = heartbeat(at="2026-09-30T10:15:00Z", wake_at="2026-10-01T00:01:00Z")
+        queued = ("requests/a-queued.json", datetime.datetime(2026, 9, 30, 9, 0, 0, tzinfo=datetime.timezone.utc))
+        ec2, s3 = FakeEc2(), s3_with(beat, request_keys=[queued])
+        for hour in (10, 16, 22):
+            now = datetime.datetime(2026, 9, 30, hour, 20, 3, tzinfo=datetime.timezone.utc)
+            self.assertEqual(self.run_waker(ec2, s3, now=now), "asleep, nothing to do")
+        self.assertEqual((ec2.started, s3.puts), ([], []))
+        # A request that arrives while it sleeps starts it, under its own key.
+        arrived = datetime.datetime(2026, 9, 30, 22, 30, 0, tzinfo=datetime.timezone.utc)
+        s3.request_keys.append(("requests/b-new.json", arrived))
+        self.assertEqual(self.run_waker(ec2, s3, now=arrived + datetime.timedelta(minutes=5)), "started")
+        self.assertEqual((written(s3)["reason"], written(s3)["detail"]), ("request", "requests/b-new.json"))
+        # The wake time still starts it for the queued one.
+        ec2, s3 = FakeEc2(), s3_with(beat, request_keys=[queued])
+        now = datetime.datetime(2026, 10, 1, 0, 1, 3, tzinfo=datetime.timezone.utc)
+        self.assertEqual(self.run_waker(ec2, s3, now=now), "started")
+        self.assertEqual(written(s3)["reason"], "wake_at")
+
     def test_new_set_starts(self):
         ec2, s3 = FakeEc2(), s3_with(heartbeat(wake_at="2026-10-02T02:55:00Z", seen_keys=[OTHER_HASH]))
         self.assertEqual(self.run_waker(ec2, s3), "started")
@@ -447,6 +512,23 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(AwsError):
             self.run_waker(ec2, Denied())
         self.assertEqual(ec2.started, [])
+
+    def test_a_denied_record_starts_nothing(self):
+        # Without s3:ListBucket a missing waker.json reads as AccessDenied. It
+        # is not taken for "no record", which would forget woke_for.
+        ec2, s3 = FakeEc2(), s3_with(heartbeat())
+        s3.denied = ("published/main/waker.json",)
+        with self.assertRaises(AwsError):
+            self.run_waker(ec2, s3)
+        self.assertEqual((ec2.started, s3.puts), ([], []))
+
+    def test_a_failure_after_the_box_ran_starts_a_new_run(self):
+        stale = {"schema": "forge-perf.waker/v1", "box": "main", "requested_at": "2026-09-20T02:55:03Z",
+                 "reason": "wake_at", "detail": "2026-09-20T02:55:00Z", "result": "failed",
+                 "error": "InsufficientInstanceCapacity", "first_failed_at": "2026-09-20T02:55:03Z", "woke_for": {}}
+        s3 = s3_with(heartbeat(), stale)
+        self.assertEqual(self.run_waker(FakeEc2(start_error=AwsError("InsufficientInstanceCapacity")), s3), "failed")
+        self.assertEqual(written(s3)["first_failed_at"], "2026-10-01T02:55:03Z")
 
     def test_a_failed_request_listing_leaves_the_other_reasons(self):
         class NoList(FakeS3):
