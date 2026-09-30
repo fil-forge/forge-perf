@@ -360,3 +360,46 @@ run "piri_before_the_network" {
     error_message = "without the endpoint, the root must not look it up"
   }
 }
+
+run "publish_on_each_record" {
+  command = plan
+
+  assert {
+    condition     = aws_s3_bucket_notification.results.eventbridge
+    error_message = "the results bucket must send its events to EventBridge"
+  }
+
+  assert {
+    condition = jsondecode(aws_cloudwatch_event_rule.record_published.event_pattern) == {
+      source        = ["aws.s3"]
+      "detail-type" = ["Object Created"]
+      detail = {
+        bucket = { name = ["forge-perf-results-654654381893"] }
+        object = { key = [{ wildcard = "published/*/*-*.json" }] }
+      }
+    }
+    error_message = "the rule must match run records in published/<box>/ and nothing else"
+  }
+
+  assert {
+    condition = (
+      aws_cloudwatch_event_api_destination.publish_dispatch.invocation_endpoint == "https://api.github.com/repos/fil-forge/forge-perf/actions/workflows/publish.yml/dispatches" &&
+      aws_cloudwatch_event_api_destination.publish_dispatch.http_method == "POST" &&
+      jsondecode(aws_cloudwatch_event_target.publish_dispatch.input) == { ref = "main" }
+    )
+    error_message = "a record must dispatch publish.yml on main"
+  }
+
+  assert {
+    condition     = one(one(aws_cloudwatch_event_connection.github.auth_parameters).api_key).value == "Bearer set-by-operator"
+    error_message = "the connection must hold a placeholder; the token is set by hand and never reaches state"
+  }
+
+  assert {
+    condition = (
+      jsondecode(data.aws_iam_policy_document.publish_dispatch_trust.json).Statement[0].Principal.Service == "events.amazonaws.com" &&
+      jsondecode(data.aws_iam_policy_document.publish_dispatch_trust.json).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "654654381893"
+    )
+    error_message = "only EventBridge in this account may assume the dispatch role"
+  }
+}

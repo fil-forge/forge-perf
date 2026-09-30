@@ -6,7 +6,7 @@ Procedures an operator runs by hand against the dev account (654654381893, us-ea
 
 ### The bootstrap root
 
-`terraform/envs/bootstrap/account` holds the state bucket, the four CI roles (plan, apply and results for this repository; request for `/forge-perf` comments in ingot, piri, sprue and hilt), the results bucket, the requests bucket, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
+`terraform/envs/bootstrap/account` holds the state bucket, the four CI roles (plan, apply and results for this repository; request for `/forge-perf` comments in ingot, piri, sprue and hilt), the results bucket with the dispatch that publishes each record, the requests bucket, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
 
 Before the first apply, create the GitHub environment `box-change`, which the apply role trusts. GitHub creates a missing environment with no protection the first time a job on any branch names it, and a job in that environment can assume the apply role. Create it with a required reviewer and main as its only deployment branch:
 
@@ -241,6 +241,35 @@ Each run sends its results to the `filecoinfoundation` Grafana Cloud stack's Pro
 The next run's journal shows the step: `journalctl -u forge-perf-run | grep grafana:` prints `grafana: spans <n> sent, <n> failed, <n> unsent; points <n> sent, <n> failed, <n> unsent`. Points sent with none failed means Prometheus took the token; a traced run's spans sent means Tempo did. A tier 2 nightly's spans take a few minutes to send; the step's budget grows with the trace file, up to 10 minutes ([runner.md](runner.md#size-at-10)). Without the parameter every run logs `grafana: no token in SSM; nothing sent` and goes on.
 
 A run's spans in Tempo carry its run ID as the resource attribute `forge_perf.run_id`: in Explore, with the stack's Tempo data source, `{ resource.forge_perf.run_id = "<run_id>" }` finds them ([Reading a run's traces](#reading-a-runs-traces)).
+
+### Publishing on each record
+
+GitHub starts `publish.yml`'s 15-minute schedule hours late, so the results bucket dispatches it instead. The bucket sends its events to EventBridge. The rule `forge-perf-record-published` matches a new run record under `published/<box>/` (never `heartbeat.json`), and the API destination `forge-perf-publish-dispatch` posts a `workflow_dispatch` of `publish.yml` on main. The page updates a few minutes after a run ends. The bootstrap root creates all of it, with a placeholder in place of the token, and the schedule stays as the fallback.
+
+The token is a fine-grained GitHub personal access token. The box never holds it: it lives only in the EventBridge connection `forge-perf-github-dispatch`, and the root ignores later changes to that connection's credentials, so an apply never puts the placeholder back.
+
+1. Under Settings, Developer settings, Fine-grained tokens, create a token with resource owner `fil-forge`, repository access to `fil-forge/forge-perf` only, the permission Actions: Read and write, and the longest expiry the organization allows. The organization may have to approve it before it works.
+2. Put it in the connection. The script prompts for the token, writes the request to a file only you can read and removes it, so the token never becomes a command-line argument:
+
+   ```sh
+   tmp=$(mktemp)   # created mode 600
+   python3 - "$tmp" <<'EOF'
+   import getpass, json, sys
+   token = getpass.getpass("token: ").strip()
+   headers = [{"Key": "Accept", "Value": "application/vnd.github+json", "IsValueSecret": False},
+              {"Key": "X-GitHub-Api-Version", "Value": "2022-11-28", "IsValueSecret": False}]
+   json.dump({"Name": "forge-perf-github-dispatch", "AuthorizationType": "API_KEY",
+              "AuthParameters": {"ApiKeyAuthParameters": {"ApiKeyName": "Authorization", "ApiKeyValue": "Bearer " + token},
+                                 "InvocationHttpParameters": {"HeaderParameters": headers}}},
+             open(sys.argv[1], "w"))
+   EOF
+   aws events update-connection --cli-input-json "file://$tmp"
+   rm -f "$tmp"
+   ```
+
+3. `aws events describe-connection --name forge-perf-github-dispatch --query ConnectionState` prints `AUTHORIZED` once the update settles.
+
+After the next run, `gh run list -R fil-forge/forge-perf -w publish.yml -L 3` shows a `workflow_dispatch` run that started within a minute or two of the record. When GitHub refuses a dispatch, for instance with an expired token, EventBridge retries for an hour and drops it, `FailedInvocations` on the rule rises in CloudWatch, and the page falls back to the schedule.
 
 ### The `Project` cost allocation tag
 
@@ -548,6 +577,7 @@ infra-central installs it from `terraform/envs/grafana/dashboards/forge-perf.jso
 | denylist pattern | SSM `/forge-perf/denylist`; repository secret `PUBLIC_DENYLIST_REGEX` | when the pattern changes |
 | `SLACK_BOT_TOKEN` | repository secret | when the Slack app's token changes |
 | Grafana token (Tempo and Prometheus) | SSM `/forge-perf/grafana-token` | yearly, and when someone with access leaves |
+| GitHub dispatch token | EventBridge connection `forge-perf-github-dispatch` | before it expires, and when its owner leaves |
 
 **piri's key.** IAM allows two keys per user, so the new key overlaps the old. Hold each box first (`hold.sh main on`), since a run whose preflight reads the parameters between the two writes starts piri with a mismatched pair, and release the hold once both are written. Create it and store both parameters with `Overwrite: true` as in "piri's S3 key" above. Each run reads the parameters at preflight, so the next run on each box uses the new key. Confirm with `aws iam get-access-key-last-used --access-key-id <new id>`, then `aws iam update-access-key --user-name forge-perf-piri --access-key-id <old id> --status Inactive`, and delete the old key a week later.
 
@@ -557,6 +587,8 @@ infra-central installs it from `terraform/envs/grafana/dashboards/forge-perf.jso
 
 **Slack token.** `gh secret set SLACK_BOT_TOKEN -R fil-forge/forge-perf`, then dispatch `publish.yml` once to confirm a post goes through.
 
+**GitHub dispatch token.** Create a new token and put it in the connection as in "Publishing on each record" above; the connection holds one token, so the new one takes over at once. Revoke the old token once a run's record has dispatched `publish.yml`.
+
 Record each rotation's date here.
 
 | Secret | Last rotated |
@@ -564,6 +596,7 @@ Record each rotation's date here.
 | piri's S3 key | not yet |
 | harness deploy key | not yet |
 | Grafana token | not yet |
+| GitHub dispatch token | not yet |
 
 ## Responding to alerts
 
