@@ -399,4 +399,7 @@ def run(env, now, ec2, s3, opener):
 
 def handler(event, context):
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
-    return run(os.environ, now, client("ec2"), client("s3"), urllib.request.urlopen)
+    result = run(os.environ, now, client("ec2"), client("s3"), urllib.request.urlopen)
+    # One line per run in the function's log group, which the runbook reads.
+    print(f"waker: {result}")
+    return result
