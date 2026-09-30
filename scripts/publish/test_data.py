@@ -117,7 +117,7 @@ class Preview(unittest.TestCase):
         now = preview.dt.datetime(2026, 10, 10, 12, tzinfo=preview.dt.timezone.utc)
         with tempfile.TemporaryDirectory() as tmp:
             names = preview.build(tmp, now)
-            self.assertEqual(names, ["box-change", "calibration-only", "gate-lit", "instrument-change",
+            self.assertEqual(names, ["box-change", "calibration-only", "experiment", "gate-lit", "instrument-change",
                                      "no-runs", "one-run", "outcomes"])
             index = {n: json.loads((Path(tmp) / n / "data/index.json").read_text(encoding="utf-8")) for n in names}
             for name in names:
@@ -134,6 +134,8 @@ class Preview(unittest.TestCase):
             self.assertTrue(any(r["pairing_id"] for r in box))
             self.assertEqual(box[0]["size_bytes"], 100 * 10**9)
             self.assertEqual([(r["class"], "traced" in r["flags"]) for r in index["one-run"]["runs"]], [("valid", True)])
+            self.assertEqual([r["experiment"]["role"] for r in index["experiment"]["runs"] if r["experiment"]],
+                             ["main", "branch", "branch", "main"])
             outcomes = index["outcomes"]["runs"]
             broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
             self.assertEqual(len(broken), 1)

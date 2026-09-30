@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Behavior of poll.sh and status.sh against a stubbed resolver: curl answers
-# GHCR from $D/digests (repo digest per line), git answers ls-remote from
-# $D/heads, aws keeps the heartbeat, and flock reports a run going while
-# $D/running exists. Runs in skip mode, so a dispatch is the logged
-# `host-op skipped: systemctl start --no-block forge-perf-run.service`.
+# GHCR from $D/digests (repo digest per line) and a manifest by digest from
+# $D/manifests, git answers ls-remote from $D/heads, aws keeps the heartbeat
+# and serves the requests bucket from $D/requests/ (status files land in
+# $D/status/), and flock reports a run going while $D/running exists and an
+# experiment while $D/experimenting does. Runs in skip mode, so a dispatch is
+# the logged `host-op skipped: systemctl start --no-block forge-perf-run.service`.
 #
 # SC2015: `a && b || fail` is intended; fail runs when either check fails.
 # shellcheck disable=SC2015
@@ -31,6 +33,10 @@ case "$url" in
     # status.sh hold, run while the pass resolves.
     [ ! -e "$D/hold-mid-pass" ] || cp "$D/hold-mid-pass" "$FORGE_PERF_STATE_DIR/hold"
     echo '{"token": "anon"}' ;;
+  *ghcr.io/v2/*/manifests/sha256:*)
+    [ ! -e "$D/ghcr-down" ] || exit 7
+    repo="${url#*ghcr.io/v2/}" repo="${repo%/manifests/*}"
+    if grep -qxF "$repo ${url##*/}" "$D/manifests" 2>/dev/null; then echo 200; else echo 404; fi ;;
   *ghcr.io/v2/*)
     repo="${url#*ghcr.io/v2/}" repo="${repo%/manifests/*}"
     d="$(awk -v r="$repo" '$1 == r { print $2 }' "$D/digests")"
@@ -56,7 +62,31 @@ STUB
 cat >"$work/bin/aws" <<'STUB'
 #!/usr/bin/env bash
 echo "aws $*" >>"$D/aws.log"
+key() { while [ "$1" != --key ]; do shift; done; echo "$2"; }
 case " $* " in
+  *" --bucket test-requests "*)
+    [ ! -e "$D/requests-down" ] || exit 255
+    case " $* " in
+      *" list-objects-v2 "*)
+        python3 -c '
+import datetime, json, os, sys
+d = sys.argv[1]
+out = [{"Key": "requests/" + n, "Size": os.path.getsize(os.path.join(d, n)),
+        "LastModified": datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(d, n)),
+                                                        datetime.timezone.utc).isoformat()}
+       for n in sorted(os.listdir(d))] if os.path.isdir(d) else []
+print(json.dumps({"Contents": out} if out else {}))' "$D/requests" ;;
+      *" get-object "*) k="$(key "$@")"; cp "$D/requests/${k#requests/}" "${!#}" ;;
+      *" delete-object "*) k="$(key "$@")"; rm -f "$D/requests/${k#requests/}"; echo "$k" >>"$D/deleted" ;;
+      *" put-object "*)
+        [ ! -e "$D/status-down" ] || exit 1
+        k="$(key "$@")"
+        while [ "$1" != --body ]; do shift; done
+        mkdir -p "$D/status"
+        cp "$2" "$D/status/${k#status/}"
+        echo "$k" >>"$D/status.log" ;;
+      *) echo "aws stub: unexpected $*" >&2; exit 1 ;;
+    esac ;;
   *" put-object "*heartbeat.json*)
     [ ! -e "$D/s3-down" ] || exit 1
     while [ "$1" != --body ]; do shift; done
@@ -70,6 +100,7 @@ cat >"$work/bin/flock" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
   *run.lock*) [ ! -e "$D/running" ] ;;
+  *experiment.lock*) [ ! -e "$D/experimenting" ] ;;
   *) exit 0 ;;
 esac
 STUB
@@ -104,6 +135,7 @@ setup() {
 FORGE_PERF_BOX_ID=test
 FORGE_PERF_CHECKOUT=$work/box/checkout
 FORGE_PERF_RESULTS_BUCKET=test-results
+FORGE_PERF_REQUESTS_BUCKET=test-requests
 EOF
 }
 # ingot N: publish a new ingot digest.
@@ -112,7 +144,8 @@ poll() {
   local want="$1"
   shift
   local got=0
-  env FORGE_PERF_BOX_CONF="$work/box/box.conf" FORGE_PERF_STATE_DIR="$state" \
+  # Midday UTC, outside the hour around the nightly run, unless HHMM says.
+  env FORGE_PERF_UTC_HHMM="${HHMM:-1200}" FORGE_PERF_BOX_CONF="$work/box/box.conf" FORGE_PERF_STATE_DIR="$state" \
     FORGE_PERF_OUTBOX="$work/box/outbox" FORGE_PERF_RUNTIME="$work/box/run" \
     bash "$host/poll.sh" "$@" >"$work/out" 2>&1 || got=$?
   [ "$got" = "$want" ] || fail "poll.sh $* exited $got, wanted $want"
@@ -342,5 +375,154 @@ poll 0
 [ ! -e "$state/last-run.json" ] || fail "a campaign's last-run.json left"
 [ "$(pending '"\(.kind) \(.attempt)"')" = "trigger null" ] || fail "after the campaign $(cat "$state/pending.json")"
 echo "ok: the poller leaves a campaign's run alone and never retries one"
+
+
+# --- experiments -------------------------------------------------------------------
+COMMIT=0123456789abcdef0123456789abcdef01234567
+BRANCH="sha256:$(printf 'b%.0s' {1..64})"
+req_id() { echo "ingot-pr$1-${COMMIT:0:12}-$2"; }
+# request PR N [JQ]: a request for ingot's pull request PR, the Nth oldest in
+# the bucket, edited by JQ.
+request() {
+  local id
+  id="$(req_id "$1" "$2")"
+  mkdir -p "$D/requests"
+  jq -n --arg id "$id" --argjson pr "$1" --arg c "$COMMIT" --arg d "$BRANCH" '{schema: "forge-perf.request/v1",
+    id: $id, service: "ingot", image: "ghcr.io/fil-forge/ingot", digest: $d, tag: "pr-\($pr)-\($c[:7])",
+    commit: $c, repository: "fil-forge/ingot", pr: $pr, requested_by: "someone",
+    requested_at: "2026-10-01T12:00:00Z", pairs: 1}' | jq "${3:-.}" >"$D/requests/$id.json"
+  touch -t "20261001$(printf '%04d' "$2")" "$D/requests/$id.json"
+}
+got() { jq -r "$2" "$D/status/$1.json" 2>/dev/null; }
+started_exp() { grep -q "host-op skipped: systemctl start --no-block forge-perf-experiment.service" "$work/out"; }
+# idle: a fresh box whose main set has run, so nothing is pending.
+idle() {
+  setup
+  poll 0
+  start_run
+  echo "fil-forge/ingot $BRANCH" >"$D/manifests"
+}
+id1="$(req_id 123 1)" id2="$(req_id 124 2)" id3="$(req_id 125 3)"
+
+idle
+touch "$D/running"
+request 123 1
+request 124 2 '.pairs = 3'
+request 125 3 '.digest = "sha256:" + ("c" * 64)'
+poll 0
+[ "$(got "$id1" '"\(.state) \(.position) \(.pairing_id)"')" = "queued 1 exp-$id1" ] || fail "id1 $(cat "$D/status/$id1.json")"
+[ "$(got "$id2" '"\(.state) \(.reason)"')" = "refused pairs must be 1 or 2" ] || fail "id2 $(cat "$D/status/$id2.json")"
+[ "$(got "$id3" .reason)" = "sha256:$(printf 'c%.0s' {1..64}) cannot be pulled anonymously from ghcr.io/fil-forge/ingot" ] ||
+  fail "id3 $(got "$id3" .)"
+[ -e "$D/requests/$id1.json" ] && [ ! -e "$D/requests/$id2.json" ] && [ ! -e "$D/requests/$id3.json" ] ||
+  fail "refused requests left, or the queued one deleted: $(ls "$D/requests")"
+! started_exp || fail "an experiment started during a run"
+[ "$(beat .experiments_queued)" = 1 ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+before="$(grep -c "status/$id1.json" "$D/status.log")"
+poll 0
+[ "$(grep -c "status/$id1.json" "$D/status.log")" = "$before" ] || fail "an unchanged status was sent again"
+echo "ok: requests are checked and queued oldest first; the rest are refused with a reason and deleted"
+
+idle
+touch "$D/running"
+request 123 1
+touch "$D/ghcr-down"
+poll 1
+[ ! -e "$D/status/$id1.json" ] && [ -e "$D/requests/$id1.json" ] || fail "a request refused while GHCR was down"
+rm "$D/ghcr-down"
+poll 0
+[ "$(got "$id1" .state)" = queued ] || fail "not queued once GHCR answered"
+rm "$D/running"
+touch "$D/ghcr-down"
+poll 1
+! started_exp && grep -q "main's set did not resolve" "$work/out" || fail "an experiment started without main's set"
+echo "ok: a request waits while GHCR does not answer, and no experiment starts without main's set"
+
+idle
+request 123 1
+request 124 2
+ingot 9
+poll 0
+dispatched && ! started_exp || fail "the live run did not go first"
+[ "$(got "$id1" .position) $(got "$id2" .position)" = "1 2" ] || fail "positions"
+start_run
+poll 0
+started_exp || fail "the oldest experiment did not start"
+jq -e --arg b "$BRANCH" --arg m "$(digest 9)" --arg id "$id1" '.id == $id and .order == ["main", "branch"]
+  and .sets.main.images["ghcr.io/fil-forge/ingot:main"] == $m and .sets.branch.images["ghcr.io/fil-forge/ingot:main"] == $b
+  and (.sets.main.images | del(.["ghcr.io/fil-forge/ingot:main"])) == (.sets.branch.images | del(.["ghcr.io/fil-forge/ingot:main"]))
+  and .overrides["ghcr.io/fil-forge/ingot:main"].ref == "pr-123-0123456"
+  and .experiment == {request_id: $id, service: "ingot", repository: "fil-forge/ingot", pr: 123,
+    commit: "0123456789abcdef0123456789abcdef01234567"}' "$state/experiment.json" >/dev/null ||
+  fail "plan $(cat "$state/experiment.json")"
+jq -e --arg m "$(digest 9)" '.images["ghcr.io/fil-forge/ingot:main"] == $m' "$state/last-started.json" >/dev/null ||
+  fail "last-started changed"
+[ "$(got "$id2" .position)" = 1 ] || fail "id2 did not move up"
+[ ! -e "$state/experiments/queue/$id1.json" ] && grep -q "^$(date -u +%F) $id1$" "$state/experiments/started" ||
+  fail "the start was not logged"
+echo "ok: a pending live run goes first, then the oldest experiment starts on main's set with one digest swapped"
+
+touch "$D/experimenting"
+ingot 10
+poll 0
+! dispatched && ! started_exp || fail "a run started inside an experiment"
+[ "$(beat .state)" = running ] && [ "$(pending .kind)" = trigger ] || fail "state $(beat .state)"
+rm "$D/experimenting"
+poll 0
+[ "$(got "$id1" '"\(.state) \(.reason)"')" = "failed the experiment stopped before it finished" ] ||
+  fail "stale experiment $(got "$id1" .)"
+[ ! -e "$state/experiment.json" ] && [ ! -e "$D/requests/$id1.json" ] && dispatched ||
+  fail "the stopped experiment was not closed, or the live run did not start"
+request 123 1
+start_run
+poll 0
+[ ! -e "$D/requests/$id1.json" ] && [ "$(got "$id1" .state)" = failed ] &&
+  [ "$(jq -r .id "$state/experiment.json")" = "$id2" ] || fail "a finished request ran again"
+echo "ok: no live run starts inside an experiment; one left behind ends failed; a finished request never runs again"
+
+idle
+request 123 1
+request 124 2
+poll 0
+started_exp || fail "the oldest experiment did not start"
+touch "$D/status-down"
+poll 0
+! started_exp && [ "$(jq -r .id "$state/experiment.json")" = "$id1" ] &&
+  grep -q "earlier experiment is not settled" "$work/out" || fail "an experiment started over an unsettled one"
+rm "$D/status-down"
+poll 0
+[ "$(got "$id1" .state)" = failed ] && started_exp && [ "$(jq -r .id "$state/experiment.json")" = "$id2" ] ||
+  fail "the unsettled experiment was not closed before the next started"
+echo "ok: no experiment starts while an earlier one's failed status has not gone up"
+
+idle
+request 123 1
+HHMM=0300 poll 0
+! started_exp && grep -q "between 02:30 and 03:30 UTC" "$work/out" || fail "started near the nightly run"
+HHMM=0229 poll 0
+started_exp || fail "did not start at 02:29"
+echo "ok: no experiment starts between 02:30 and 03:30 UTC"
+
+idle
+request 123 1
+for i in 1 2 3 4; do echo "$(date -u +%F) earlier-$i"; done >"$state/experiments/started"
+poll 0
+! started_exp && grep -q "4 experiments started today" "$work/out" || fail "the daily cap did not hold"
+status hold
+sed -i.bak '1d' "$state/experiments/started"
+poll 0
+! started_exp || fail "a held box started an experiment"
+status release
+poll 0
+started_exp || fail "no start after release"
+[ "$(wc -l <"$state/experiments/started" | tr -d ' ')" = 4 ] || fail "started log"
+echo "ok: four experiments a UTC day at most, and none while the box is held"
+
+idle
+mkdir -p "$D/requests"
+echo '{}' >"$D/requests/NOT-AN-ID.json"
+poll 0
+grep -qx "requests/NOT-AN-ID.json" "$D/deleted" || fail "a malformed key stayed"
+echo "ok: an object that is not requests/<id>.json is deleted"
 
 echo "poll: all tests passed"

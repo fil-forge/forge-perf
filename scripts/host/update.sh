@@ -16,8 +16,9 @@
 #
 # Run between runs by poll.sh, and by an operator through
 # scripts/operator/box-update.sh. It refuses on a campaign box, which stays at
-# its bootstrap commit; while a run holds the run lock or forge-perf-run is
-# starting, running or stopping; and when the checkout has hand edits to
+# its bootstrap commit; while a run holds the run lock, an experiment holds
+# the experiment lock, or forge-perf-run or forge-perf-experiment is starting,
+# running or stopping; and when the checkout has hand edits to
 # tracked files, which the reset would discard. Modeled on infra-nodes'
 # reconcile.sh.
 set -euo pipefail
@@ -53,19 +54,28 @@ if [ "$local_only" -eq 0 ]; then
 
   # poll.sh already holds the run lock and says so; anyone else takes it here
   # and keeps it until exit, so no run starts from a half-updated checkout.
-  if [ -z "${FORGE_PERF_LOCK_HELD:-}" ] && command -v flock >/dev/null; then
+  # experiment.sh holds the experiment lock from its first run to its last,
+  # so both runs of a pair use one checkout.
+  if command -v flock >/dev/null; then
     runtime="${FORGE_PERF_RUNTIME:-/run/forge-perf}"
     mkdir -p "$runtime"
-    exec 9>"$runtime/run.lock"
-    flock -n 9 || die "a run holds $runtime/run.lock; update after it"
+    if [ -z "${FORGE_PERF_LOCK_HELD:-}" ]; then
+      exec 9>"$runtime/run.lock"
+      flock -n 9 || die "a run holds $runtime/run.lock; update after it"
+    fi
+    flock -n "$runtime/experiment.lock" true ||
+      die "an experiment holds $runtime/experiment.lock; update after it"
   fi
-  # The unit is Type=oneshot: activating while it runs and deactivating while
-  # its ExecStopPost wipes, states `systemctl is-active` reports as inactive.
-  run_state="$(host_read systemctl show -p ActiveState --value forge-perf-run.service)"
-  case "$run_state" in
-    active | activating | deactivating | reloading)
-      die "forge-perf-run.service is $run_state; update after it" ;;
-  esac
+  # The units are Type=oneshot: activating while they run and deactivating
+  # while forge-perf-run's ExecStopPost wipes, states `systemctl is-active`
+  # reports as inactive.
+  for unit in forge-perf-run.service forge-perf-experiment.service; do
+    unit_state="$(host_read systemctl show -p ActiveState --value "$unit")"
+    case "$unit_state" in
+      active | activating | deactivating | reloading)
+        die "$unit is $unit_state; update after it" ;;
+    esac
+  done
 
   step "update $FORGE_PERF_CHECKOUT to $ref"
   if ! "${git[@]}" diff --quiet || ! "${git[@]}" diff --cached --quiet; then

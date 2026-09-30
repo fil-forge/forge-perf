@@ -117,7 +117,8 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
     box.append(last
       ? h("p", {}, "Latest run ", h("a", { href: `#run=${last.run_id}` }, last.run_id), ` (${last.series}): `,
         outcome(last), last.reasons.length ? `, ${last.reasons.join(", ")}` : "",
-        last.series === "calibration" ? ". Calibration runs do not move the thermometer." : "")
+        last.series === "calibration" ? ". Calibration runs do not move the thermometer." : "",
+        last.series === "experiment" ? ". Experiment runs do not move the thermometer." : "")
       : h("p", {}, "No runs have been published."));
   }
   box.append(h("ul", { class: "gates" }, gates.map((g, i) => {
@@ -216,6 +217,15 @@ function spaced(rows, [t0, t1], width) {
   });
 }
 
+// An experiment's pull request, the set the run ran, and links to the other
+// runs of its pairing.
+function experimentCell(note) {
+  return h("span", {}, h("a", { href: note.pr_url }, note.label), ` · ${note.role} at `,
+    h("a", { href: note.commit_url }, h("code", {}, note.commit)),
+    note.paired.length ? [" · paired with ", ...note.paired.flatMap((p, i) =>
+      [i ? ", " : "", h("a", { href: `#run=${p.run_id}` }, p.role || p.run_id)])] : "");
+}
+
 function table() {
   const runs = [...state.data.runs].reverse();
   const head = ["Started (UTC)", "Series", "Box", "Outcome", "p5 GB/s", "Median GB/s", "Writes/s", "Windows", "RTT ms", "Changes"];
@@ -224,7 +234,8 @@ function table() {
     const cells = [
       h("a", { href: `#run=${r.run_id}` }, utc(r.run_started_at).replace(" UTC", "")), r.series,
       `${r.box.id} · ${r.box.instance_type}`, outcome(r), M.gbps(r.p5_bytes_per_s), M.gbps(r.median_bytes_per_s),
-      M.perSecond(r.writes_median_per_s), r.sustained_windows ?? "–", r.rtt_median_ms ?? "–", M.changesText(r) || "–",
+      M.perSecond(r.writes_median_per_s), r.sustained_windows ?? "–", r.rtt_median_ms ?? "–",
+      r.experiment ? experimentCell(M.experimentNote(state.data.runs, r)) : M.changesText(r) || "–",
     ];
     body.append(h("tr", { onclick: (e) => { if (e.target.tagName !== "A") location.hash = `run=${r.run_id}`; } },
       cells.map((c, i) => h("td", { "data-label": head[i] }, c))));
@@ -274,6 +285,7 @@ async function details(id) {
       drill_started: t.drill_started_at && utc(t.drill_started_at), drill_finished: t.drill_finished_at && utc(t.drill_finished_at),
       finished: utc(t.run_finished_at), duration: `${dur} min`, ...(tl ? { traces: tl } : {}),
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
+    ...experimentSection(run),
     kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
       writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s), steady_windows: res.sustained_windows, total_windows: res.total_windows,
       cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested, ingest_sent_bytes: res.ingest_sent_bytes,
@@ -300,6 +312,21 @@ async function details(id) {
       instrument_tree: mono(rec.provenance.forge_perf.instrument_tree ?? "–"),
       raw_record: h("a", { href: `data/runs/${id}.json` }, `${id}.json`) }));
   panel.querySelector("h2").focus();
+}
+
+// The pull request an experiment's run tested, and the set it ran; nothing
+// for any other run.
+function experimentSection(run) {
+  const note = M.experimentNote(state.data.runs, run);
+  if (!note) return [];
+  return [kv("Experiment", {
+    pull_request: h("a", { href: note.pr_url }, `${run.experiment.repository}#${run.experiment.pr}`),
+    commit: h("a", { href: note.commit_url }, mono(run.experiment.commit)),
+    set: note.role === "branch" ? `main's, with the pull request's ${run.experiment.service} image` : "main's",
+    request: mono(run.experiment.request_id), pairing: run.pairing_id,
+    paired_runs: note.paired.length ? h("span", {}, note.paired.flatMap((p, i) =>
+      [i ? ", " : "", h("a", { href: `#run=${p.run_id}` }, p.run_id), p.role ? ` (${p.role})` : ""])) : "none yet",
+  })];
 }
 
 const mono = (s) => h("code", {}, s);

@@ -5,17 +5,30 @@
   "description": "One run on one box. docs/record.md gives the source of every field and the classification rules.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "run_id", "series", "pairing_id", "trigger", "box", "time", "outcome",
+  "required": ["schema", "run_id", "series", "pairing_id", "experiment", "trigger", "box", "time", "outcome",
                "drill", "latency", "network", "provenance", "instrument", "trace"],
   "properties": {
     "schema": {"const": "forge-perf.run/v1"},
     "run_id": {"$ref": "#/$defs/run_id"},
-    "series": {"enum": ["per-trigger", "nightly", "campaign", "calibration"]},
-    "pairing_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^pair-[0-9]{8}-[a-z0-9]{1,12}$"}]},
+    "series": {"enum": ["per-trigger", "nightly", "campaign", "calibration", "experiment"]},
+    "pairing_id": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^pair-[0-9]{8}-[a-z0-9]{1,12}$"},
+                             {"type": "string", "pattern": "^exp-[a-z0-9][a-z0-9-]{0,39}-pr[1-9][0-9]{0,6}-[0-9a-f]{12}-[1-9][0-9]{0,19}$"}]},
+    "experiment": {"oneOf": [{"type": "null"}, {
+      "type": "object", "additionalProperties": false,
+      "required": ["request_id", "service", "repository", "pr", "commit", "role"],
+      "properties": {
+        "request_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}-pr[1-9][0-9]{0,6}-[0-9a-f]{12}-[1-9][0-9]{0,19}$"},
+        "service": {"$ref": "#/$defs/component"},
+        "repository": {"type": "string", "pattern": "^fil-forge/[a-z0-9][a-z0-9-]{0,39}$"},
+        "pr": {"type": "integer", "minimum": 1, "maximum": 9999999},
+        "commit": {"$ref": "#/$defs/sha1"},
+        "role": {"enum": ["main", "branch"]}
+      }
+    }]},
     "trigger": {
       "type": "object", "additionalProperties": false, "required": ["reason", "changed"],
       "properties": {
-        "reason": {"enum": ["image", "smelt", "harness", "nightly", "campaign", "pairing", "manual"]},
+        "reason": {"enum": ["image", "smelt", "harness", "nightly", "campaign", "pairing", "manual", "experiment"]},
         "changed": {"type": "array", "maxItems": 40, "uniqueItems": true, "items": {"$ref": "#/$defs/component"}}
       }
     },

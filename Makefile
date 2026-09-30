@@ -23,7 +23,8 @@ check:
 	done
 
 # Builds the page against fixture scenarios (no runs, calibration only, a lit
-# gate, every outcome class, an instrument change, a box change) and serves
+# gate, every outcome class, an instrument change, a box change, an
+# experiment) and serves
 # them at http://127.0.0.1:8000/. PORT=<n> picks another port.
 PORT ?= 8000
 

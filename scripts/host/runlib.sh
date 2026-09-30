@@ -155,19 +155,48 @@ harness_git() {
 # run_active: a run holds the run lock, or forge-perf-run.service is starting,
 # running or stopping. The unit is Type=oneshot, so `systemctl is-active`
 # reports it inactive while it starts, and its ExecStopPost wipe runs after
-# run.sh has let the lock go.
+# run.sh has let the lock go. An experiment counts as a run from its start to
+# its end, its runs and the gaps between them alike, so no live run and no
+# update starts inside a pair.
 run_active() {
+  local unit
   if command -v flock >/dev/null; then
     mkdir -p "$FORGE_PERF_RUNTIME"
     flock -n "$FORGE_PERF_RUNTIME/run.lock" true || return 0
+    flock -n "$FORGE_PERF_RUNTIME/experiment.lock" true || return 0
   elif host_ops_skipped; then
     # A laptop without flock: a run in progress has current.json.
     [ ! -e "$FORGE_PERF_STATE_DIR/current.json" ] || return 0
   fi
-  case "$(host_read systemctl show -p ActiveState --value forge-perf-run.service)" in
-    active | activating | deactivating | reloading) return 0 ;;
-  esac
+  for unit in forge-perf-run.service forge-perf-experiment.service; do
+    case "$(host_read systemctl show -p ActiveState --value "$unit")" in
+      active | activating | deactivating | reloading) return 0 ;;
+    esac
+  done
   return 1
+}
+
+# The requests bucket (docs/runner.md, "Experiments"): requests/<id>.json from
+# a service repository's /forge-perf workflow, status/<id>.json from the box.
+# The caller defines `limited`, which bounds one call.
+requests_bucket() { echo "${FORGE_PERF_REQUESTS_BUCKET:-forge-perf-requests-654654381893}"; }
+
+# put_status ID < status JSON: status/<id>.json, whole each time.
+put_status() {
+  local tmp status=0
+  tmp="$(mktemp "$FORGE_PERF_RUNTIME/status.XXXXXX")"
+  cat >"$tmp"
+  limited aws s3api put-object --bucket "$(requests_bucket)" --key "status/$1.json" --body "$tmp" \
+    --content-type application/json >/dev/null || status=1
+  rm -f "$tmp"
+  [ "$status" -eq 0 ] || echo "the status of experiment $1 did not go up" >&2
+  return "$status"
+}
+
+# delete_request ID: the request is finished, refused or failed.
+delete_request() {
+  limited aws s3api delete-object --bucket "$(requests_bucket)" --key "requests/$1.json" >/dev/null ||
+    { echo "cannot delete request $1; the next poll pass tries again" >&2; return 1; }
 }
 
 # grafana_export RUNNER RECORD RUN_DIR: send the run's results from RECORD to

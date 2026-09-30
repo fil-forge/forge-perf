@@ -44,7 +44,8 @@ export function ceilingAt(gate, time) {
 }
 
 // A run can move the mercury or light a gate only when it is valid after
-// overrides, in a live series, and has a p5.
+// overrides, in a live series, and has a p5. Series calibration and
+// experiment are outside LIVE_SERIES.
 export function counts(run) {
   return run.klass === "valid" && LIVE_SERIES.includes(run.series) && run.p5_bytes_per_s != null;
 }
@@ -198,6 +199,21 @@ export function previousRun(runs, run) {
     if (r.series === run.series && r.box.id === run.box.id) found = r;
   }
   return found;
+}
+
+// An experiment's run: the pull request it tested, which of its two sets it
+// ran (main's, or main's with the pull request's image), and the other runs
+// of its pairing. Null for any other run.
+export function experimentNote(runs, run) {
+  const e = run.experiment;
+  if (!e) return null;
+  const source = `https://github.com/${e.repository}`;
+  return {
+    label: `${e.service} #${e.pr}`, pr_url: `${source}/pull/${e.pr}`,
+    commit: e.commit.slice(0, 7), commit_url: `${source}/commit/${e.commit}`, role: e.role,
+    paired: runs.filter((r) => r.pairing_id === run.pairing_id && r.run_id !== run.run_id)
+      .map((r) => ({ run_id: r.run_id, role: r.experiment ? r.experiment.role : null })),
+  };
 }
 
 export function changesText(run) {

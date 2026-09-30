@@ -1,0 +1,19 @@
+[Unit]
+# One experiment: the pair the poller planned in state/experiment.json, each
+# run through forge-perf-run.service. The poll service starts it; it is never
+# enabled. While it runs, the poller counts a run as going, so no live run and
+# no update starts between the runs of a pair. Requires= on recovery, as the
+# run unit.
+Description=forge-perf experiment
+Wants=docker.service network-online.target
+Requires=forge-perf-recover.service
+After=docker.service forge-perf-nvme.service forge-perf-recover.service network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/forge-perf/box.conf
+Environment=AWS_REGION=us-east-2
+ExecStart=/bin/bash ${FORGE_PERF_CHECKOUT}/scripts/host/experiment.sh
+# Four runs of at most forge-perf-run.service's 6 h each, and its stop. A stop
+# ends the experiment as failed; a run already going finishes in its own unit.
+TimeoutStartSec=26h

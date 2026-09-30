@@ -47,6 +47,20 @@ AWS_STUB = textwrap.dedent("""\
     """)
 
 
+EXPERIMENT = {"request_id": "ingot-pr123-0123456789ab-17000000001", "service": "ingot",
+              "repository": "fil-forge/ingot", "pr": 123, "commit": "0123456789abcdef0123456789abcdef01234567",
+              "role": "branch"}
+
+
+def experiment_record(case, hour, role="branch"):
+    """A host fixture's record as one run of an experiment."""
+    record = fixture_record(case, hour, series="experiment")
+    record["experiment"] = dict(EXPERIMENT, role=role)
+    record["pairing_id"] = f"exp-{EXPERIMENT['request_id']}"
+    record["trigger"] = {"reason": "experiment", "changed": ["ingot"] if role == "branch" else []}
+    return record
+
+
 def fixture_record(case, hour, series=None, reasons=None):
     """A host fixture's expected record, moved to 2026-10-01 <hour>:00."""
     record = json.loads((HOST_FIXTURES / case / "expected.json").read_text(encoding="utf-8"))
@@ -161,6 +175,34 @@ class Publish(unittest.TestCase):
         self.record(fixture_record("availability-errors", 13))
         self.record(fixture_record("stack-boot-failed", 14))  # calibration
         self.assertEqual(self.ingest()["alerts"], [])
+
+    def test_an_experiment_posts_nothing_and_leaves_the_alert_state_alone(self):
+        self.record(fixture_record("exit2", 12))
+        self.assertEqual(len(self.ingest()["alerts"]), 1)
+        # An experiment that recovers, then one that fails, says nothing; the
+        # live series keeps its open alert until a live run recovers.
+        self.record(experiment_record("valid", 13))
+        self.record(experiment_record("integrity-failure", 14))
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertTrue((self.results / "runs/2026/10/main-20261001t140000z.json").exists())
+        self.record(fixture_record("valid", 15))
+        recovered = self.ingest()["alerts"]
+        self.assertEqual(len(recovered), 1)
+        self.assertIn("recovered from no_data", recovered[0])
+
+    def test_compare_links_skip_the_experiments(self):
+        def ingot(record, revision):
+            image = next(i for i in record["provenance"]["images"] if i["repo"] == "ghcr.io/fil-forge/ingot")
+            image["revision"] = revision
+            return record
+        self.record(ingot(fixture_record("valid", 12), "1" * 40))
+        self.record(ingot(experiment_record("valid", 13), "2" * 40))
+        failed = ingot(fixture_record("integrity-failure", 14), "3" * 40)
+        failed["trigger"]["changed"] = ["ingot"]
+        self.record(failed)
+        alerts = self.ingest()["alerts"]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn(f"ingot https://github.com/fil-forge/ingot/compare/{'1' * 40}...{'3' * 40}", alerts[0])
 
     def test_infrastructure_failures_alert_on_the_third_in_a_row(self):
         for hour in (12, 13):
@@ -330,7 +372,7 @@ class Publish(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(HERE / "ingest.py"), "--self-test"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("20 of 20 cases as expected", proc.stdout)
+        self.assertIn("25 of 25 cases as expected", proc.stdout)
 
 
 class BuildSite(unittest.TestCase):
@@ -364,6 +406,27 @@ class BuildSite(unittest.TestCase):
                              (None, first["trigger"]["changed"], first["drill"]["settings"]["stop_ingest_at_bytes"]))
             self.assertTrue((tmp / "_site/index.html").exists())
             self.assertEqual(json.loads((tmp / f"_site/data/runs/{second['run_id']}.json").read_text()), second)
+
+    def test_an_experiment_row_carries_its_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runs = tmp / "results/runs/2026/10"
+            runs.mkdir(parents=True)
+            older = fixture_record("valid", 11)
+            del older["experiment"]  # a record from before the schema had `experiment`
+            records = (older, experiment_record("valid", 12, role="main"), experiment_record("valid", 13))
+            for r in records:
+                (runs / f"{r['run_id']}.json").write_text(json.dumps(r), encoding="utf-8")
+            subprocess.run([sys.executable, str(HERE / "build-site.py"), "--site", str(ROOT / "site"),
+                            "--data", str(ROOT / "data"), "--results", str(tmp / "results"),
+                            "--out", str(tmp / "_site"), "--now", NOW], check=True, capture_output=True)
+            index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
+            self.assertEqual([(r["series"], r["experiment"] and r["experiment"]["role"], r["pairing_id"])
+                              for r in index["runs"]],
+                             [("per-trigger", None, None), ("experiment", "main", f"exp-{EXPERIMENT['request_id']}"),
+                              ("experiment", "branch", f"exp-{EXPERIMENT['request_id']}")])
+            # Each series compares with its own runs.
+            self.assertEqual([r["instrument_changes"] for r in index["runs"]], [None, None, []])
 
     def test_turning_tracing_on_or_off_is_an_instrument_change(self):
         with tempfile.TemporaryDirectory() as tmp:

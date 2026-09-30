@@ -3,6 +3,7 @@
  "run_id": "main-20261001t210000z",
  "series": "nightly",
  "pairing_id": null,
+ "experiment": null,
  "trigger": {
   "reason": "nightly",
   "changed": []

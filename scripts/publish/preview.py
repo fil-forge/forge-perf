@@ -149,6 +149,17 @@ def scenarios(now):
     out["box-change"] = ("A box change with paired runs", sorted(runs, key=lambda r: r["run_id"]),
                          [gate(1, 0.36e9, hours(300)), gate(2, 2.05e9, hours(300)), gate(3, 3.9e9, hours(300))], [],
                          dict(idle, at=iso(now - dt.timedelta(hours=2, minutes=4))))
+    exp = {"request_id": "ingot-pr123-0123456789ab-17000000001", "service": "ingot",
+           "repository": "fil-forge/ingot", "pr": 123, "commit": "0123456789abcdef0123456789abcdef01234567"}
+    runs = [record(hours(30 - 6 * i), p5=0.30e9 + 0.004e9 * i, windows=22) for i in range(3)]
+    for i, role in enumerate(("main", "branch", "branch", "main")):
+        r = record(hours(10 - i) + dt.timedelta(minutes=5), series="experiment", p5=0.31e9 if role == "main" else 0.34e9,
+                   windows=22, pairing=f"exp-{exp['request_id']}", changed=("ingot",) if role == "branch" else ())
+        r["experiment"] = dict(exp, role=role)
+        r["trigger"]["reason"] = "experiment"
+        runs.append(r)
+    out["experiment"] = ("A two-pair experiment beside per-trigger runs", runs,
+                         [gate(1, 0.36e9, hours(200)), gate(2), gate(3)], [], idle)
     return out
 
 

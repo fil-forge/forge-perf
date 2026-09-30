@@ -44,6 +44,7 @@ Anyone can read every record with `git clone -b results https://github.com/fil-f
 | `p5_above_median` | an ingest p5 above the ingest median, when both are numbers |
 | `valid_inconsistent` | class `valid` with a drill exit other than 0, any reason, or null results or requests |
 | `capped_not_calibration` | the flag `cpu_capped` on a record whose series is not `calibration`, since a capped run must never light a gate |
+| `experiment_inconsistent` | a record whose series `experiment`, `experiment` block, trigger `experiment` and `exp-` pairing do not all agree, or whose pairing is not `exp-<experiment.request_id>`. An experiment's run must never land in a live series, and no other run may borrow an experiment's pairing |
 | `fingerprint` | `instrument.fingerprint` or `instrument.box_fingerprint` that does not recompute by record.md's recipe |
 | `internal` | a record that makes a check raise an unexpected error; the log gives the key and the error's type, so one object never stops the others |
 
@@ -57,7 +58,7 @@ The schema check uses `scripts/host/schemacheck.py`, the checker the box and CI 
 
 The workflow posts to `#filone-alerts` with `SLACK_BOT_TOKEN`. The text comes from public record fields only: box, run ID, class, reasons, restarted services, failure codes, the components in `trigger.changed` with GitHub compare links against the box's previous record (the harness SHA as plain text), and the page link. All lines from one workflow run go in one message.
 
-**Records.** New records are taken per box in run ID order. `calibration` runs never alert and leave the alert state alone.
+**Records.** New records are taken per box in run ID order. `calibration` and `experiment` runs never alert and leave the alert state alone. The compare links start from the box's latest earlier record outside series `experiment`, since an experiment's branch run tested an image main never had.
 
 | Class | Posts when |
 |---|---|
@@ -88,7 +89,7 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | Field | Holds |
 |---|---|
 | `published_at` | the build's UTC time, so the page can show when it was last published. A build follows only an ingest that reached its commit, so the time ages while ingest fails or the schedule is disabled. GitHub disables a public repository's scheduled workflows after 60 days without activity |
-| `runs` | one row per run in start order: run ID, series, pairing ID, the components that triggered it (`changed`), the run's size (`size_bytes`, null when the record has no drill settings), box id, tier and type, start and finish times, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
+| `runs` | one row per run in start order: run ID, series, pairing ID, the record's `experiment` block (null for any other run, and for a record from before experiments), the components that triggered it (`changed`), the run's size (`size_bytes`, null when the record has no drill settings), box id, tier and type, start and finish times, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
@@ -104,7 +105,8 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 
 `site/model.js` holds the rules the page applies to `index.json`, and `scripts/ci/tests/site_model_test.mjs` tests them under node:
 
-- A run counts when its class, after overrides, is `valid`, its series is `per-trigger`, `nightly` or `campaign`, and it has a p5. `calibration` runs appear only in the runs table.
+- A run counts when its class, after overrides, is `valid`, its series is `per-trigger`, `nightly` or `campaign`, and it has a p5. `calibration` and `experiment` runs appear only in the runs table.
+- An experiment's row names, in place of the changed components, the pull request with a link, whether the run tested main's set or the branch's, the commit, and links to the other runs of its pairing. Its details view adds the same under "Experiment", with the request ID.
 - The mercury is the latest counting per-trigger or nightly run on the box `main`, with its age and the number of runs on that box since. Campaign runs, including bridge runs on `main`, light gates but do not move the mercury. With none, the headline reads "No valid per-trigger or nightly run yet", names the latest counting run in another series if there is one, and gives the latest run's class and reasons.
 - A gate lights at the first counting run whose p5 reaches the ceiling in force when it started, from any series or box.
 - The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
@@ -113,7 +115,7 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 - The runs table and details view name the flags `cap_not_reached`, `few_windows`, `cpu_capped`, `traced` and `trace_missing` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 - A run flagged `traced` and not `trace_missing` gets a "Traces in Grafana" link in its details view, and in the headline when the mercury shows it. The link opens Explore on the `filecoinfoundation` stack's Tempo data source (`GRAFANA` and `TEMPO_UID` in `site/model.js`) with the TraceQL query `{ resource.forge_perf.run_id = "<run_id>" }` from five minutes before the run's start to five minutes after its finish. It needs a Grafana login, and the page says so beside it. A run flagged `trace_missing` sent no spans, so it gets no link.
 
-`make site-preview` builds the page against seven fixture scenarios (no runs, one valid traced run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
+`make site-preview` builds the page against eight fixture scenarios (no runs, one valid traced run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs, a two-pair experiment beside per-trigger runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 
 ## Publishing a local run
 

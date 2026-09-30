@@ -62,7 +62,7 @@ The layout follows infra-nodes and infra-central (`versions.tofu`, a `versions.t
 
 Each box root pre-creates piri's six buckets (`forge-perf-piri-<box>-654654381893-piri-0-<store>`, stores from `piri/pkg/fx/store/s3/provider.go:48-96`) with a one-day expiry. The security group has no ingress; Session Manager is the only way in. `ami_id` is pinned in the constants module, where infra-nodes looks its AMI up at create time (`infra-nodes/terraform/modules/node/main.tf:18-36`), because a new kernel is an instrument change. A resize or replacement mid-run would lose the run, so `apply-box-main` waits for a reviewer's approval, given once the box is held idle (§10).
 
-The instance role reads `/forge-perf/*` parameters, writes its own prefixes of the results bucket without read or delete, and empties its own piri buckets. The persistent box's role also takes `/forge-perf` requests from `requests/` in the requests bucket and answers in `status/`; a fourth OIDC role, `forge-perf-ci-request`, trusted from the main ref of ingot, piri, sprue and hilt only, may add a request and read an answer and nothing else. The OIDC roles follow `infra-central/terraform/modules/github-actions-iam/main.tf:23-48`: `forge-perf-ci-plan` for pull requests, `forge-perf-ci-apply` and `forge-perf-ci-results` for main. The account also holds dev, so the apply role cannot stop, modify, delete or retag an EC2 resource lacking `Project = forge-perf`. main carries infra-nodes' ruleset, since any merge to forge-perf, smelt or storage-qualification main, or a new tracked `:main` image, runs code on the box as root.
+The instance role reads `/forge-perf/*` parameters, writes its own prefixes of the results bucket without read or delete, and empties its own piri buckets. The persistent box's role also takes `/forge-perf` requests from `requests/` in the requests bucket and answers in `status/`; a fourth OIDC role, `forge-perf-ci-request`, trusted from the main ref of ingot, piri, sprue and hilt only, may add a request and read an answer and nothing else. The OIDC roles follow `infra-central/terraform/modules/github-actions-iam/main.tf:23-48`: `forge-perf-ci-plan` for pull requests, `forge-perf-ci-apply` and `forge-perf-ci-results` for main. The account also holds dev, so the apply role cannot stop, modify, delete or retag an EC2 resource lacking `Project = forge-perf`. main carries infra-nodes' ruleset, since any merge to forge-perf, smelt or storage-qualification main, or a new tracked `:main` image, runs code on the box as root. Experiments add one more way in: a branch pushed to a tracked service repository runs on the box as an unprivileged container, like any `:main` image, once a member of that repository comments `/forge-perf` on its pull request (§4).
 
 ### Host
 
@@ -75,6 +75,7 @@ The instance role reads `/forge-perf/*` parameters, writes its own prefixes of t
 | `forge-perf-poll.timer`, `forge-perf-nightly.timer` | call `poll.sh` every 5 minutes and at 03:00 UTC |
 | `forge-perf-run.service` | `run.sh`; `Type=oneshot`, `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty`, no `Restart=`, as infra-nodes' reconcile unit |
 | `forge-perf-campaign.service` | campaign boxes only: one set, N times, each through `forge-perf-run.service` |
+| `forge-perf-experiment.service` | one experiment's pair, each run through `forge-perf-run.service`; started by `poll.sh`, never enabled |
 
 The units use `Wants=` and `After=docker.service`, since `Requires=` would stop them with Docker. Between runs `poll.sh` calls `update.sh`, modeled on infra-nodes' reconcile (`infra-nodes/scripts/host/reconcile.sh:16-29`, `infra-nodes/scripts/host/lib.sh:145-184`): re-exec from a copy, reset to `origin/main`, sync units, rerun `provision.sh` when `host/` changed, enable the units in `systemd/enabled.<mode>`. Campaign boxes never update.
 
@@ -90,6 +91,8 @@ Every five minutes a poll resolves a set: the smelt SHA, the harness SHA and the
 | forge-perf | `update.sh` between runs | no |
 
 Runs follow storage-qualification main, which accepts the `--stop-ingest-at` flag smelt's wrapper requires (`smelt/scripts/perf-drill.sh:241-252`). Setting `SQ_PIN` in `config/harness.conf` holds the harness at one commit instead, and harness main then does not trigger runs.
+
+**Experiments.** A developer comments `/forge-perf` on a pull request in a tracked service repository. That repository's workflow builds the pull request's head as `ghcr.io/fil-forge/<service>:pr-<n>-<sha7>` and, through the OIDC role `forge-perf-ci-request`, writes a request object to the private bucket `forge-perf-requests-654654381893`. Each poll lists the requests oldest first, refuses one that breaks a rule, and queues the rest. Between live runs it starts the oldest as `forge-perf-experiment.service`: the current main set (A), then the same set with that one image's digest replaced (B), as A B or A B B A, back to back at the per-trigger size. The pair runs atomically, so no live run or update starts inside it; live per-trigger and nightly runs always go first, none starts between 02:30 and 03:30 UTC, and at most four start per UTC day. The runs publish as series `experiment`, which never moves the thermometer, lights a gate or posts to Slack. The box writes the request's status beside it, and the workflow reports the medians and p5 of both sets and their difference against the noise band on the pull request (docs/runner.md, "Experiments").
 
 `/var/lib/forge-perf/state/` holds `pending.json`, `current.json` (with the run's phase), `last-started.json`, and a `hold` file that survives reboots. A set that ended `failed`, or `no_data` for a Forge-side reason, waits for the nightly. A set stopped by an infrastructure failure (image pull, SSM, S3, mirror fetch) is retried up to three times, 15 minutes apart. Each poll writes `published/<box>/heartbeat.json` and retries the outbox, a directory on root that holds uploads until S3 accepts them.
 
@@ -194,7 +197,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 
 | Group | Contents |
 |---|---|
-| identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`), `pairing_id`, trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
+| identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`, `experiment`), `pairing_id`, for an experiment's run its request, service, pull request, commit and role (`main` or `branch`), trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
 | `box`, `outcome` | box facts; class, reasons, flags, drill exit code and failure codes |
 | `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore rates, marked `cache_served` because read-back runs 30 to 60 seconds after each write |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
@@ -215,6 +218,8 @@ One fingerprint hashes the box facts and one the rest of the instrument, minus f
 | `availability_warning` | only `availability_error`; the import client does not retry, so one 5xx fails a capped run | shown, numbers kept | no |
 | `valid` | drill exit 0, every check passed | yes | one message saying the box recovered |
 
+Series `calibration` and `experiment` post nothing, whatever their class, and leave the alert state of the box's live series as it was.
+
 Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`, `cpu_capped`, `traced`, `trace_missing`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
 
 `publish.yml` posts to `#filone-alerts` with `SLACK_BOT_TOKEN`, as `infra-nodes/.github/workflows/smoke.yml:205-238` does, once per box and class until that box records `valid` or `availability_warning`. It also alerts once when the persistent box's heartbeat is 30 minutes old, six polls in a row fail, one run has held the box for 7 hours, or no record has arrived in 26 hours. GitHub disables scheduled workflows in a public repository after 60 days without activity, so the page shows when it was last published.
@@ -223,9 +228,9 @@ Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is
 
 A static site in `site/`, with Observable Plot and d3 vendored:
 
-1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason.
+1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` and `experiment` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason.
 2. History, one series at a time: p5 line, dashed median, gate lines, markers for instrument and box changes.
-3. The runs table, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text.
+3. The runs table, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text. An experiment's run names its pull request, the set it ran and the other runs of its pairing.
 4. How it is measured: the method, the workload (the drill's import profile, ~128 MiB objects) and the gaps from §2.
 
 ## 8. smelt changes
@@ -289,7 +294,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 
 **Tracing.** A 500 GB run makes about 340,000 requests, so a traced run samples a share of them at ingot, and the services it calls follow its decision. Tracing is on by default: each box's settings file sets `TRACE_RATIO=0.1`, so every run traces 10% of its requests, about 0.45 GB of spans for a tier 2 trigger run and 1.1 GB for a nightly. `--trace` on `run.sh` or `campaign.sh` sets another share for a run, and `--trace 0` runs it untraced; paired runs with and without `--trace 0` measure tracing's cost against the noise band. A local run stays untraced. A traced run starts a collector, `forge-perf-otel`, on `forge-network` before the stack boots. The collector is otelcol-contrib pinned in `config/images.lock`, outside smelt's services, so netem never delays it. It stamps the run ID on every span, which spares piri a change to read `OTEL_RESOURCE_ATTRIBUTES`, and writes OTLP JSON into the run directory. After the drill the run scrapes the collector's counters and stops it, so the traces reach the private raw tarball through the collect step before the wipe (docs/runner.md, "Tracing"). The services receive the ratio and run ID through smelt PR 6, which also gives piri a trace endpoint. Turning tracing on is an instrument change. After the record, every run sends its results, and a traced run its spans scrubbed to an allowlist of attributes, to the team's Grafana Cloud stack; the step is best effort and never changes the record (docs/runner.md, "Grafana").
 
-**Manual runs and bisect.** `run.sh --set <file>` ships with the first version; a later queue only writes set files. Some old digests will not boot against current smelt.
+**Manual runs and bisect.** `run.sh --set <file>` ships with the first version; experiments (§4) queue one pull request's image against main's set. Some old digests will not boot against current smelt.
 
 ## 12. Open questions
 
