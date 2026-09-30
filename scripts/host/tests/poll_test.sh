@@ -8,7 +8,8 @@
 # the logged `host-op skipped: systemctl start --no-block forge-perf-run.service`
 # and a sleeping box is the logged `host-op skipped: systemctl poweroff`. The
 # sleep cases set the uptime with UPTIME and the clock wake_at is counted from
-# with AT.
+# with AT. date answers `-u +%F` with a later day from its second call on while
+# $D/midnight exists, which is a pass that crosses midnight UTC.
 #
 # SC2015: `a && b || fail` is intended; fail runs when either check fails.
 # shellcheck disable=SC2015
@@ -85,7 +86,7 @@ out = [{"Key": "requests/" + n, "Size": os.path.getsize(os.path.join(d, n)),
                                                         datetime.timezone.utc).isoformat()}
        for n in sorted(os.listdir(d))] if os.path.isdir(d) else []
 print(json.dumps({"Contents": out} if out else {}))' "$D/requests" ;;
-      *" get-object "*) k="$(key "$@")"; cp "$D/requests/${k#requests/}" "${!#}" ;;
+      *" get-object "*) [ ! -e "$D/get-down" ] || exit 1; k="$(key "$@")"; cp "$D/requests/${k#requests/}" "${!#}" ;;
       *" delete-object "*) k="$(key "$@")"; rm -f "$D/requests/${k#requests/}"; echo "$k" >>"$D/deleted" ;;
       *" put-object "*)
         [ ! -e "$D/status-down" ] || exit 1
@@ -99,7 +100,10 @@ print(json.dumps({"Contents": out} if out else {}))' "$D/requests" ;;
   *" put-object "*heartbeat.json*)
     [ ! -e "$D/s3-down" ] || exit 1
     while [ "$1" != --body ]; do shift; done
-    cp "$2" "$D/heartbeat.json" ;;
+    cp "$2" "$D/heartbeat.json"
+    # A hold or a manual run that arrives while the heartbeat goes up.
+    [ ! -e "$D/hold-at-upload" ] || cp "$D/hold-at-upload" "$FORGE_PERF_STATE_DIR/hold"
+    [ ! -e "$D/run-at-upload" ] || touch "$D/running" ;;
   *" s3 cp "* | *" put-object "*) [ ! -e "$D/s3-down" ] && [ ! -e "$D/outbox-down" ] ;;
   *) echo "aws stub: unexpected $*" >&2; exit 1 ;;
 esac
@@ -112,6 +116,17 @@ case "$*" in
   *experiment.lock*) [ ! -e "$D/experimenting" ] ;;
   *) exit 0 ;;
 esac
+STUB
+cat >"$work/bin/date" <<'STUB'
+#!/usr/bin/env bash
+if [ "$*" = "-u +%F" ] && [ -e "$D/midnight" ]; then
+  if [ -s "$D/midnight" ]; then
+    echo 2099-01-01
+    exit 0
+  fi
+  echo seen >"$D/midnight"
+fi
+exec /bin/date "$@"
 STUB
 chmod +x "$work/bin/"*
 export PATH="$work/bin:$PATH" FORGE_PERF_HOST_OPS=skip
@@ -589,11 +604,31 @@ sleepy
 poll 0
 asleep 2026-10-02T02:55:00Z
 [ "$(seen)" = "[\"$(hash_of "$state/last-started.json")\"]" ] || fail "seen_keys $(seen)"
-AT=2026-10-01T02:54:59Z poll 0
+AT=2026-10-01T02:44:59Z poll 0
 asleep 2026-10-01T02:55:00Z
-AT=2026-10-01T02:55:00Z poll 0
+AT=2026-10-01T03:05:00Z poll 0
 asleep 2026-10-02T02:55:00Z
 echo "ok: an idle box says asleep with the next 02:55 UTC as wake_at, then powers off"
+
+sleepy
+for at in 02:45:00 02:54:59 02:55:00 02:57:00 03:01:00 03:04:59; do
+  AT="2026-10-01T${at}Z" poll 0
+  up "the nightly run is due"
+done
+echo "ok: stays up from 02:45 to 03:05 UTC, around the nightly timer"
+
+sleepy
+echo 2 >"$state/update-failures"
+poll 0
+asleep 2026-10-02T02:55:00Z
+echo "ok: an asleep heartbeat says poll_failures 0 whatever the count is"
+
+sleepy
+: >"$state/pending.json.rejected"
+poll 0
+asleep 2026-10-02T02:55:00Z
+[ "$(seen)" = "[\"$(hash_of "$state/last-started.json")\"]" ] || fail "an empty file added a key: $(seen)"
+echo "ok: an empty state file adds nothing to seen_keys"
 
 sleepy
 rm "$D/heartbeat.json"
@@ -673,6 +708,51 @@ up "an experiment is not settled"
 echo "ok: stays up while an experiment's failed status has not gone up"
 
 sleepy
+echo '{"schema": "forge-perf.status/v1", "id": "x", "state": "finished"}' >"$state/experiments/unsent/x.json"
+touch "$D/status-down"
+poll 0
+[ -e "$state/experiments/unsent/x.json" ] || fail "the unsent status went"
+up "an experiment's last status has not gone up"
+rm "$D/status-down"
+poll 0
+[ ! -e "$state/experiments/unsent/x.json" ] && [ "$(got x .state)" = finished ] || fail "the unsent status did not go up"
+asleep 2026-10-02T02:55:00Z
+echo "ok: stays up while an experiment's last status waits in unsent/"
+
+sleepy
+request 123 1
+touch "$D/get-down"
+poll 0
+grep -q "cannot read request $id1" "$work/out" && [ -e "$D/requests/$id1.json" ] || fail "the request was read"
+up "a request is not checked yet"
+echo "ok: stays up while a request could not be read"
+
+sleepy
+request 124 2 '.pairs = 3'
+touch "$D/status-down"
+poll 0
+grep -q "refused request $id2" "$work/out" && [ -e "$D/requests/$id2.json" ] || fail "the refusal went through"
+up "a request is not checked yet"
+rm "$D/status-down"
+poll 0
+[ "$(got "$id2" .state)" = refused ] || fail "no refusal"
+asleep 2026-10-02T02:55:00Z
+echo "ok: stays up while a refusal has not gone up, and sleeps once it has"
+
+sleepy
+request 123 1
+request 124 2
+request 125 3
+request 126 4
+for i in 1 2 3 4; do echo "$(date -u +%F) earlier-$i"; done >"$state/experiments/started"
+poll 0
+[ "$(beat .experiments_queued)" = 3 ] || fail "experiments_queued $(beat .experiments_queued)"
+up "a request is not checked yet"
+poll 0
+asleep 2026-10-02T00:01:00Z
+echo "ok: stays up while a request waits for a later pass to check it"
+
+sleepy
 request 123 1
 HHMM=0300 poll 0
 ! started_exp || fail "started near the nightly run"
@@ -688,6 +768,15 @@ asleep 2026-10-02T00:01:00Z
 HHMM=0200 AT=2026-10-01T02:00:00Z poll 0
 asleep 2026-10-01T02:55:00Z
 echo "ok: with experiments waiting only on the daily cap the box sleeps until 00:01 UTC, or 02:55 when that is sooner"
+
+sleepy
+request 123 1
+for i in 1 2 3 4; do echo "$(date -u +%F) earlier-$i"; done >"$state/experiments/started"
+: >"$D/midnight"
+poll 0
+grep -q "4 experiments started today" "$work/out" || fail "the cap did not hold"
+up "an experiment is queued"
+echo "ok: stays up when the daily count was taken before midnight UTC and the pass ends after it"
 
 sleepy
 echo '{"run_id": "test-9"}' >"$work/box/outbox/test-9.json"
@@ -711,6 +800,12 @@ up "up 29 s, under SLEEP_MIN_AWAKE_S (30)"
 echo "ok: stays up until it has been up SLEEP_MIN_AWAKE_S"
 
 sleepy
+sed -i.bak 's/^SLEEP_MIN_AWAKE_S=.*/SLEEP_MIN_AWAKE_S=10m/' "$work/box/checkout/config/launch.conf"
+UPTIME=5 poll 0
+up "SLEEP_MIN_AWAKE_S is not a number"
+echo "ok: stays up when SLEEP_MIN_AWAKE_S is not a number"
+
+sleepy
 status hold
 poll 0
 up "the box is held" held
@@ -722,5 +817,21 @@ poll 0
 ! grep -q "the box is held; nothing starts" "$work/out" || fail "the hold was there before the pass chose"
 up "the box is held" held
 echo "ok: a hold set after the pass chose what to start still keeps the box up"
+
+# The heartbeat that went up says asleep; the next pass replaces it.
+sleepy
+echo '{"at": "2026-10-01T12:00:00Z"}' >"$D/hold-at-upload"
+poll 0
+! powered_off || fail "powered off under a hold"
+grep -q "^poll: staying up: the box is held" "$work/out" || fail "no 'staying up: the box is held'"
+rm "$D/hold-at-upload"
+poll 0
+up "the box is held" held
+sleepy
+touch "$D/run-at-upload"
+poll 0
+! powered_off || fail "powered off under a run"
+grep -q "^poll: staying up: a run is going" "$work/out" || fail "no 'staying up: a run is going'"
+echo "ok: a hold or a run that arrives while the asleep heartbeat goes up keeps the box up"
 
 echo "poll: all tests passed"
