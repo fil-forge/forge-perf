@@ -218,7 +218,9 @@ class Status(unittest.TestCase):
                 ([("main", "m1", 1.0e9, 0.8e9)], "1 of 2 runs finished"),
                 ([("main", "m1", 1.0e9, 0.8e9), ("branch", "b1", 1.0e9, 0.8e9, "failed")],
                  "the branch run b1 ended failed"),
-                ([("main", "m1", None, None), ("branch", "b1", 1.0e9, 0.8e9)], "the main run m1 ended no_data")):
+                ([("main", "m1", None, None), ("branch", "b1", 1.0e9, 0.8e9)], "the main run m1 ended no_data"),
+                ([("main", "m1", 1.0e9, 0.0), ("branch", "b1", 1.0e9, 0.8e9)],
+                 "the main run m1 recorded a zero ingest rate")):
             with self.subTest(why=why):
                 doc = self.status("final", self.experiment(1, runs))
                 self.assertEqual((doc["state"], doc["reason"]), ("failed", why))

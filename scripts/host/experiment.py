@@ -200,6 +200,9 @@ def unusable(runs, order, instruments):
     for r in runs:
         if r["class"] not in COUNTED or r["median_bytes_per_s"] is None or r["p5_bytes_per_s"] is None:
             return f"the {r['role']} run {r['run_id']} ended {r['class']}"
+        # The schema allows a zero rate, and the comparison divides by main's.
+        if r["median_bytes_per_s"] <= 0 or r["p5_bytes_per_s"] <= 0:
+            return f"the {r['role']} run {r['run_id']} recorded a zero ingest rate"
     # The instrument (forge-perf's instrument tree, smelt, harness, settings,
     # tracing) or the box changed between runs, as after an update mid-pair.
     for r, inst in zip(runs[1:], instruments[1:]):
