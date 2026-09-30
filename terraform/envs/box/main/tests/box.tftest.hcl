@@ -178,9 +178,23 @@ run "role" {
   assert {
     condition = alltrue([
       for s in jsondecode(aws_iam_role_policy.box.policy).Statement :
-      !contains(flatten([s.Action]), "s3:GetObject") && !contains(flatten([s.Action]), "s3:DeleteObject") || s.Sid == "EmptyOwnPiriBuckets"
+      !contains(flatten([s.Action]), "s3:GetObject") && !contains(flatten([s.Action]), "s3:DeleteObject") || contains(["EmptyOwnPiriBuckets", "TakeRequests"], s.Sid)
     ])
-    error_message = "the box reads no object anywhere and deletes only in its piri buckets"
+    error_message = "the box reads and deletes only in its piri buckets and the /forge-perf queue"
+  }
+
+  assert {
+    condition = {
+      for s in jsondecode(aws_iam_role_policy.box.policy).Statement : s.Sid => {
+        actions   = toset(flatten([s.Action]))
+        resources = toset(flatten([s.Resource]))
+      } if contains(["ListRequests", "TakeRequests", "AnswerRequests"], s.Sid)
+      } == {
+      ListRequests   = { actions = toset(["s3:ListBucket"]), resources = toset(["arn:aws:s3:::forge-perf-requests-654654381893"]) }
+      TakeRequests   = { actions = toset(["s3:GetObject", "s3:DeleteObject"]), resources = toset(["arn:aws:s3:::forge-perf-requests-654654381893/requests/*"]) }
+      AnswerRequests = { actions = toset(["s3:PutObject"]), resources = toset(["arn:aws:s3:::forge-perf-requests-654654381893/status/*"]) }
+    }
+    error_message = "the persistent box takes requests from requests/ and answers in status/, nothing more"
   }
 
   assert {
@@ -259,6 +273,13 @@ run "campaign_set_role" {
       "arn:aws:s3:::forge-perf-results-654654381893/published/campaign/*",
     ])
     error_message = "a campaign box running a set cannot write the ceiling evidence"
+  }
+
+  assert {
+    condition = length([
+      for s in jsondecode(aws_iam_role_policy.box.policy).Statement : s.Sid if contains(["ListRequests", "TakeRequests", "AnswerRequests"], s.Sid)
+    ]) == 0
+    error_message = "a campaign box never touches the /forge-perf queue"
   }
 }
 

@@ -229,7 +229,15 @@ run "policies" {
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["WriteResults"].Resource])) == toset(["arn:aws:s3:::forge-perf-results-654654381893/raw/*", "arn:aws:s3:::forge-perf-results-654654381893/published/*"]),
       toset(flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["EmptyPiriBuckets"].Action])) == toset(["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:ListBucket", "s3:ListBucketMultipartUploads"]),
       alltrue([for r in flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["EmptyPiriBuckets"].Resource]) : startswith(r, "arn:aws:s3:::forge-perf-piri-")]),
-      length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "s3:")]) && !contains(["WriteResults", "EmptyPiriBuckets"], s.Sid)]) == 0,
+      length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "s3:")]) && !contains(["WriteResults", "EmptyPiriBuckets", "ListRequests", "TakeRequests", "AnswerRequests"], s.Sid)]) == 0,
+      {
+        for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => [toset(flatten([s.Action])), toset(flatten([s.Resource]))]
+        if contains(["ListRequests", "TakeRequests", "AnswerRequests"], s.Sid)
+        } == {
+        ListRequests   = [toset(["s3:ListBucket"]), toset(["arn:aws:s3:::forge-perf-requests-654654381893"])]
+        TakeRequests   = [toset(["s3:GetObject", "s3:DeleteObject"]), toset(["arn:aws:s3:::forge-perf-requests-654654381893/requests/*"])]
+        AnswerRequests = [toset(["s3:PutObject"]), toset(["arn:aws:s3:::forge-perf-requests-654654381893/status/*"])]
+      },
       flatten([{ for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s.Sid => s }["DecryptParameters"].Condition.StringEquals["kms:ViaService"]]) == ["ssm.us-east-2.amazonaws.com"],
       length([for s in jsondecode(module.github_actions_iam.box_boundary_policy_json).Statement : s if anytrue([for a in flatten([s.Action]) : startswith(a, "ssm:GetParameter")]) && s.Sid != "ReadOwnParameters"]) == 0,
     ])
@@ -260,6 +268,31 @@ run "policies" {
       flatten([{ for s in jsondecode(module.github_actions_iam.policy_json.results).Statement : s.Sid => s }["ListPublished"].Condition.StringLike["s3:prefix"]]) == ["published/*"],
     ])
     error_message = "the results role must reach published/ and nothing else"
+  }
+
+  assert {
+    condition = alltrue([
+      toset(flatten([jsondecode(module.github_actions_iam.trust_policy_json.request).Statement[0].Condition.StringEquals["token.actions.githubusercontent.com:sub"]])) == toset([
+        "repo:fil-forge/ingot:ref:refs/heads/main",
+        "repo:fil-forge/piri:ref:refs/heads/main",
+        "repo:fil-forge/sprue:ref:refs/heads/main",
+        "repo:fil-forge/hilt:ref:refs/heads/main",
+      ]),
+    ])
+    error_message = "the request role must trust the main ref of ingot, piri, sprue and hilt only"
+  }
+
+  assert {
+    condition = {
+      for s in jsondecode(module.github_actions_iam.policy_json.request).Statement : s.Sid => {
+        actions   = toset(flatten([s.Action]))
+        resources = toset(flatten([s.Resource]))
+      }
+      } == {
+      QueueRequests = { actions = toset(["s3:PutObject"]), resources = toset(["arn:aws:s3:::forge-perf-requests-654654381893/requests/*"]) }
+      ReadStatus    = { actions = toset(["s3:GetObject"]), resources = toset(["arn:aws:s3:::forge-perf-requests-654654381893/status/*"]) }
+    }
+    error_message = "the request role may only add a request and read an answer"
   }
 
   assert {

@@ -37,6 +37,25 @@ locals {
   state_bucket_name = "${module.constants.state_bucket_name_prefix}-${module.constants.nonprod_account_id}"
 
   results_role_arn = "arn:aws:iam::${module.constants.nonprod_account_id}:role/forge-perf-ci-results"
+
+  # The service repositories whose pull requests may ask for a forge-perf run
+  # with a /forge-perf comment (docs/operations.md): the four on the per-object
+  # ingest path, each with the subject prefix GitHub mints for it, read from
+  # the repository:
+  #   gh api /repos/fil-forge/<repo>/actions/oidc/customization/sub -q .sub_claim_prefix
+  # Only the main ref is trusted: issue_comment workflows run from there.
+  request_repositories = {
+    "ingot" = "repo:fil-forge/ingot"
+    "piri"  = "repo:fil-forge/piri"
+    "sprue" = "repo:fil-forge/sprue"
+    "hilt"  = "repo:fil-forge/hilt"
+  }
+  request_subjects = sort(distinct(flatten([
+    for repo, prefix in local.request_repositories : [
+      "repo:fil-forge/${repo}:ref:refs/heads/main",
+      "${prefix}:ref:refs/heads/main",
+    ]
+  ])))
 }
 
 module "tfstate" {
@@ -74,6 +93,8 @@ module "github_actions_iam" {
   state_bucket_name       = local.state_bucket_name
   state_key_prefixes      = ["network", "box"]
   results_bucket_name     = module.constants.results_bucket_name
+  requests_bucket_name    = module.constants.requests_bucket_name
+  request_subjects        = local.request_subjects
   piri_bucket_name_prefix = module.constants.piri_bucket_name_prefix
 }
 
@@ -216,6 +237,61 @@ resource "aws_s3_bucket_policy" "results" {
   bucket     = aws_s3_bucket.results.id
   policy     = data.aws_iam_policy_document.results_bucket.json
   depends_on = [aws_s3_bucket_public_access_block.results]
+}
+
+# ---------------------------------------------------------------------------
+# Requests bucket.
+#
+# A /forge-perf comment on a service repository's pull request queues a request
+# in requests/ through the request role; the persistent box takes it and
+# answers in status/ (docs/runner.md, "Experiments"). Nothing here is a record:
+# the runs publish like any other, so both prefixes expire after 30 days.
+
+resource "aws_s3_bucket" "requests" {
+  bucket = module.constants.requests_bucket_name
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "requests" {
+  bucket = aws_s3_bucket.requests.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "requests" {
+  bucket                  = aws_s3_bucket.requests.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "requests" {
+  bucket = aws_s3_bucket.requests.id
+
+  dynamic "rule" {
+    for_each = toset(["requests", "status"])
+
+    content {
+      id     = "expire-${rule.key}"
+      status = "Enabled"
+
+      filter {
+        prefix = "${rule.key}/"
+      }
+
+      expiration {
+        days = 30
+      }
+
+      abort_incomplete_multipart_upload {
+        days_after_initiation = 1
+      }
+    }
+  }
 }
 
 # ---------------------------------------------------------------------------

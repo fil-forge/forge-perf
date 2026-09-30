@@ -28,6 +28,7 @@ locals {
   account_id = module.constants.nonprod_account_id
   region     = module.constants.region
   results    = "arn:aws:s3:::${module.constants.results_bucket_name}"
+  requests   = "arn:aws:s3:::${module.constants.requests_bucket_name}"
 
   # smelt appends the node name to the manifest's bucket_prefix, and piri its
   # store: forge-perf-piri-<box>-<account>-piri-0-<store>. The longest name,
@@ -179,6 +180,44 @@ data "aws_iam_policy_document" "box" {
       "${local.results}/raw/${var.box_name}/*",
       "${local.results}/published/${var.box_name}/*",
     ], local.calibration ? ["${local.results}/raw/calibration/*"] : [])
+  }
+
+  # Only the persistent box runs /forge-perf experiments: it takes requests
+  # from the queue and answers in status/ (docs/runner.md, "Experiments").
+  dynamic "statement" {
+    for_each = var.mode == "persistent" ? [1] : []
+
+    content {
+      sid       = "ListRequests"
+      actions   = ["s3:ListBucket"]
+      resources = [local.requests]
+
+      condition {
+        test     = "StringLike"
+        variable = "s3:prefix"
+        values   = ["requests/*"]
+      }
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.mode == "persistent" ? [1] : []
+
+    content {
+      sid       = "TakeRequests"
+      actions   = ["s3:GetObject", "s3:DeleteObject"]
+      resources = ["${local.requests}/requests/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.mode == "persistent" ? [1] : []
+
+    content {
+      sid       = "AnswerRequests"
+      actions   = ["s3:PutObject"]
+      resources = ["${local.requests}/status/*"]
+    }
   }
 
   # The wipe empties the buckets after every run. Reading and writing objects

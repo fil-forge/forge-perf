@@ -6,7 +6,7 @@ Procedures an operator runs by hand against the dev account (654654381893, us-ea
 
 ### The bootstrap root
 
-`terraform/envs/bootstrap/account` holds the state bucket, the three CI roles, the results bucket, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
+`terraform/envs/bootstrap/account` holds the state bucket, the four CI roles (plan, apply and results for this repository; request for `/forge-perf` comments in ingot, piri, sprue and hilt), the results bucket, the requests bucket, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
 
 Before the first apply, create the GitHub environment `box-change`, which the apply role trusts. GitHub creates a missing environment with no protection the first time a job on any branch names it, and a job in that environment can assume the apply role. Create it with a required reviewer and main as its only deployment branch:
 

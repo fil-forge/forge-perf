@@ -80,3 +80,13 @@ variable "box_instance_types" {
   type        = list(string)
   default     = ["m9gd.*"]
 }
+
+variable "requests_bucket_name" {
+  description = "The bucket holding /forge-perf requests (requests/) and the box's answers (status/)."
+  type        = string
+}
+
+variable "request_subjects" {
+  description = "OIDC subjects that may assume the request role: the main ref of each service repository whose pull requests may ask for a forge-perf run, in both of GitHub's subject shapes. issue_comment workflows run from the default branch, so a pull request's own branch never matches."
+  type        = list(string)
+}

@@ -35,8 +35,9 @@ locals {
     for e in var.apply_environments : [for s in local.shapes : "${s}:environment:${e}"]
   ])
 
-  state_bucket_arn   = "arn:aws:s3:::${var.state_bucket_name}"
-  results_bucket_arn = "arn:aws:s3:::${var.results_bucket_name}"
+  state_bucket_arn    = "arn:aws:s3:::${var.state_bucket_name}"
+  results_bucket_arn  = "arn:aws:s3:::${var.results_bucket_name}"
+  requests_bucket_arn = "arn:aws:s3:::${var.requests_bucket_name}"
 }
 
 data "aws_iam_policy_document" "assume" {
@@ -44,6 +45,7 @@ data "aws_iam_policy_document" "assume" {
     plan    = local.plan_subjects
     apply   = concat(local.main_subjects, local.environment_subjects)
     results = local.main_subjects
+    request = var.request_subjects
   }
 
   statement {
@@ -82,6 +84,10 @@ locals {
       description = "GitHub Actions: reads published run records from the results bucket."
       policy      = data.aws_iam_policy_document.results.json
     }
+    request = {
+      description = "GitHub Actions in the service repositories: queues a /forge-perf request and reads the box's answer."
+      policy      = data.aws_iam_policy_document.request.json
+    }
   }
 }
 
@@ -119,5 +125,24 @@ data "aws_iam_policy_document" "results" {
     sid       = "ReadPublished"
     actions   = ["s3:GetObject"]
     resources = ["${local.results_bucket_arn}/published/*"]
+  }
+}
+
+
+# The request role is the service repositories' only way in. It adds a request
+# to the queue and reads the box's answer; it cannot read another request, list
+# the bucket, delete anything or touch the results bucket. The box validates
+# every request it takes (docs/runner.md, "Experiments").
+data "aws_iam_policy_document" "request" {
+  statement {
+    sid       = "QueueRequests"
+    actions   = ["s3:PutObject"]
+    resources = ["${local.requests_bucket_arn}/requests/*"]
+  }
+
+  statement {
+    sid       = "ReadStatus"
+    actions   = ["s3:GetObject"]
+    resources = ["${local.requests_bucket_arn}/status/*"]
   }
 }
