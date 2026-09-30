@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,15 @@ class Validate(unittest.TestCase):
     def test_the_tracked_services_are_the_repository_names(self):
         self.assertEqual(SERVICES["guppy"], ("GUPPY_IMAGE", "ghcr.io/fil-forge/guppy", "ghcr.io/fil-forge/guppy:main-dev"))
         self.assertIn("piri-signing-service", SERVICES)
+
+    def test_only_the_services_with_a_caller_take_requests(self):
+        # guppy is tracked but has no /forge-perf caller and no trusted subject.
+        with self.assertRaisesRegex(experiment.Refused, "takes no /forge-perf requests"):
+            check(request(service="guppy"))
+        text = (Path(__file__).resolve().parents[2] / "terraform/envs/bootstrap/account/main.tf").read_text()
+        block = re.search(r"request_repositories = \{(.*?)\n  \}", text, re.S).group(1)
+        self.assertEqual(sorted(re.findall(r'^\s*"([a-z0-9-]+)"\s*=', block, re.M)),
+                         sorted(experiment.REQUEST_SERVICES))
 
     def test_a_valid_request_keeps_only_what_the_box_uses(self):
         got = check(request())

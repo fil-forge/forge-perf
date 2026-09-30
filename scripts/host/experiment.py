@@ -37,6 +37,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 TRACKED = ROOT / "config" / "images.tracked"
 MAX_REQUEST = 8192
+# The services whose repositories carry a /forge-perf caller, the same four
+# request_repositories names in terraform/envs/bootstrap/account/main.tf. A
+# tracked service outside this list is refused even if something else holds
+# the request role.
+REQUEST_SERVICES = ("ingot", "piri", "sprue", "hilt")
 SERVICE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}\Z")
 ID = re.compile(r"^(?P<service>[a-z0-9][a-z0-9-]{0,39})-pr(?P<pr>[1-9][0-9]{0,6})-(?P<sha>[0-9a-f]{12})"
                 r"-(?P<run>[1-9][0-9]{0,19})\Z")
@@ -92,6 +97,8 @@ def validate(raw, key_id, services):
     service = req.get("service")
     if not isinstance(service, str) or not SERVICE.match(service):
         raise Refused("service is not a repository name")
+    if service not in REQUEST_SERVICES:
+        raise Refused(f"service {service} takes no /forge-perf requests")
     if service not in services:
         raise Refused(f"service {service} is not an image forge-perf tracks (config/images.tracked)")
     variable, repo, ref = services[service]
