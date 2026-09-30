@@ -403,3 +403,80 @@ run "publish_on_each_record" {
     error_message = "only EventBridge in this account may assume the dispatch role"
   }
 }
+
+run "waker" {
+  command = plan
+
+  assert {
+    condition = (
+      jsondecode(data.aws_iam_policy_document.waker_trust.json).Statement[0].Principal.Service == "lambda.amazonaws.com" &&
+      length(jsondecode(data.aws_iam_policy_document.waker_trust.json).Statement) == 1
+    )
+    error_message = "only Lambda may assume the waker's role"
+  }
+
+  assert {
+    condition = toset([
+      for s in jsondecode(data.aws_iam_policy_document.waker.json).Statement : s.Sid
+    ]) == toset(["FindTheBox", "StartTheBox", "ReadTheHeartbeat", "KeepItsRecord", "ListPublishedForTheBox", "SeeRequests", "WriteItsLogs"])
+    error_message = "the waker's policy has exactly these statements; a new grant needs a new assertion"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.waker.json).Statement :
+      s.Sid != "StartTheBox" || (
+        flatten([s.Action]) == ["ec2:StartInstances"] &&
+        flatten([s.Resource]) == ["arn:aws:ec2:us-east-2:654654381893:instance/*"] &&
+        s.Condition.StringEquals["aws:ResourceTag/Project"] == "forge-perf" &&
+        s.Condition.StringEquals["aws:ResourceTag/Box"] == "main"
+      )
+    ])
+    error_message = "the waker may start only an instance tagged as the persistent box"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for s in jsondecode(data.aws_iam_policy_document.waker.json).Statement : [
+        for a in flatten([s.Action]) :
+        contains(["ec2:DescribeInstances", "ec2:StartInstances", "s3:GetObject", "s3:PutObject", "s3:ListBucket", "logs:CreateLogStream", "logs:PutLogEvents"], a)
+      ]
+    ]))
+    error_message = "the waker may describe instances, start the box, read and write its three objects and write its logs; nothing else"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.waker.json).Statement :
+      !contains(flatten([s.Action]), "s3:PutObject") ||
+      flatten([s.Resource]) == ["arn:aws:s3:::forge-perf-results-654654381893/published/main/waker.json"]
+    ])
+    error_message = "the waker writes only its own record"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(data.aws_iam_policy_document.waker.json).Statement :
+      s.Sid != "SeeRequests" || (
+        flatten([s.Resource]) == ["arn:aws:s3:::forge-perf-requests-654654381893"] &&
+        flatten([s.Condition.StringLike["s3:prefix"]]) == ["requests/*"]
+      )
+    ])
+    error_message = "the waker lists only requests/ in the requests bucket"
+  }
+
+  assert {
+    condition = (
+      aws_lambda_function.waker.handler == "waker.handler" &&
+      aws_lambda_function.waker.timeout == 120 &&
+      aws_lambda_function.waker.environment[0].variables == tomap({
+        BOX             = "main"
+        RESULTS_BUCKET  = "forge-perf-results-654654381893"
+        REQUESTS_BUCKET = "forge-perf-requests-654654381893"
+      }) &&
+      aws_cloudwatch_event_rule.waker.schedule_expression == "rate(5 minutes)" &&
+      aws_cloudwatch_log_group.waker.retention_in_days == 30
+    )
+    error_message = "the waker runs waker.handler every five minutes for the persistent box"
+  }
+}

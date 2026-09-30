@@ -21,5 +21,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    # Zips the waker's function (main.tf, "The waker").
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.7"
+    }
   }
 }

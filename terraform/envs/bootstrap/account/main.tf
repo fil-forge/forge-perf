@@ -1,7 +1,7 @@
 # Bootstrap for the dev account: the state bucket every other root in this
 # repository keeps its state in, the roles GitHub Actions assumes, the results
-# bucket and the dispatch that publishes each record, piri's IAM user and the
-# cost budget.
+# bucket and the dispatch that publishes each record, the waker that starts a
+# sleeping box, piri's IAM user and the cost budget.
 #
 # It lives in its own root because of a chicken-and-egg problem. The bucket is
 # what every other root's backend points at, so it cannot be created by an
@@ -414,6 +414,191 @@ resource "aws_s3_bucket_lifecycle_configuration" "requests" {
       }
     }
   }
+}
+
+# ---------------------------------------------------------------------------
+# The waker.
+#
+# With SLEEP_WHEN_IDLE=1 in config/launch.conf the persistent box powers
+# itself off when it has nothing to do (docs/runner.md, "Sleeping"). This
+# function runs every five minutes and starts the box again when its last
+# heartbeat says asleep and there is a reason: its wake time has come, a
+# /forge-perf request is waiting, or main's image set changed
+# (scripts/waker/waker.py). It can start that one instance and nothing else,
+# and it holds no GitHub credential: smelt's head and the image digests are
+# public.
+#
+# The function's code is zipped from this checkout, so a change to
+# scripts/waker/waker.py, config/images.tracked or config/smelt.conf reaches
+# it at the next apply of this root.
+
+locals {
+  waker_name = "forge-perf-waker"
+  waker_box  = "main"
+  repo_root  = "${path.module}/../../../.."
+}
+
+data "archive_file" "waker" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/waker.zip"
+
+  source {
+    content  = file("${local.repo_root}/scripts/waker/waker.py")
+    filename = "waker.py"
+  }
+
+  source {
+    content  = file("${local.repo_root}/config/images.tracked")
+    filename = "images.tracked"
+  }
+
+  source {
+    content  = file("${local.repo_root}/config/smelt.conf")
+    filename = "smelt.conf"
+  }
+}
+
+data "aws_iam_policy_document" "waker_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "waker" {
+  name               = local.waker_name
+  assume_role_policy = data.aws_iam_policy_document.waker_trust.json
+}
+
+resource "aws_cloudwatch_log_group" "waker" {
+  name              = "/aws/lambda/${local.waker_name}"
+  retention_in_days = 30
+}
+
+data "aws_iam_policy_document" "waker" {
+  # DescribeInstances takes no resource or tag condition.
+  statement {
+    sid       = "FindTheBox"
+    actions   = ["ec2:DescribeInstances"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "StartTheBox"
+    actions   = ["ec2:StartInstances"]
+    resources = ["arn:aws:ec2:${module.constants.region}:${module.constants.nonprod_account_id}:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = ["forge-perf"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Box"
+      values   = [local.waker_box]
+    }
+  }
+
+  statement {
+    sid       = "ReadTheHeartbeat"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::${module.constants.results_bucket_name}/published/${local.waker_box}/heartbeat.json"]
+  }
+
+  statement {
+    sid       = "KeepItsRecord"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${module.constants.results_bucket_name}/published/${local.waker_box}/waker.json"]
+  }
+
+  # With the listing allowed, a missing heartbeat or record reads as not
+  # found, not as access denied.
+  statement {
+    sid       = "ListPublishedForTheBox"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${module.constants.results_bucket_name}"]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["published/${local.waker_box}/*"]
+    }
+  }
+
+  statement {
+    sid       = "SeeRequests"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${module.constants.requests_bucket_name}"]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["requests/*"]
+    }
+  }
+
+  # The group's ARN written out, so the whole policy is known at plan time and
+  # the tests can read it.
+  statement {
+    sid       = "WriteItsLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["arn:aws:logs:${module.constants.region}:${module.constants.nonprod_account_id}:log-group:/aws/lambda/${local.waker_name}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "waker" {
+  name   = "wake-the-box"
+  role   = aws_iam_role.waker.id
+  policy = data.aws_iam_policy_document.waker.json
+}
+
+resource "aws_lambda_function" "waker" {
+  function_name    = local.waker_name
+  description      = "Starts the sleeping persistent box when it has work."
+  role             = aws_iam_role.waker.arn
+  runtime          = "python3.13"
+  architectures    = ["arm64"]
+  handler          = "waker.handler"
+  filename         = data.archive_file.waker.output_path
+  source_code_hash = data.archive_file.waker.output_base64sha256
+  timeout          = 120
+  memory_size      = 256
+
+  environment {
+    variables = {
+      BOX             = local.waker_box
+      RESULTS_BUCKET  = module.constants.results_bucket_name
+      REQUESTS_BUCKET = module.constants.requests_bucket_name
+    }
+  }
+
+  # The function would otherwise create its own log group, without retention.
+  depends_on = [aws_cloudwatch_log_group.waker, aws_iam_role_policy.waker]
+}
+
+resource "aws_cloudwatch_event_rule" "waker" {
+  name                = "forge-perf-waker-tick"
+  description         = "Runs the waker every five minutes."
+  schedule_expression = "rate(5 minutes)"
+}
+
+resource "aws_cloudwatch_event_target" "waker" {
+  rule = aws_cloudwatch_event_rule.waker.name
+  arn  = aws_lambda_function.waker.arn
+}
+
+resource "aws_lambda_permission" "waker" {
+  statement_id  = "tick"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.waker.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.waker.arn
 }
 
 # ---------------------------------------------------------------------------

@@ -289,6 +289,12 @@ resource "aws_instance" "box" {
   user_data_replace_on_change = true
 
   lifecycle {
+    # A box that sleeps when idle (docs/runner.md, "Sleeping") is often
+    # stopped, and a stopped instance has no public address. The provider
+    # reads that as this argument turned false, which forces a replacement,
+    # so every plan made while the box sleeps would ask to destroy it.
+    ignore_changes = [associate_public_ip_address]
+
     precondition {
       condition     = data.aws_ami.pinned.architecture == local.ec2_architecture
       error_message = "ami_id is ${data.aws_ami.pinned.architecture}, architecture is ${var.architecture}."

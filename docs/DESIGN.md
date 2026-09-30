@@ -47,6 +47,8 @@ One persistent box runs in the dev account (654654381893, us-east-2): tier 2, re
 
 Tier 1 costs $395 a month **[est]** with storage, IPv4 and S3 requests, and tier 2 about $1,500 **[est]**. An AWS budget on the `Project` tag alerts on overspend.
 
+The persistent box can sleep between runs. With `SLEEP_WHEN_IDLE=1` it powers itself off when a poll finds nothing to do, and a Lambda outside the box starts it for the nightly run, a `/forge-perf` request or a new image set (docs/runner.md, "Sleeping"). The box then bills only for the hours it runs, which is what makes a larger type affordable as the persistent box. Each start can land on a different host, so a box that sleeps needs its noise band measured across restarts.
+
 The instrument is everything that measures the Forge images: box type, AMI, kernel, Docker, smelt, the harness, the third-party images and forge-perf itself. Each change to it is a reviewed PR and a marker on the page.
 
 ### OpenTofu
