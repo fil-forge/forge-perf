@@ -365,6 +365,66 @@ scripts/operator/hold.sh main off    # the newest pending set starts at the next
 
 On the box, `scripts/host/status.sh` prints the hold, the run in progress, the pending and last sets, poll failures and the timers. Hold the box before approving a box change, before paired runs, and before anything done by hand in a shell on it.
 
+## Testing a pull request with /forge-perf
+
+A developer measures a pull request in a Forge service repository by commenting on it:
+
+```
+/forge-perf
+/forge-perf pairs=2
+```
+
+The command goes on the first line of the comment. `pairs=1`, the default, runs main and then the branch; `pairs=2` runs main, branch, branch, main, which cancels slow drift across the pair at twice the box time.
+
+The repository's `forge-perf.yml` calls [`.github/workflows/pr-run.yml`](../.github/workflows/pr-run.yml) at a forge-perf commit it pins. It reacts to the comment with a rocket and posts a comment of its own, a table with the commit, the image, the state and a link to the workflow run, which it rewrites as the request moves:
+
+1. It builds the pull request's head commit for linux/arm64 on a native arm64 runner and pushes it only as `ghcr.io/fil-forge/<service>:pr-<n>-<sha7>`, labelled with the commit and the repository. The repository's own `main`, `latest` and `sha-*` tags are left alone.
+2. It writes a request to `s3://forge-perf-requests-654654381893/requests/<id>.json` as the role `forge-perf-ci-request`.
+3. It reads `status/<id>.json`, which the box writes, once a minute. The comment shows the request as waiting for pickup (the box polls every five minutes), queued with its place in line, running, and finally the result.
+
+The result is a table with a row per run: its role (main or branch), its outcome class, its median and p5, a link to the run on the page, and for a traced run a link to its spans in Grafana, as in "Reading a run's traces" below. Under it are the branch's median and p5 deltas against main, the noise band for each and the verdict: faster, slower or within noise. The workflow run's summary carries the same text. Branch runs go through the same record as any other run and appear in the page's runs table with their pairing ID, `exp-<id>`.
+
+**How it compares.** When the experiment starts, the box resolves main's set as its poll would: the smelt and harness SHAs and the digest of every tracked image. Main runs that set; branch runs the same set with the one service's digest replaced by the pull request's. The runs go back to back on the persistent box at the per-trigger size (500 GB on tier 2, about 10 minutes a run), traced at the settings file's ratio, and no other run starts between them. The verdict compares the median of the branch runs with the median of the main runs, and judges it on the median, which holds to about ±3.5% between runs where p5 moves about ±11%. The noise band comes from the committed tier 2 per-trigger noise band once one exists; until then it is those two figures. A difference inside the band is reported as within noise.
+
+**Limits.**
+
+- Only the repository's owners, members and collaborators can start one, and only for an open pull request from a branch of the same repository. A fork's pull request is refused, since its image would run on the box.
+- The box runs live per-trigger and nightly runs first, starts no experiment between 02:30 and 03:30 UTC or while it is held, and starts at most four a UTC day. The rest wait in the queue.
+- The box refuses a request whose service is not in `config/images.tracked` or whose image cannot be pulled; the comment shows the reason.
+- The workflow waits 5 hours 30 minutes. After that the comment says it stopped waiting; the box may still run the request, and its runs then appear on the page.
+- Each comment is its own request. Two comments on one pull request queue two experiments.
+- To test again, comment `/forge-perf` again. Re-running all jobs of a run the box has already taken fails at the request job, since the retry would reuse the run's request id.
+- The numbers are advisory. The image under test runs as built from the branch, and a service that acknowledges writes without storing them reports a high rate.
+
+**Adding a repository.** A service repository opts in with `.github/workflows/forge-perf.yml`:
+
+```yaml
+name: forge-perf
+on:
+  issue_comment:
+    types: [created]
+permissions: {}
+jobs:
+  perf:
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '/forge-perf' ||
+       startsWith(github.event.comment.body, '/forge-perf ') ||
+       startsWith(github.event.comment.body, fromJSON('"/forge-perf\t"')) ||
+       startsWith(github.event.comment.body, fromJSON('"/forge-perf\r"')) ||
+       startsWith(github.event.comment.body, fromJSON('"/forge-perf\n"'))) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    uses: fil-forge/forge-perf/.github/workflows/pr-run.yml@<forge-perf commit, 40 hex> # main
+    permissions: {contents: read, packages: write, pull-requests: write, issues: write, id-token: write}
+    with: {service: <repo>, dockerfile: Dockerfile, target: prod}
+```
+
+The inputs are `service` (the repository's name, which the workflow checks), `dockerfile` and `context` (paths from the repository root, `Dockerfile` and `.` by default), `target` (empty for the last stage) and `build-args`, one `NAME=value` per line. In `build-args`, `{commit}`, `{sha7}`, `{pr}` and `{tag}` become the head commit, its first seven characters, the pull request number and the image tag, since the caller's own `github.sha` is main's on a comment. The build must produce the flavour `config/images.tracked` follows: the prod target for ingot, sprue, hilt and swarf, `Dockerfile.dev` for guppy, the plain Dockerfile for the rest. The `if` starts a run only for a comment that begins with `/forge-perf`, alone or followed by a space, tab or line break, so a comment such as `/forge-performance` starts nothing. The role `forge-perf-ci-request` trusts the main branch of ingot, piri, sprue and hilt, where comment-triggered workflows run. Another repository needs its entry in `request_repositories` in `terraform/envs/bootstrap/account/main.tf`, applied, before its comments can file a request.
+
+The build job runs the branch's Dockerfile with `packages: write` and no AWS access. The request and wait jobs hold the role, and run only forge-perf's `scripts/ci/pr_run.py`. Every job checks it out at `job.workflow_sha`, the commit the caller pins. That role can write `requests/*` and read `status/*`, and nothing else.
+
+**Moving the pin.** A change to `pr-run.yml` or `scripts/ci/pr_run.py` reaches a repository when its `forge-perf.yml` names a newer forge-perf commit, through a pull request in that repository. Until then a forge-perf change cannot run with that repository's `packages: write`, which covers every tag of its image. forge-perf has no release tags, so Dependabot leaves the pin alone.
+
 ## A campaign
 
 A campaign runs one committed set a few times on a box of its own beside the persistent one, publishes each run and powers off. The box is `campaign`: its records land in `published/campaign/`, its piri buckets are `forge-perf-piri-campaign-654654381893-piri-0-*`, and `terraform/envs/box/campaign` holds it.
