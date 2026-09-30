@@ -14,8 +14,12 @@
 #   report   updates the comment when an earlier job failed or was cancelled
 #
 # The build job runs the pull request's Dockerfile and holds no AWS
-# credentials. The jobs that hold them run only forge-perf's own code, checked
-# out from main, where scripts/ci/pr_run.py does everything beyond one command.
+# credentials. The jobs that hold them run only forge-perf's own code, where
+# scripts/ci/pr_run.py does everything beyond one command. Every job checks
+# that code out at job.workflow_sha, the commit this file came from, so a
+# caller that pins pr-run.yml to a commit pins the scripts too. Should the
+# property ever be empty, the checkout fails on a ref that does not exist
+# instead of falling back to the default branch.
 #
 # Everything runs in the caller's context: github.repository is the service
 # repository, and an issue_comment run takes the workflow from its default
@@ -79,7 +83,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fil-forge/forge-perf
-          ref: main
+          ref: ${{ job.workflow_sha || 'no-job-workflow-sha' }}
           path: forge-perf
           sparse-checkout: scripts/ci
           persist-credentials: false
@@ -170,7 +174,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fil-forge/forge-perf
-          ref: main
+          ref: ${{ job.workflow_sha || 'no-job-workflow-sha' }}
           path: forge-perf
           sparse-checkout: scripts/ci
           persist-credentials: false
@@ -221,7 +225,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fil-forge/forge-perf
-          ref: main
+          ref: ${{ job.workflow_sha || 'no-job-workflow-sha' }}
           path: forge-perf
           sparse-checkout: scripts/ci
           persist-credentials: false
@@ -277,7 +281,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fil-forge/forge-perf
-          ref: main
+          ref: ${{ job.workflow_sha || 'no-job-workflow-sha' }}
           path: forge-perf
           sparse-checkout: scripts/ci
           persist-credentials: false
@@ -320,7 +324,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fil-forge/forge-perf
-          ref: main
+          ref: ${{ job.workflow_sha || 'no-job-workflow-sha' }}
           path: forge-perf
           sparse-checkout: scripts/ci
           persist-credentials: false

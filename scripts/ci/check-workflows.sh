@@ -31,5 +31,7 @@ if [ -n "$unpinned" ]; then
 fi
 
 actionlint -version | sed -n '1s/^/actionlint /p'
-actionlint "${files[@]}"
+# GitHub added job.workflow_sha on 2026-09-03, after actionlint 1.7.12, the
+# newest release. pr-run.yml checks its own commit out with it.
+actionlint -ignore 'property "workflow_sha" is not defined in object type' "${files[@]}"
 echo "workflows: ${#files[@]} file(s) clean, every action pinned"
