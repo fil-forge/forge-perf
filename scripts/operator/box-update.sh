@@ -4,7 +4,8 @@
 # The box moves its checkout to the newest commit of the ref it tracks,
 # reruns provisioning when host/ changed, and syncs and enables its units.
 # update.sh refuses while a run is in progress and on a campaign box; this
-# script then exits non-zero with update.sh's message.
+# script then exits non-zero with update.sh's message. A sleeping box is woken
+# first.
 #
 # Usage:
 #   scripts/operator/box-update.sh main
@@ -21,7 +22,7 @@ WAIT_SECONDS="${BOX_UPDATE_WAIT_SECONDS:-$((TIMEOUT_SECONDS + 60))}"
 POLL_SECONDS="${BOX_UPDATE_POLL_SECONDS:-5}"
 
 require aws
-INSTANCE_ID="$(box_instance_id "$BOX")"
+INSTANCE_ID="$(box_wake "$BOX")"
 
 COMMAND_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" \
   --document-name AWS-RunShellScript --comment "forge-perf update.sh on $BOX" \

@@ -6,6 +6,9 @@
 #
 # `on` sets the hold at once, so no new run starts, then waits for a run
 # already going to finish, up to 7 hours. The hold survives a reboot.
+#
+# A sleeping box is woken first. A held box does not sleep, so `on` is also
+# how to keep a box up, and `off` lets it sleep again once it is idle.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -22,7 +25,7 @@ WAIT_SECONDS="${HOLD_WAIT_SECONDS:-$((TIMEOUT_SECONDS + 60))}"
 POLL_SECONDS="${HOLD_POLL_SECONDS:-15}"
 
 require aws
-INSTANCE_ID="$(box_instance_id "$BOX")"
+INSTANCE_ID="$(box_wake "$BOX")"
 
 COMMAND_ID="$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE_ID" \
   --document-name AWS-RunShellScript --comment "forge-perf hold $2 on $BOX" \

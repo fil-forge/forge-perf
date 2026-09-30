@@ -5,6 +5,9 @@
 # Session Manager is the only way in, and it works because the SSM agent dials
 # out. Needs the Session Manager plugin for the AWS CLI.
 #
+# A sleeping box is woken first. An open session does not keep it up: hold
+# the box (hold.sh) before working on it by hand.
+#
 # Usage:
 #   scripts/operator/ssm-session.sh main
 set -euo pipefail
@@ -15,7 +18,7 @@ set -euo pipefail
 BOX="${1:?usage: ssm-session.sh <box>}"
 
 require aws
-INSTANCE_ID="$(box_instance_id "$BOX")"
+INSTANCE_ID="$(box_wake "$BOX")"
 
 echo "Opening a session on box '$BOX' ($INSTANCE_ID)."
 echo "The host scripts live in /opt/forge-perf/scripts/host and want root:"
