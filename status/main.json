@@ -1,9 +1,5 @@
 {
   "alerted_classes": [],
   "conditions": [],
-  "idle_since": {
-    "at": "2026-10-01T21:15:04Z",
-    "up_since": "2026-10-01T20:47:41Z"
-  },
   "infra_streak": 0
 }
