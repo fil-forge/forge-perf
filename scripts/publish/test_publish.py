@@ -344,6 +344,14 @@ class Publish(unittest.TestCase):
         self.assertEqual(self.ingest()["alerts"], [])
         self.assertEqual(self.conditions(), [])
 
+    def test_an_idle_box_without_records_that_stays_up_alerts(self):
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest()["alerts"],
+                         ["forge-perf main: up for 5 hours without a run; it should have gone to sleep "
+                          "(journalctl -u forge-perf-poll shows why). https://fil-forge.github.io/forge-perf/",
+                          "forge-perf main: no record yet. https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.conditions(), ["awake_idle", "no_record"])
+
     def test_awake_idle_holds_off(self):
         cases = {
             "up three hours, not over": dict(up_since="2026-10-01T21:00:00Z"),

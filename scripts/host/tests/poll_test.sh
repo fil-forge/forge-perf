@@ -615,7 +615,11 @@ for unknown in x 12.5; do
   UPTIME="$unknown" poll 0
   [ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true null" ] || fail "uptime '$unknown': $(cat "$D/heartbeat.json")"
 done
-echo "ok: the heartbeat says whether the box may sleep and since when it is up, null when the uptime is unknown"
+sleepy
+UPTIME=0599 AT=2026-10-01T00:05:00Z poll 0
+up "up 599 s, under SLEEP_MIN_AWAKE_S (600)"
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-09-30T23:55:01Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+echo "ok: the heartbeat says whether the box may sleep and since when it is up, null when the uptime is unknown, and reads a leading zero as decimal"
 
 sleepy
 poll 0
