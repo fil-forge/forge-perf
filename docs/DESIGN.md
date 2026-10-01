@@ -37,13 +37,13 @@ smelt's ingot also follows swarf's revocation firehose and reaches OpenBao over 
 
 ## 3. The box and its tiers
 
-One persistent box runs in the dev account (654654381893, us-east-2): tier 2, resized in place from tier 1 after gate 1 lit on 2026-09-28. Tier 3 exists only during campaigns: a short-lived box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
+One persistent box runs in the dev account (654654381893, us-east-2): tier 3, resized in place from tier 1 after gate 1 lit on 2026-09-28 and from tier 2 after its own network bounded the number on 2026-09-30. It sleeps between runs, so it bills only for the hours it runs. Campaigns run short-lived boxes beside it: a campaign box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
 
 | Tier | Type | Cores | Memory | Instance store (4 KiB read/write IOPS) | Network | On-demand |
 |---|---|---|---|---|---|---|
 | 1 | m9gd.2xlarge | 8 | 32 GiB | 474 GB (174k / 87k) | 4.25 Gbps baseline, 17 burst | ~$367/month |
 | 2 | m9gd.8xlarge | 32 | 128 GiB | 1,900 GB (698k / 349k) | 17 Gbps | ~$1,468/month |
-| 3 | m9gd.16xlarge | 64 | 256 GiB | 3,800 GB (1.40M / 698k) | 34 Gbps | $4.02/hour, campaigns only |
+| 3 | m9gd.16xlarge | 64 | 256 GiB | 3,800 GB (1.40M / 698k) | 34 Gbps | $4.02/hour while it runs |
 
 Tier 1 costs $395 a month **[est]** with storage, IPv4 and S3 requests, and tier 2 about $1,500 **[est]**. An AWS budget on the `Project` tag alerts on overspend.
 
