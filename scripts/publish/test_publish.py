@@ -330,6 +330,11 @@ class Publish(unittest.TestCase):
 
     def test_an_idle_box_that_stays_up_alerts_once(self):
         self.record(fixture_record("valid", 12))
+        # The first idle heartbeat starts the clock; a box that sleeps is gone
+        # by the next poll, so only one idle for 30 minutes alerts.
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest(now="2026-10-01T23:26:00Z")["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
         self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
         got = self.ingest()
         self.assertEqual(got["alerts"],
@@ -345,12 +350,31 @@ class Publish(unittest.TestCase):
         self.assertEqual(self.conditions(), [])
 
     def test_an_idle_box_without_records_that_stays_up_alerts(self):
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest(now="2026-10-01T23:26:00Z")["alerts"],
+                         ["forge-perf main: no record yet. https://fil-forge.github.io/forge-perf/"])
         self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
         self.assertEqual(self.ingest()["alerts"],
                          ["forge-perf main: up for 5 hours without a run; it should have gone to sleep "
-                          "(journalctl -u forge-perf-poll shows why). https://fil-forge.github.io/forge-perf/",
-                          "forge-perf main: no record yet. https://fil-forge.github.io/forge-perf/"])
+                          "(journalctl -u forge-perf-poll shows why). https://fil-forge.github.io/forge-perf/"])
         self.assertEqual(self.conditions(), ["awake_idle", "no_record"])
+
+    def test_one_idle_pass_after_a_long_run_does_not_alert(self):
+        # A nightly run started over three hours ago; the pass after it reports
+        # idle once before the box sleeps.
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
+
+    def test_a_reboot_restarts_the_idle_clock(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.ingest(now="2026-10-01T23:26:00Z")
+        # The box slept and woke: a new boot time, so the earlier idle does not count.
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T19:00:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
 
     def test_awake_idle_holds_off(self):
         cases = {

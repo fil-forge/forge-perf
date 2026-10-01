@@ -58,6 +58,7 @@ LONG_RUN = dt.timedelta(hours=7)
 NO_RECORD = dt.timedelta(hours=26)
 WAKE_GRACE = dt.timedelta(minutes=20)  # an instance start, a boot and the first poll
 AWAKE_IDLE = dt.timedelta(hours=3)
+AWAKE_IDLE_HOLD = dt.timedelta(minutes=30)
 MAX_NEW = 200  # new keys per run, so a backlog drains across runs
 
 
@@ -409,9 +410,19 @@ def heartbeat_alerts(box, hb, waker, latest_run, now, status):
             now - utc(hb["run_started_at"]) > LONG_RUN:
         conditions["long_run"] = f"one run has held the box since {hb['run_started_at']}"
     # A box that may sleep and stays up idle costs money for nothing: an
-    # uncheckable request, a retry loop or a stuck update can keep it up.
-    if hb and "heartbeat_stale" not in conditions and hb["state"] == "idle" and hb["sleep_enabled"] and \
-            hb["up_since"] and now - utc(hb["up_since"]) > AWAKE_IDLE and \
+    # uncheckable request, a retry loop or a stuck update can keep it up. A box
+    # that sleeps is gone by the next poll, so the condition needs idle
+    # heartbeats from one boot spanning AWAKE_IDLE_HOLD. That also spares the
+    # one idle pass after a long nightly run.
+    idle = hb and "heartbeat_stale" not in conditions and hb["state"] == "idle" and hb["sleep_enabled"] \
+        and hb["up_since"]
+    first = status.get("idle_since") or {}
+    if not idle:
+        status.pop("idle_since", None)
+    elif first.get("up_since") != hb["up_since"] or not utc(first.get("at")):
+        status["idle_since"] = first = {"up_since": hb["up_since"], "at": hb["at"]}
+    if idle and utc(hb["at"]) - utc(first["at"]) >= AWAKE_IDLE_HOLD and \
+            now - utc(hb["up_since"]) > AWAKE_IDLE and \
             (latest_run is None or now - run_id_time(latest_run) > AWAKE_IDLE):
         hours = int((now - utc(hb["up_since"])).total_seconds() // 3600)
         conditions["awake_idle"] = f"up for {hours} hours without a run; it should have gone to sleep " \
