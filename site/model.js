@@ -115,6 +115,12 @@ export function ago(ms) {
 export function heartbeatLine(hb, now) {
   if (!hb) return "no heartbeat received";
   const age = now - Date.parse(hb.at);
+  // A box that put itself to sleep sends no heartbeat until the waker starts it.
+  if (hb.state === "asleep") {
+    if (!hb.wake_at) return `asleep for ${ago(age)}`;
+    const wake = `${hb.wake_at.slice(0, 16).replace("T", " ")} UTC`;
+    return `asleep for ${ago(age)}, ${Date.parse(hb.wake_at) > now ? "next wake" : "due to wake"} ${wake}`;
+  }
   if (age > STALE_MS) return `no heartbeat for ${ago(age)}`;
   const parts = [];
   if (hb.state === "held") parts.push("held");

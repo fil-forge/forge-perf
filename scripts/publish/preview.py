@@ -109,7 +109,8 @@ def scenarios(now):
     idle = {"at": iso(now - dt.timedelta(minutes=3)), "state": "idle", "poll_failures": 0, "run_started_at": None}
     out = {}
     out["no-runs"] = ("No runs yet", [], unmeasured, [], idle)
-    out["one-run"] = ("One valid traced run", [record(hours(3), p5=0.31e9, windows=22, traced=True)], unmeasured, [], idle)
+    out["one-run"] = ("One valid traced run, the box asleep", [record(hours(3), p5=0.31e9, windows=22, traced=True)],
+                      unmeasured, [], dict(idle, at=iso(hours(2)), state="asleep", wake_at=iso(now + dt.timedelta(hours=4))))
     out["calibration-only"] = ("Calibration runs only", [
         record(hours(40 - 6 * i), series="calibration", p5=p) for i, p in enumerate([0.24e9, 0.25e9, 0.23e9, 0.26e9])
     ] + [record(hours(4), "no_data", series="calibration")], unmeasured, [], idle)

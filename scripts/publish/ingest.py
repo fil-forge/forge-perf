@@ -5,8 +5,9 @@
               [--boxes data/boxes.json] [--now <UTC time>]
     ingest.py --self-test
 
-Reads published/<box>/<run_id>.json and published/<box>/heartbeat.json with
-the AWS CLI, checks each new record (docs/publishing.md), writes the ones that
+Reads published/<box>/<run_id>.json, published/<box>/heartbeat.json and
+published/<box>/waker.json with the AWS CLI, checks each new record
+(docs/publishing.md), writes the ones that
 pass to runs/<yyyy>/<mm>/<run_id>.json and the alert state to status/. The
 workflow commits what changed. Slack text, the rejection count and the
 heartbeat summaries go to $GITHUB_OUTPUT as `alerts`, `rejected` and
@@ -38,9 +39,11 @@ SCHEMA_PATH = "schema/run-record.v1.json"
 PAGE = "https://fil-forge.github.io/forge-perf/"
 MAX_RECORD = 64 * 1024
 MAX_HEARTBEAT = 4 * 1024
+MAX_WAKER = 16 * 1024
 RUN_ID = r"[a-z0-9]{2,12}-[0-9]{8}t[0-9]{6}z"
 RECORD_KEY = re.compile(rf"^published/([a-z0-9]{{2,12}})/({RUN_ID})\.json\Z")
 SHA1 = re.compile(r"^[0-9a-f]{40}\Z")
+ERROR_CODE = re.compile(r"^[A-Za-z0-9.]{1,64}\Z")
 UTC = re.compile(r"^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]{1,9})?Z\Z")
 FUTURE = dt.timedelta(minutes=10)
 INFRASTRUCTURE = {"image_pull_failed", "secrets_unavailable", "s3_unreachable",
@@ -53,6 +56,7 @@ HEARTBEAT_STALE = dt.timedelta(minutes=30)
 POLL_FAILURES = 6
 LONG_RUN = dt.timedelta(hours=7)
 NO_RECORD = dt.timedelta(hours=26)
+WAKE_GRACE = dt.timedelta(minutes=20)  # an instance start, a boot and the first poll
 MAX_NEW = 200  # new keys per run, so a backlog drains across runs
 
 
@@ -335,23 +339,69 @@ def heartbeat_summary(raw):
     if not isinstance(hb, dict) or utc(hb.get("at")) is None:
         return None
     failures = hb.get("poll_failures")
+    wake_at = hb.get("wake_at") if utc(hb.get("wake_at")) else None
+    state = hb.get("state") if hb.get("state") in ("idle", "running", "held", "asleep") else None
+    # Asleep turns the heartbeat conditions off, so it counts only with the
+    # wake time that wake_failed is judged against.
+    if state == "asleep" and wake_at is None:
+        state = None
     return {
         "at": hb["at"],
-        "state": hb.get("state") if hb.get("state") in ("idle", "running", "held") else None,
+        "state": state,
+        "wake_at": wake_at,
         "poll_failures": failures if isinstance(failures, int) and not isinstance(failures, bool)
         and 0 <= failures < 10**6 else None,
         "run_started_at": hb.get("run_started_at") if utc(hb.get("run_started_at")) else None,
     }
 
 
-def heartbeat_alerts(box, hb, latest_run, now, status):
+def waker_summary(raw):
+    """The waker's last wake attempt (published/<box>/waker.json), or None when it is unusable."""
+    try:
+        waker = json.loads(raw) if raw is not None and len(raw) <= MAX_WAKER else None
+    except ValueError:
+        waker = None
+    if not isinstance(waker, dict) or utc(waker.get("requested_at")) is None or \
+            waker.get("result") not in ("started", "failed"):
+        return None
+    error = waker.get("error")
+    return {
+        "requested_at": waker["requested_at"],
+        "result": waker["result"],
+        "error": error if isinstance(error, str) and ERROR_CODE.match(error) else None,
+        "first_failed_at": waker.get("first_failed_at") if utc(waker.get("first_failed_at")) else None,
+    }
+
+
+def wake_failure(hb, waker, now):
+    """The wake_failed text, or None while the box is awake, asleep on time or inside WAKE_GRACE."""
+    # A wake attempt the box has reported since is over, whatever its result.
+    if waker is not None and (hb is None or utc(waker["requested_at"]) > utc(hb["at"])):
+        if waker["result"] == "failed":
+            if now - utc(waker["first_failed_at"] or waker["requested_at"]) > WAKE_GRACE:
+                return f"the waker cannot start the box ({waker['error'] or 'no error code'})"
+        elif now - utc(waker["requested_at"]) > WAKE_GRACE:
+            return f"the waker started the box at {waker['requested_at']} and it has not reported since"
+        return None
+    if hb and hb["state"] == "asleep" and now - utc(hb["wake_at"]) > WAKE_GRACE:
+        return f"the box slept past its wake time {hb['wake_at']}"
+    return None
+
+
+def heartbeat_alerts(box, hb, waker, latest_run, now, status):
     """Alert lines for the box's heartbeat conditions, each once while it holds."""
     conditions = {}
-    if hb is None or now - utc(hb["at"]) > HEARTBEAT_STALE:
+    # A box that put itself to sleep sends no heartbeat, and its last one's
+    # counts are from before the sleep. wake_failed watches it instead.
+    asleep = hb is not None and hb["state"] == "asleep"
+    if hb is None or (not asleep and now - utc(hb["at"]) > HEARTBEAT_STALE):
         conditions["heartbeat_stale"] = "no heartbeat" if hb is None else \
             f"no heartbeat for {int((now - utc(hb['at'])).total_seconds() // 60)} minutes"
-    if hb and (hb["poll_failures"] or 0) >= POLL_FAILURES:
+    if hb and not asleep and (hb["poll_failures"] or 0) >= POLL_FAILURES:
         conditions["poll_failures"] = f"{hb['poll_failures']} polls in a row failed"
+    failure = wake_failure(hb, waker, now)
+    if failure:
+        conditions["wake_failed"] = failure
     if hb and hb["state"] == "running" and hb["run_started_at"] and \
             now - utc(hb["run_started_at"]) > LONG_RUN:
         conditions["long_run"] = f"one run has held the box since {hb['run_started_at']}"
@@ -377,7 +427,7 @@ def ingest(bucket, results, boxes, checks):
     known_rejected = read_json(rejected_path, {})
     rejected, alerts, fresh = {}, [], []
     listing = bucket.list()
-    # Heartbeats, probes and records already committed are skipped. Keys
+    # Heartbeats, waker records, probes and records already committed are skipped. Keys
     # rejected before are checked again on every run; at most MAX_NEW others
     # are read per run, oldest first, so a backlog commits in slices.
     new = sorted((k for k in listing if RECORD_KEY.match(k) and RECORD_KEY.match(k).group(2) not in have),
@@ -433,8 +483,10 @@ def ingest(bucket, results, boxes, checks):
         key = f"published/{box}/heartbeat.json"
         hb = heartbeat_summary(bucket.get(key) if key in listing else None)
         heartbeats[box] = hb
+        key = f"published/{box}/waker.json"
+        waker = waker_summary(bucket.get(key) if key in listing else None)
         latest = by_box.get(box, [None])[-1]
-        alerts += heartbeat_alerts(box, hb, latest, checks.now, status)
+        alerts += heartbeat_alerts(box, hb, waker, latest, checks.now, status)
     for box, status in statuses.items():
         write_if_changed(results / "status" / f"{box}.json", status)
     new_rejections = [k for k in rejected if known_rejected.get(k) != rejected[k]]

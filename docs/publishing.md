@@ -26,7 +26,7 @@ Anyone can read every record with `git clone -b results https://github.com/fil-f
 
 ## Ingest checks
 
-`scripts/publish/ingest.py` lists `published/`, skips every key that is not `published/<box>/<run_id>.json` (heartbeats, the role probe) and every run ID already under `runs/`, and runs each new record through these checks in order, oldest run ID first and at most 200 new keys per run, so a backlog commits over several runs. The first failure rejects the record and names the check; the log gives the key and the check, never the record's text.
+`scripts/publish/ingest.py` lists `published/`, skips every key that is not `published/<box>/<run_id>.json` (heartbeats, waker records, the role probe) and every run ID already under `runs/`, and runs each new record through these checks in order, oldest run ID first and at most 200 new keys per run, so a backlog commits over several runs. The first failure rejects the record and names the check; the log gives the key and the check, never the record's text.
 
 | Check | Rejects |
 |---|---|
@@ -69,14 +69,25 @@ The workflow posts to `#filone-alerts` with `SLACK_BOT_TOKEN`. The text comes fr
 
 Each class posts once per box and is added to `alerted_classes`. A `valid` or `availability_warning` record clears the list with the recovery line, and the classes can post again.
 
-**Heartbeats.** For each box in `data/boxes.json` the workflow reads `published/<box>/heartbeat.json` and posts once when a condition starts. A condition that ends leaves `conditions` without a message, so it can post again if it returns.
+**Heartbeats.** For each box in `data/boxes.json` the workflow reads `published/<box>/heartbeat.json` and `published/<box>/waker.json` and posts once when a condition starts. A condition that ends leaves `conditions` without a message, so it can post again if it returns.
 
 | Condition | Holds when |
 |---|---|
-| `heartbeat_stale` | no heartbeat, or its `at` is more than 30 minutes old |
-| `poll_failures` | `poll_failures` is 6 or more |
+| `heartbeat_stale` | no heartbeat, or its `at` is more than 30 minutes old and its `state` is not `asleep` |
+| `poll_failures` | `poll_failures` is 6 or more and `state` is not `asleep` |
 | `long_run` | `state` is `running` and `run_started_at` is more than 7 hours old |
 | `no_record` | the box's newest committed run started more than 26 hours ago, or it has none. While a heartbeat under 30 minutes old says `running`, a box with records is judged when that run ends, and a `no_record` already raised holds without posting again |
+| `wake_failed` | a sleeping box is not back when it should be, in one of the three ways below |
+
+A box with `SLEEP_WHEN_IDLE=1` powers itself off when it has nothing to do (`docs/runner.md`). Its last heartbeat says `state: asleep` and gives `wake_at`, the time it next needs to be up, and a waker starts it then, or earlier for a request or a new set. While the heartbeat says `asleep` its age and its `poll_failures` raise nothing, since a stopped box sends no heartbeat. An `asleep` heartbeat without a valid `wake_at` is read as an unknown state, so it goes stale like any other. `no_record` is judged the same asleep or awake.
+
+The waker writes `published/<box>/waker.json` at every wake attempt: `requested_at`, `result` (`started` or `failed`), `error` (the AWS error code) and `first_failed_at` (the first failure of an unbroken run of them). An absent or unusable waker record (over 16 KiB, not a JSON object, no valid `requested_at`, a `result` other than those two) is read as no waker information, never as an error. A wake attempt counts only while its `requested_at` is later than the heartbeat's `at`: once the box has reported, the attempt is over. `wake_failed` allows 20 minutes for an instance start, a boot and the first poll, and then posts one of:
+
+| Text | Holds when |
+|---|---|
+| `the waker cannot start the box (<error>)` | the latest attempt `failed` and `first_failed_at` is more than 20 minutes old. An `error` that is not a bare code shows as `no error code` |
+| `the waker started the box at <time> and it has not reported since` | the latest attempt `started` the box more than 20 minutes ago |
+| `the box slept past its wake time <wake_at>` | the heartbeat says `asleep`, `wake_at` is more than 20 minutes past, and the waker has made no attempt since the heartbeat |
 
 The Slack post comes before the commit to `results`, and a failed post fails the job. Nothing is committed and the next run posts again, so an alert can repeat but is never lost. While Slack refuses posts, for example with the token unset or the app not in the channel, no new record is committed and records wait in the bucket.
 
@@ -91,7 +102,7 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | `published_at` | the build's UTC time, so the page can show when it was last published. A build follows only an ingest that reached its commit, so the time ages while ingest fails or the schedule is disabled. GitHub disables a public repository's scheduled workflows after 60 days without activity |
 | `runs` | one row per run in start order: run ID, series, pairing ID, the record's `experiment` block (null for any other run, and for a record from before experiments), the components that triggered it (`changed`), the run's size (`size_bytes`, null when the record has no drill settings), box id, tier and type, start and finish times, class, reasons, flags, p5, median, writes per second, steady windows, measured node-to-central round trip, both fingerprints, and `instrument_changes` |
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
-| `heartbeats` | per box, the heartbeat's `at`, `state`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
+| `heartbeats` | per box, the heartbeat's `at`, `state`, `wake_at`, `poll_failures` and `run_started_at` after the ingest job checked each against its pattern, or null |
 
 `instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip), `trace` (the trace ratio, or tracing turned on or off) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
 
@@ -110,12 +121,12 @@ A recalibration moves the current measurement into the gate's `previous` list (o
 - The mercury is the latest counting per-trigger or nightly run on the box `main`, with its age and the number of runs on that box since. Campaign runs, including bridge runs on `main`, light gates but do not move the mercury. With none, the headline reads "No valid per-trigger or nightly run yet", names the latest counting run in another series if there is one, and gives the latest run's class and reasons.
 - A gate lights at the first counting run whose p5 reaches the ceiling in force when it started, from any series or box.
 - The thermometer's scale runs from 0 to 1.1 times the highest of the measured ceilings and the mercury's p5 and median, or to 1 GB/s when there is none.
-- The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old.
+- The status line gives the last publish time and the `main` heartbeat: its state and last poll, "no heartbeat for …" once it is 30 minutes old. An asleep box reads "asleep for …" from the heartbeat's time with its next wake time, or "due to wake" once that time has passed, and never "no heartbeat for …".
 - The history chart shows one series at a time and opens on the series of the mercury's run. An instrument marker goes on a run whose `instrument_changes` lists anything other than the box fingerprint, or lists only the box fingerprint on a run that is neither paired nor the first on a new instance type (a kernel, AMI or Docker change); a box marker goes on the first run on a new instance type; runs of the incoming box in a pairing get a ring. Under the chart, each pairing with counting runs on two instance types gets a note comparing them at the largest run size both ran: the median of each type's run medians at that size and their ratio. A pairing with no size in common gets no note.
 - The runs table and details view name the flags `cap_not_reached`, `few_windows`, `cpu_capped`, `traced` and `trace_missing` beside the outcome. Flags leave the class alone, so a flagged valid run still counts.
 - A run flagged `traced` and not `trace_missing` gets a "Traces in Grafana" link in its details view, and in the headline when the mercury shows it. The link opens Explore on the `filecoinfoundation` stack's Tempo data source (`GRAFANA` and `TEMPO_UID` in `site/model.js`) with the TraceQL query `{ resource.forge_perf.run_id = "<run_id>" }` from five minutes before the run's start to five minutes after its finish. It needs a Grafana login, and the page says so beside it. A run flagged `trace_missing` sent no spans, so it gets no link.
 
-`make site-preview` builds the page against eight fixture scenarios (no runs, one valid traced run, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs, a two-pair experiment beside per-trigger runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
+`make site-preview` builds the page against eight fixture scenarios (no runs, one valid traced run with the box asleep, calibration runs only, a lit gate across a recalibration, every outcome class with an override and a broken-host record, an instrument change, a box change with paired runs, a two-pair experiment beside per-trigger runs) and serves them at http://127.0.0.1:8000/. It refuses an `--out` directory that is neither empty nor an earlier preview. `scripts/publish/preview.py` makes the scenarios from the host fixtures' records, dated relative to the current time.
 
 ## Publishing a local run
 
