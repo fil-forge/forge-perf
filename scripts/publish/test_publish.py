@@ -283,7 +283,8 @@ class Publish(unittest.TestCase):
         self.assertEqual(self.conditions(), [])
         self.assertEqual(json.loads(got["heartbeats"])["main"],
                          {"at": "2026-10-01T20:00:00Z", "state": "asleep", "wake_at": "2026-10-02T02:55:00Z",
-                          "poll_failures": 6, "run_started_at": "2026-10-01T10:00:00Z"})
+                          "poll_failures": 6, "run_started_at": "2026-10-01T10:00:00Z",
+                          "sleep_enabled": None, "up_since": None})
         # An awake box's wake_at is null, and the summary says so.
         self.heartbeat("2026-10-01T23:55:00Z", wake_at=None)
         self.assertIsNone(json.loads(self.ingest()["heartbeats"])["main"]["wake_at"])
@@ -326,6 +327,96 @@ class Publish(unittest.TestCase):
         self.heartbeat("2026-10-01T23:58:00Z")
         self.assertEqual(self.ingest()["alerts"], [])
         self.assertEqual(self.conditions(), [])
+
+    def test_an_idle_box_that_stays_up_alerts_once(self):
+        self.record(fixture_record("valid", 12))
+        # The first idle heartbeat starts the clock; a box that sleeps is gone
+        # by the next poll, so only one idle for 30 minutes alerts.
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest(now="2026-10-01T23:26:00Z")["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        got = self.ingest()
+        self.assertEqual(got["alerts"],
+                         ["forge-perf main: up for 5 hours without a run; it should have gone to sleep "
+                          "(journalctl -u forge-perf-poll shows why). https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.conditions(), ["awake_idle"])
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), ["awake_idle"])
+        # The box goes to sleep: the condition ends without a message.
+        self.heartbeat("2026-10-01T23:58:00Z", state="asleep", wake_at="2026-10-02T02:55:00Z",
+                       sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+
+    def test_an_idle_box_without_records_that_stays_up_alerts(self):
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest(now="2026-10-01T23:26:00Z")["alerts"],
+                         ["forge-perf main: no record yet. https://fil-forge.github.io/forge-perf/"])
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest()["alerts"],
+                         ["forge-perf main: up for 5 hours without a run; it should have gone to sleep "
+                          "(journalctl -u forge-perf-poll shows why). https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.conditions(), ["awake_idle", "no_record"])
+
+    def test_one_idle_pass_after_a_long_run_does_not_alert(self):
+        # A nightly run started over three hours ago; the pass after it reports
+        # idle once before the box sleeps.
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
+
+    def test_a_reboot_restarts_the_idle_clock(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T23:25:00Z", sleep_enabled=True, up_since="2026-10-01T18:30:00Z")
+        self.ingest(now="2026-10-01T23:26:00Z")
+        # The box slept and woke: a new boot time, so the earlier idle does not count.
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T19:00:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertNotIn("awake_idle", self.conditions())
+
+    def test_awake_idle_holds_off(self):
+        cases = {
+            "up three hours, not over": dict(up_since="2026-10-01T21:00:00Z"),
+            "sleep is off": dict(sleep_enabled=False),
+            "the uptime is unknown": dict(up_since=None),
+            "held": dict(state="held"),
+            "running": dict(state="running", run_started_at="2026-10-01T23:00:00Z"),
+        }
+        self.record(fixture_record("valid", 12))
+        for name, fields in cases.items():
+            with self.subTest(name):
+                (self.results / "status/main.json").unlink(missing_ok=True)
+                self.heartbeat("2026-10-01T23:55:00Z", **dict(
+                    {"sleep_enabled": True, "up_since": "2026-10-01T18:00:00Z"}, **fields))
+                self.ingest()
+                self.assertNotIn("awake_idle", self.conditions())
+        # A run started inside the three hours.
+        (self.results / "status/main.json").unlink()
+        self.record(fixture_record("valid", 22))
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T18:00:00Z")
+        self.assertEqual(self.ingest()["alerts"], [])
+        self.assertEqual(self.conditions(), [])
+        # A stale heartbeat raises heartbeat_stale alone.
+        self.heartbeat("2026-10-01T23:00:00Z", sleep_enabled=True, up_since="2026-10-01T12:00:00Z")
+        self.assertEqual(self.ingest(now="2026-10-02T04:00:00Z")["alerts"],
+                         ["forge-perf main: no heartbeat for 300 minutes. https://fil-forge.github.io/forge-perf/"])
+        self.assertEqual(self.conditions(), ["heartbeat_stale"])
+
+    def test_the_summary_keeps_sleep_enabled_and_up_since(self):
+        self.record(fixture_record("valid", 12))
+        self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=True, up_since="2026-10-01T23:00:00Z")
+        hb = json.loads(self.ingest()["heartbeats"])["main"]
+        self.assertEqual((hb["sleep_enabled"], hb["up_since"]), (True, "2026-10-01T23:00:00Z"))
+        for sleep_enabled, up_since in ((1, "2026-02-30T00:00:00Z"), ("true", "yesterday"), (None, 5)):
+            with self.subTest(sleep_enabled=sleep_enabled, up_since=up_since):
+                (self.results / "status/main.json").unlink(missing_ok=True)
+                self.heartbeat("2026-10-01T23:55:00Z", sleep_enabled=sleep_enabled, up_since=up_since)
+                got = self.ingest()
+                hb = json.loads(got["heartbeats"])["main"]
+                self.assertEqual((hb["sleep_enabled"], hb["up_since"]), (None, None))
+                self.assertEqual(got["alerts"], [])
 
     def test_a_waker_that_cannot_start_the_box_alerts(self):
         self.record(fixture_record("valid", 12))

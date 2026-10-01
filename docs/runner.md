@@ -173,10 +173,10 @@ Every pass ends by writing `s3://$FORGE_PERF_RESULTS_BUCKET/published/<box>/hear
 {"box": "main", "at": "2026-09-26T06:00:09Z", "forge_perf_sha": "<40-hex>", "state": "running",
  "run_id": "main-20260926t055512z", "run_started_at": "2026-09-26T05:55:12Z",
  "pending_kind": "trigger", "poll_failures": 0, "experiments_queued": 0,
- "seen_keys": ["<64-hex>"], "wake_at": null}
+ "seen_keys": ["<64-hex>"], "wake_at": null, "sleep_enabled": true, "up_since": "2026-09-26T05:40:31Z"}
 ```
 
-`state` is `running` during a run, else `held` while the hold exists, else `idle`, or `asleep` in the last heartbeat before the box powers itself off ([Sleeping](#sleeping)). `seen_keys` and `wake_at` are for the waker and are described there. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. `experiments_queued` counts the checked requests waiting, the one going excluded. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures` and a long run ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
+`state` is `running` during a run, else `held` while the hold exists, else `idle`, or `asleep` in the last heartbeat before the box powers itself off ([Sleeping](#sleeping)). `seen_keys` and `wake_at` are for the waker and are described there. `run_id` and `run_started_at` are null outside a run, and `pending_kind` is null with nothing pending. `poll_failures` is the number of passes in a row that could not resolve the set, plus the number that found `update.sh` unfinished for the checkout's `HEAD` and not running. `experiments_queued` counts the checked requests waiting, the one going excluded. `sleep_enabled` is true when `SLEEP_WHEN_IDLE` is 1, else false. `up_since` is the boot time as an RFC 3339 UTC time to the second, the pass's clock less the uptime the sleep decision reads (both overridable in the tests), or null when the uptime is unknown. A heartbeat that does not go up makes the pass exit 1. The publish workflow alerts on the heartbeat's age, `poll_failures`, a long run and a box that may sleep but has stayed up idle for over 3 hours ([DESIGN.md §7](DESIGN.md#7-results-and-the-page)).
 
 ### Holds and status
 

@@ -586,9 +586,10 @@ uptime_s() {
 # awake_reason: the first reason the box stays up, or nothing when it may
 # sleep (docs/runner.md, "Sleeping"). The run and the hold are read again
 # here: both can have changed since the pass chose its branch. NOW_S is the
-# clock reading wake_time also counts from.
+# clock reading wake_time also counts from, and UP_S the uptime reading the
+# heartbeat's up_since also counts from.
 awake_reason() {
-  local unit up of_day min="${SLEEP_MIN_AWAKE_S:-600}"
+  local unit of_day up="$UP_S" min="${SLEEP_MIN_AWAKE_S:-600}"
   [ "${SLEEP_WHEN_IDLE:-0}" = 1 ] || { echo "SLEEP_WHEN_IDLE is 0"; return 0; }
   [ -z "$busy" ] || { echo "$busy"; return 0; }
   ! run_active || { echo "a run is going"; return 0; }
@@ -618,8 +619,7 @@ awake_reason() {
     echo "the nightly run is due"
     return 0
   fi
-  up="$(uptime_s 2>/dev/null)" || up=""
-  if [[ ! "$up" =~ ^[0-9]+$ ]]; then
+  if [ -z "$up" ]; then
     echo "the uptime is unknown"
   elif [[ ! "$min" =~ ^[0-9]+$ ]]; then
     echo "SLEEP_MIN_AWAKE_S is not a number"
@@ -654,18 +654,29 @@ poll_failures=$((failures + update_failures))
 # One clock reading for the decision and for wake_at. FORGE_PERF_UTC_EPOCH
 # stands in for the clock in the tests.
 NOW_S="${FORGE_PERF_UTC_EPOCH:-$(date -u +%s)}"
+# One uptime reading for the decision and for up_since, in decimal (bash
+# arithmetic reads a leading zero as octal), or empty when it is unknown.
+UP_S="$(uptime_s 2>/dev/null)" || UP_S=""
+if [[ "$UP_S" =~ ^[0-9]+$ ]]; then UP_S=$((10#$UP_S)); else UP_S=""; fi
 awake="$(awake_reason)"
 if [ -z "$awake" ]; then
   box_state=asleep poll_failures=0 wake_at="$(wake_time)"
 fi
+# up_since: the boot time from the uptime and clock the decision used, or
+# empty when the uptime is unknown.
+sleep_enabled=false up_since=""
+[ "${SLEEP_WHEN_IDLE:-0}" != 1 ] || sleep_enabled=true
+[ -z "$UP_S" ] || up_since="$(jq -rn --argjson t "$((NOW_S - UP_S))" '$t | todate')"
 jq -n --arg box "$FORGE_PERF_BOX_ID" --arg at "$(now)" --arg sha "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" \
   --arg state "$box_state" \
   --argjson run_id "$run_id" --argjson started "$started" --argjson failures "$poll_failures" \
   --argjson kind "$(jq -c '.kind // null' "$state/pending.json" 2>/dev/null || echo null)" \
   --argjson queued "${#queued[@]}" --argjson seen "$(seen_keys)" --arg wake "$wake_at" \
+  --argjson sleep_enabled "$sleep_enabled" --arg up_since "$up_since" \
   '{box: $box, at: $at, forge_perf_sha: $sha, state: $state, run_id: $run_id, run_started_at: $started,
     pending_kind: $kind, poll_failures: $failures, experiments_queued: $queued, seen_keys: $seen,
-    wake_at: (if $wake == "" then null else $wake end)}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
+    wake_at: (if $wake == "" then null else $wake end), sleep_enabled: $sleep_enabled,
+    up_since: (if $up_since == "" then null else $up_since end)}' >"$FORGE_PERF_RUNTIME/heartbeat.json"
 if ! limited aws s3api put-object --bucket "$bucket" --key "published/$FORGE_PERF_BOX_ID/heartbeat.json" \
   --body "$FORGE_PERF_RUNTIME/heartbeat.json" --content-type application/json >/dev/null; then
   echo "poll: the heartbeat did not go up" >&2

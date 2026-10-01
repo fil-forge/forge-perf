@@ -148,7 +148,10 @@ setup() {
   # either main; the case that unpins them below clears the pins again.
   sed -i.bak 's/^SQ_PIN=.*/SQ_PIN=5cfeaf390803809acd089614ee2aaa5cf3a4153d/' "$work/box/checkout/config/harness.conf"
   sed -i.bak 's/^SMELT_REF=.*/SMELT_REF=21940118fa1863e1f56f950959ad54e0d4d032c3/' "$work/box/checkout/config/smelt.conf"
-  rm "$work/box/checkout/config/harness.conf.bak" "$work/box/checkout/config/smelt.conf.bak"
+  # Sleeping is off unless a test turns it on, whatever config/launch.conf says.
+  sed -i.bak 's/^SLEEP_WHEN_IDLE=.*/SLEEP_WHEN_IDLE=0/' "$work/box/checkout/config/launch.conf"
+  rm "$work/box/checkout/config/harness.conf.bak" "$work/box/checkout/config/smelt.conf.bak" \
+    "$work/box/checkout/config/launch.conf.bak"
   /usr/bin/git -C "$work/box/checkout" init -q
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t add -A
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t commit -qm config
@@ -599,6 +602,27 @@ poll 0
 up "SLEEP_WHEN_IDLE is 0"
 [ "$(seen)" = "[\"$(hash_of "$state/last-started.json")\"]" ] || fail "seen_keys $(seen)"
 echo "ok: with SLEEP_WHEN_IDLE=0 an idle box stays up"
+
+idle
+poll 0
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "false 2026-10-01T11:00:00Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+sleepy
+UPTIME=599 AT=2026-10-01T00:05:00Z poll 0
+up "up 599 s, under SLEEP_MIN_AWAKE_S (600)"
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-09-30T23:55:01Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+poll 0
+asleep 2026-10-02T02:55:00Z
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-10-01T11:00:00Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+for unknown in x 12.5; do
+  sleepy
+  UPTIME="$unknown" poll 0
+  [ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true null" ] || fail "uptime '$unknown': $(cat "$D/heartbeat.json")"
+done
+sleepy
+UPTIME=0599 AT=2026-10-01T00:05:00Z poll 0
+up "up 599 s, under SLEEP_MIN_AWAKE_S (600)"
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-09-30T23:55:01Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+echo "ok: the heartbeat says whether the box may sleep and since when it is up, null when the uptime is unknown, and reads a leading zero as decimal"
 
 sleepy
 poll 0
