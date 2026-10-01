@@ -40,10 +40,10 @@ run "root" {
   assert {
     condition = alltrue([
       output.piri_bucket_prefix == "forge-perf-piri-main-654654381893-piri-0-",
-      var.instance_type == "m9gd.8xlarge",
+      var.instance_type == "m9gd.16xlarge",
       var.architecture == "arm64",
       output.ami_id == module.constants.ami_id,
     ])
-    error_message = "the root builds box main at tier 2, arm64, on the constants' pinned AMI"
+    error_message = "the root builds box main at tier 3, arm64, on the constants' pinned AMI"
   }
 }

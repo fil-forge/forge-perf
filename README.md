@@ -19,8 +19,8 @@ A developer can also measure a pull request in a Forge service repository by com
 | Tier | Instance | Role |
 |---|---|---|
 | 1 | m9gd.2xlarge | the persistent box until a valid run reached its ceiling on 2026-09-28 |
-| 2 | m9gd.8xlarge | the persistent box |
-| 3 | m9gd.16xlarge | short-lived campaign boxes only |
+| 2 | m9gd.8xlarge | the persistent box until its network bounded the number on 2026-09-30 |
+| 3 | m9gd.16xlarge | the persistent box, asleep between runs, and campaign boxes |
 
 Each tier's ceiling is the lower of its measured sustained S3 PUT and NVMe write throughput. The page draws the three ceilings as gates on a thermometer.
 
