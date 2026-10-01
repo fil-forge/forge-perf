@@ -148,7 +148,10 @@ setup() {
   # either main; the case that unpins them below clears the pins again.
   sed -i.bak 's/^SQ_PIN=.*/SQ_PIN=5cfeaf390803809acd089614ee2aaa5cf3a4153d/' "$work/box/checkout/config/harness.conf"
   sed -i.bak 's/^SMELT_REF=.*/SMELT_REF=21940118fa1863e1f56f950959ad54e0d4d032c3/' "$work/box/checkout/config/smelt.conf"
-  rm "$work/box/checkout/config/harness.conf.bak" "$work/box/checkout/config/smelt.conf.bak"
+  # Sleeping is off unless a test turns it on, whatever config/launch.conf says.
+  sed -i.bak 's/^SLEEP_WHEN_IDLE=.*/SLEEP_WHEN_IDLE=0/' "$work/box/checkout/config/launch.conf"
+  rm "$work/box/checkout/config/harness.conf.bak" "$work/box/checkout/config/smelt.conf.bak" \
+    "$work/box/checkout/config/launch.conf.bak"
   /usr/bin/git -C "$work/box/checkout" init -q
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t add -A
   /usr/bin/git -C "$work/box/checkout" -c user.name=t -c user.email=t@t commit -qm config
