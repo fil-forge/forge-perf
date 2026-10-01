@@ -1,7 +1,5 @@
 {
-  "alerted_classes": [
-    "no_data"
-  ],
+  "alerted_classes": [],
   "conditions": [],
   "infra_streak": 0
 }
