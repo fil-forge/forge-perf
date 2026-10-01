@@ -6,7 +6,7 @@ Procedures an operator runs by hand against the dev account (654654381893, us-ea
 
 ### The bootstrap root
 
-`terraform/envs/bootstrap/account` holds the state bucket, the four CI roles (plan, apply and results for this repository; request for `/forge-perf` comments in ingot, piri, sprue and hilt), the results bucket with the dispatch that publishes each record, the requests bucket, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
+`terraform/envs/bootstrap/account` holds the state bucket, the four CI roles (plan, apply and results for this repository; request for `/forge-perf` comments in ingot, piri, sprue and hilt), the results bucket with the dispatch that publishes each record, the requests bucket, the waker that starts a sleeping box, piri's IAM user and the cost budget. No workflow applies it; an operator does, once at first and again whenever it changes.
 
 Before the first apply, create the GitHub environment `box-change`, which the apply role trusts. GitHub creates a missing environment with no protection the first time a job on any branch names it, and a job in that environment can assume the apply role. Create it with a required reviewer and main as its only deployment branch:
 
@@ -272,6 +272,26 @@ The token is a fine-grained GitHub personal access token. The box never holds it
 3. `aws events describe-connection --name forge-perf-github-dispatch --query ConnectionState` prints `AUTHORIZED` once the update settles.
 
 After the next run, `gh run list -R fil-forge/forge-perf -w publish.yml -L 3` shows a `workflow_dispatch` run that started within a minute or two of the record. When GitHub refuses a dispatch, for instance with an expired token, EventBridge retries for an hour and drops it, `FailedInvocations` on the rule rises in CloudWatch, and the page falls back to the schedule.
+
+### The waker
+
+With `SLEEP_WHEN_IDLE=1` in `config/launch.conf`, the persistent box powers itself off when it has nothing to do ([runner.md](runner.md#sleeping)), and the Lambda `forge-perf-waker` starts it again. The bootstrap root creates the function, its role, its log group and a rule that runs it every five minutes. Its code is `scripts/waker/waker.py`, zipped at apply time with `config/images.tracked` and `config/smelt.conf`, so a change to any of the three reaches the function at the next apply of this root.
+
+Each run finds the box by its tags. A box in any state other than stopped is left alone, and so is a stopped box whose last heartbeat does not say `asleep`: the waker starts only a box that put itself to sleep. It then starts the box for the first of three reasons that holds: the heartbeat's `wake_at` has come, a `/forge-perf` request newer than the heartbeat is waiting, or main's set (smelt's head and the ten image digests, all public) is not among the heartbeat's `seen_keys`. It starts the box for one reason at most once in six hours, and writes each attempt to `published/main/waker.json`. The role can start an instance tagged `Project=forge-perf` and `Box=main` and nothing else, and the function holds no GitHub credential.
+
+Turn sleeping on in this order, so the box never sleeps with nothing to wake it:
+
+1. Apply the bootstrap root. Check the function with a manual run, which prints what it decided (`awake` while the box is up):
+
+   ```sh
+   aws lambda invoke --function-name forge-perf-waker /dev/stdout
+   ```
+
+2. Merge a pull request that sets `SLEEP_WHEN_IDLE=1` in `config/launch.conf`. The box takes it at its next update, and its journal then ends each idle pass with `poll: idle; asleep until <time>` or `poll: staying up: <reason>`.
+
+`aws logs tail /aws/lambda/forge-perf-waker --since 1h` shows each run's decision. Setting the flag back to 0 takes effect when the box next updates: merge the change, then run `scripts/operator/wake.sh main` if the box is asleep. A hold keeps the box up without changing the flag ([Holding a box](#holding-a-box)).
+
+A sleeping box costs only its root volume. Each wake with nothing to do costs about ten minutes of box time, the `SLEEP_MIN_AWAKE_S` a box stays up after boot.
 
 ### The `Project` cost allocation tag
 
@@ -617,6 +637,7 @@ Alerts post to `#filone-alerts` from `publish.yml` (docs/publishing.md, "Alerts"
 | `heartbeat_stale` | `scripts/operator/ssm-session.sh main`, then `systemctl status forge-perf-poll.timer` | the box is down, or the poll unit fails |
 | `poll_failures` | `journalctl -u forge-perf-poll` | GHCR or GitHub unreachable from the box |
 | `long_run` | `scripts/host/status.sh` | a drill past its duration that the watchdog has not yet stopped |
+| `wake_failed` | `aws logs tail /aws/lambda/forge-perf-waker --since 2h`, `published/main/waker.json`, and the instance's state in the EC2 console | no capacity for the instance type (`InsufficientInstanceCapacity`; the waker retries every five minutes), the function failing or its rule disabled, or a box that started and cannot poll: `scripts/operator/ssm-session.sh main` and `journalctl -u forge-perf-poll` |
 | `no_record` | the heartbeat, the outbox (`/var/lib/forge-perf/outbox`) and `journalctl -u forge-perf-run` | uploads failing; the box held; the box could not read SSM `/forge-perf/denylist`, and `record.py` writes no record without it; or `WORKERS` empty in the type's settings file, so `run.sh` refuses every run |
 | `forge-perf publish rejected <key>: <check>` | the check's row in docs/publishing.md, "Ingest checks" | `denylist`: SSM `/forge-perf/denylist` and the `PUBLIC_DENYLIST_REGEX` secret differ, or the box's own check was bypassed. `future_run_id`: the box's clock. `schema`: the box runs a record schema that main does not. Fix the cause, then remove the record with operator credentials: `aws s3 rm s3://forge-perf-results-654654381893/<key>` |
 | reaper: `publish.yml` has not succeeded for 2 hours | the latest `publish` run's log, and `gh workflow list --all` | a revoked `SLACK_BOT_TOKEN` (which fails the run before it commits), a changed role trust, an S3 error, or the schedule disabled after 60 days without activity: `gh workflow enable publish.yml` and `gh workflow enable campaign-reaper.yml` |
