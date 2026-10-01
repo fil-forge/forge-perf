@@ -139,7 +139,7 @@ A fixed 25 ms round trip, with no jitter and no bandwidth cap, separates the nod
 | node | `ingot`, `ingot-postgres`, `ingot-openbao`, `piri-0`; `piri-postgres` sits only on `piri-storage-net` | filter targets |
 | central | `upload`, `postgres`, `hilt`, `hilt-postgres`, `hilt-vault`, `swarf`, `swarf-postgres`, `plc`, `plc-postgres`, `delegator`, `signing-service`, `dynamodb-local`, `minio` | prio qdisc with netem |
 | other | `blockchain`, `email`, `guppy`, `indexer`, `redis`, `ipni`, `piri-minio`, the host, AWS S3 | undelayed |
-| one-shot | `ingot-openbao-init`, `piri-postgres-init`, `upload-init`, `hilt-init`, `ipni-init` | must have exited 0 |
+| one-shot | `ingot-openbao-init`, `piri-postgres-init`, `upload-init`, `hilt-init`, `hilt-vault-init`, `ipni-init` | must have exited 0 |
 
 A service in no list stops the run. `netem.sh apply` runs a pinned netshoot sidecar with `NET_ADMIN` in each shaped container, picks the interface holding its forge-network address, and installs:
 
