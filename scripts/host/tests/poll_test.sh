@@ -600,6 +600,23 @@ up "SLEEP_WHEN_IDLE is 0"
 [ "$(seen)" = "[\"$(hash_of "$state/last-started.json")\"]" ] || fail "seen_keys $(seen)"
 echo "ok: with SLEEP_WHEN_IDLE=0 an idle box stays up"
 
+idle
+poll 0
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "false 2026-10-01T11:00:00Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+sleepy
+UPTIME=599 AT=2026-10-01T00:05:00Z poll 0
+up "up 599 s, under SLEEP_MIN_AWAKE_S (600)"
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-09-30T23:55:01Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+poll 0
+asleep 2026-10-02T02:55:00Z
+[ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true 2026-10-01T11:00:00Z" ] || fail "heartbeat $(cat "$D/heartbeat.json")"
+for unknown in x 12.5; do
+  sleepy
+  UPTIME="$unknown" poll 0
+  [ "$(beat '"\(.sleep_enabled) \(.up_since)"')" = "true null" ] || fail "uptime '$unknown': $(cat "$D/heartbeat.json")"
+done
+echo "ok: the heartbeat says whether the box may sleep and since when it is up, null when the uptime is unknown"
+
 sleepy
 poll 0
 asleep 2026-10-02T02:55:00Z

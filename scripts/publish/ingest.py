@@ -57,6 +57,7 @@ POLL_FAILURES = 6
 LONG_RUN = dt.timedelta(hours=7)
 NO_RECORD = dt.timedelta(hours=26)
 WAKE_GRACE = dt.timedelta(minutes=20)  # an instance start, a boot and the first poll
+AWAKE_IDLE = dt.timedelta(hours=3)
 MAX_NEW = 200  # new keys per run, so a backlog drains across runs
 
 
@@ -352,6 +353,8 @@ def heartbeat_summary(raw):
         "poll_failures": failures if isinstance(failures, int) and not isinstance(failures, bool)
         and 0 <= failures < 10**6 else None,
         "run_started_at": hb.get("run_started_at") if utc(hb.get("run_started_at")) else None,
+        "sleep_enabled": hb.get("sleep_enabled") if isinstance(hb.get("sleep_enabled"), bool) else None,
+        "up_since": hb.get("up_since") if utc(hb.get("up_since")) else None,
     }
 
 
@@ -405,6 +408,14 @@ def heartbeat_alerts(box, hb, waker, latest_run, now, status):
     if hb and hb["state"] == "running" and hb["run_started_at"] and \
             now - utc(hb["run_started_at"]) > LONG_RUN:
         conditions["long_run"] = f"one run has held the box since {hb['run_started_at']}"
+    # A box that may sleep and stays up idle costs money for nothing: an
+    # uncheckable request, a retry loop or a stuck update can keep it up.
+    if hb and "heartbeat_stale" not in conditions and hb["state"] == "idle" and hb["sleep_enabled"] and \
+            hb["up_since"] and now - utc(hb["up_since"]) > AWAKE_IDLE and \
+            (latest_run is None or now - run_id_time(latest_run) > AWAKE_IDLE):
+        hours = int((now - utc(hb["up_since"])).total_seconds() // 3600)
+        conditions["awake_idle"] = f"up for {hours} hours without a run; it should have gone to sleep " \
+            "(journalctl -u forge-perf-poll shows why)"
     before = set(status.get("conditions", []))
     # While a fresh heartbeat says a run is in progress, that run has not
     # written its record yet, so the 26 hours are judged when it ends;
