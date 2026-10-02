@@ -122,12 +122,29 @@ class Render(unittest.TestCase):
 
     def test_done(self):
         body = pr_run.render(CTX, "status", self.status("done"))
-        self.assertIn("| **State** | Done: faster |", body)
+        self.assertIn("| **State** | Done: ingest faster |", body)
         self.assertIn("| branch | valid | 1.05 GB/s | 0.79 GB/s | – |", body)
-        self.assertIn("| Branch against main | +4.7% | -2.7% |", body)
-        self.assertIn("| Noise band | ±3.5% | ±11.0% |", body)
-        self.assertIn("**Verdict: faster**", body)
+        self.assertIn("| Ingest | +4.7% | -2.7% | ±3.5% | faster |", body)
+        self.assertIn("**Verdict: faster** on ingest", body)
         self.assertIn("`exp-" + ID + "`", body)
+
+    def test_done_without_read_streams_has_only_the_ingest_row(self):
+        body = pr_run.render(CTX, "status", self.status("done"))
+        self.assertEqual([line for line in body.splitlines() if line.startswith(("| Read-back", "| Restore"))], [])
+
+    def test_done_with_read_streams_gives_a_row_and_a_verdict_for_each(self):
+        body = pr_run.render(CTX, "status", self.status("done-reads"))
+        rows = [line for line in body.splitlines() if line.startswith(("| Ingest", "| Read-back", "| Restore", "| **State**"))]
+        self.assertEqual(rows, ["| **State** | Done: ingest faster · read-back faster · restore within noise |",
+                                "| Ingest | +4.7% | -2.7% | ±3.5% | faster |",
+                                "| Read-back | +4.1% | +1.1% | ±3.5% | faster |",
+                                "| Restore | -12.4% | – | ±34.0% | within noise |"])
+
+    def test_done_with_a_stream_left_out_shows_dashes(self):
+        s = fixture("done-reads")
+        s["comparison"]["restore"] = None
+        body = pr_run.render(CTX, "status", pr_run.check_status(s, ID))
+        self.assertIn("| Restore | – | – | – | – |", body)
 
     def test_trace_link_matches_the_page(self):
         run = self.status("done")["runs"][0]
@@ -166,6 +183,8 @@ class Render(unittest.TestCase):
         s = fixture("done"); s["runs"][0]["run_id"] = "x](http://evil)"; bad.append(s)
         s = fixture("done"); s["runs"][0]["role"] = "candidate"; bad.append(s)
         s = fixture("done"); s["comparison"]["verdict"] = "great"; bad.append(s)
+        s = fixture("done-reads"); s["comparison"]["restore"]["verdict"] = "great"; bad.append(s)
+        s = fixture("done-reads"); s["comparison"]["read_back"] = "faster"; bad.append(s)
         for s in bad:
             with self.assertRaises(ValueError):
                 pr_run.check_status(s, ID)

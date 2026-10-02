@@ -44,8 +44,9 @@ def main_set():
             "resolved_at": "2026-10-01T12:00:00Z"}
 
 
-def record(run_id, median, p5, klass="valid", fingerprint=None):
+def record(run_id, median, p5, klass="valid", fingerprint=None, reads=None):
     rec = json.loads(json.dumps(VALID))
+    rec["drill"]["results"]["cache_served"].update(reads or {})
     if fingerprint:
         rec["instrument"]["fingerprint"] = fingerprint
     rec["run_id"] = run_id
@@ -155,11 +156,11 @@ class Status(unittest.TestCase):
         plan = experiment.plan(check(request(pairs=pairs)), main_set(), "2026-10-01T12:05:00Z")
         shutil.rmtree(self.dir / "records")
         (self.dir / "records").mkdir()
-        for role, run_id, median, p5, *klass in runs:
+        for role, run_id, median, p5, *rest in runs:
             plan["runs"].append({"role": role, "run_id": run_id})
             if median is not None:
                 path = self.dir / "records" / f"{run_id}.json"
-                path.write_text(json.dumps(record(run_id, median, p5, *klass)), encoding="utf-8")
+                path.write_text(json.dumps(record(run_id, median, p5, *rest)), encoding="utf-8")
         path = self.dir / "experiment.json"
         path.write_text(json.dumps(plan), encoding="utf-8")
         return path
@@ -190,7 +191,8 @@ class Status(unittest.TestCase):
         self.assertEqual(doc["runs"], [{
             "role": "main", "run_id": "main-20261001t120500z", "class": "valid", "flags": ["few_windows"],
             "size_bytes": VALID["drill"]["settings"]["stop_ingest_at_bytes"], "p5_bytes_per_s": 0.8e9,
-            "median_bytes_per_s": 1.0e9, "traced": False, "started_at": VALID["time"]["run_started_at"],
+            "median_bytes_per_s": 1.0e9, **VALID["drill"]["results"]["cache_served"],
+            "traced": False, "started_at": VALID["time"]["run_started_at"],
             "finished_at": VALID["time"]["run_finished_at"]}])
         self.assertNotIn("comparison", doc)
 
@@ -200,8 +202,40 @@ class Status(unittest.TestCase):
         doc = self.status("final", path)
         self.assertEqual(doc["state"], "done")
         # Branch medians 1.15 and p5 0.88 against main's 1.01 and 0.82.
-        self.assertEqual(doc["comparison"], {"median_delta_pct": 13.86, "p5_delta_pct": 7.32,
-                                             "noise_median_pct": 3.5, "noise_p5_pct": 11.0, "verdict": "faster"})
+        # Every run reads at the valid fixture's rates, so the read streams hold level.
+        self.assertEqual(doc["comparison"], {
+            "median_delta_pct": 13.86, "p5_delta_pct": 7.32, "noise_median_pct": 3.5, "noise_p5_pct": 11.0,
+            "verdict": "faster",
+            "read_back": {"median_delta_pct": 0.0, "p5_delta_pct": 0.0, "noise_median_pct": 3.5,
+                          "noise_p5_pct": 11.0, "verdict": "within noise"},
+            "restore": {"median_delta_pct": 0.0, "p5_delta_pct": 0.0, "noise_median_pct": 34.0,
+                        "noise_p5_pct": None, "verdict": "within noise"}})
+
+    def test_each_read_stream_is_judged_on_its_own_median(self):
+        main = {"read_back_median_bytes_per_s": 1.0e9, "restore_median_bytes_per_s": 1.0e9}
+        branch = {"read_back_median_bytes_per_s": 1.05e9, "restore_median_bytes_per_s": 0.5e9}
+        path = self.experiment(1, [("main", "m1", 1.0e9, 0.8e9, "valid", None, main),
+                                   ("branch", "b1", 1.0e9, 0.8e9, "valid", None, branch)])
+        comp = self.status("final", path)["comparison"]
+        self.assertEqual([(comp[k]["median_delta_pct"], comp[k]["verdict"]) for k in ("read_back", "restore")],
+                         [(5.0, "faster"), (-50.0, "slower")])
+
+    def test_a_run_without_a_read_p5_leaves_that_p5_delta_out(self):
+        old = {"read_back_p5_bytes_per_s": None, "restore_p5_bytes_per_s": None}
+        path = self.experiment(1, [("main", "m1", 1.0e9, 0.8e9, "valid", None, old),
+                                   ("branch", "b1", 1.0e9, 0.8e9)])
+        comp = self.status("final", path)["comparison"]
+        self.assertEqual([(comp[k]["p5_delta_pct"], comp[k]["verdict"]) for k in ("read_back", "restore")],
+                         [(None, "within noise"), (None, "within noise")])
+
+    def test_a_run_without_a_positive_read_median_leaves_that_stream_out(self):
+        for desc, reads in (("zero", {"restore_median_bytes_per_s": 0.0}),
+                            ("null", {"restore_median_bytes_per_s": None})):
+            with self.subTest(median=desc):
+                path = self.experiment(1, [("main", "m1", 1.0e9, 0.8e9, "valid", None, reads),
+                                           ("branch", "b1", 1.0e9, 0.8e9)])
+                comp = self.status("final", path)["comparison"]
+                self.assertEqual((comp["restore"], comp["read_back"]["verdict"]), (None, "within noise"))
 
     def test_a_small_difference_is_within_noise_and_a_large_drop_is_slower(self):
         for branch, verdict in ((0.98e9, "within noise"), (0.90e9, "slower")):
@@ -218,6 +252,13 @@ class Status(unittest.TestCase):
         path = self.experiment(1, [("main", "m1", 1.0e9, 0.8e9), ("branch", "b1", 0.97e9, 0.8e9)])
         comp = self.status("final", path)["comparison"]
         self.assertEqual((comp["noise_median_pct"], comp["noise_p5_pct"], comp["verdict"]), (2.0, 5.0, "slower"))
+
+    def test_a_band_without_read_streams_leaves_them_on_the_fallback(self):
+        band = {"box": "main", "instance_type": "m9gd.8xlarge", "kind": "noise", "series": "per-trigger",
+                "pass": True, "median": {"cv": 0.01}, "p5": {"cv": 0.025}}
+        (self.dir / "noise" / "main-per-trigger.json").write_text(json.dumps(band), encoding="utf-8")
+        got = experiment.noise_band(self.dir / "noise", "main", "m9gd.8xlarge")
+        self.assertEqual(got, dict(experiment.DEFAULT_NOISE, ingest={"median": 2.0, "p5": 5.0}))
 
     def test_the_repository_bands_are_not_for_the_tier_2_box(self):
         self.assertEqual(experiment.noise_band(ROOT / "calibration" / "noise", "main", "m9gd.8xlarge"),
