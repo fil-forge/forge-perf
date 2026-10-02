@@ -161,6 +161,26 @@ test("changes text, compare links and the previous run", () => {
   assert.equal(M.perSecond(null), "–");
 });
 
+const READS = { read_back_p5_bytes_per_s: 0.29e9, read_back_median_bytes_per_s: 0.34e9,
+  restore_p5_bytes_per_s: 0.12e9, restore_median_bytes_per_s: 0.18e9, restore_ranged_gets_median_per_s: 43.21 };
+const readLineCases = [
+  { name: "read-back with a p5", run: READS, id: "read_back",
+    want: "Read-back 0.29 GB/s held by 95% of windows · median 0.34 GB/s" },
+  { name: "restore with a p5 and ranged GETs", run: READS, id: "restore",
+    want: "Restore 0.12 GB/s held by 95% of windows · median 0.18 GB/s · 43.2 ranged GETs/s" },
+  { name: "read-back from before the harness recorded p5", run: { ...READS, read_back_p5_bytes_per_s: null },
+    id: "read_back", want: "Read-back median 0.34 GB/s" },
+  { name: "restore from before the harness recorded p5 and ranged GETs",
+    run: { ...READS, restore_p5_bytes_per_s: null, restore_ranged_gets_median_per_s: null },
+    id: "restore", want: "Restore median 0.18 GB/s" },
+  { name: "a run without read results", run: {}, id: "restore", want: null },
+];
+for (const c of readLineCases) {
+  test(`the headline line for ${c.name}`, () => {
+    assert.equal(M.readLine(run(c.run), c.id), c.want);
+  });
+}
+
 test("with every gate unmeasured, the scale covers the mercury's median", () => {
   const d = index([run({ p5_bytes_per_s: 0.04e9, median_bytes_per_s: 0.10e9 })]);
   const merc = M.mercury(d.runs, NOW);
