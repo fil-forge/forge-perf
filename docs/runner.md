@@ -500,9 +500,9 @@ Status `running` goes up at the start and after each run but the last, listing t
 
 `state` is `queued`, `running`, `done`, `failed` or `refused`. `position` is set only on `queued`, `reason` only on `refused` and `failed`, and `comparison` is present only on `done`. `runs` lists the runs so far in order, with each run's ingest, read-back and restore rates from its record; a run without a record shows class `no_data` and nulls. The top-level comparison keys are ingest's, so a status written before read streams were compared still parses; `read_back` and `restore` sit beside them with the same keys, and the workflow accepts a status without them.
 
-Each stream is compared the same way: the median of the branch runs' medians against the median of the main runs' medians, and the same for p5, as percentages to two places. Ingest's noise figures are twice the coefficients of variation of the committed per-trigger noise band for this box and instance type (`calibration/noise/*.json` with `series: per-trigger`, `pass: true`), in percent to one place. Each verdict follows that stream's median: `within noise` when the median difference is within the median noise, otherwise `faster` or `slower`.
+Each stream is compared the same way: the median of the branch runs' medians against the median of the main runs' medians, and the same for p5, as percentages to two places. The noise figures are twice the coefficients of variation of the committed per-trigger noise band for this box and instance type (`calibration/noise/*.json` with `series: per-trigger`, `pass: true`), in percent to one place: ingest's from the band's top level, read-back's and restore's from its `read_back` and `restore` objects. A band from before those objects, or a figure the band holds as null, takes the fallback. Each verdict follows that stream's median: `within noise` when the median difference is within the median noise, otherwise `faster` or `slower`.
 
-Without a committed band for a stream, its noise is a fallback:
+Without a committed band figure for a stream, its noise is a fallback:
 
 | Stream | Median | p5 |
 |---|---|---|

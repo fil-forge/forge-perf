@@ -260,6 +260,20 @@ class Status(unittest.TestCase):
         got = experiment.noise_band(self.dir / "noise", "main", "m9gd.8xlarge")
         self.assertEqual(got, dict(experiment.DEFAULT_NOISE, ingest={"median": 2.0, "p5": 5.0}))
 
+    def test_a_band_with_read_streams_sets_their_noise(self):
+        band = {"box": "main", "instance_type": "m9gd.8xlarge", "kind": "noise", "series": "per-trigger",
+                "pass": True, "median": {"cv": 0.01}, "p5": {"cv": 0.025},
+                "read_back": {"median": {"cv": 0.015}, "p5": {"cv": 0.03}},
+                "restore": {"median": {"cv": 0.08}, "p5": None}}
+        (self.dir / "noise" / "main-m9gd.8xlarge-per-trigger.json").write_text(json.dumps(band), encoding="utf-8")
+        self.assertEqual(experiment.noise_band(self.dir / "noise", "main", "m9gd.8xlarge"), {
+            "ingest": {"median": 2.0, "p5": 5.0}, "read_back": {"median": 3.0, "p5": 6.0},
+            "restore": {"median": 16.0, "p5": None}})
+
+    def test_the_repository_band_sets_the_tier_3_ingest_noise(self):
+        got = experiment.noise_band(ROOT / "calibration" / "noise", "main", "m9gd.16xlarge")
+        self.assertEqual(got, dict(experiment.DEFAULT_NOISE, ingest={"median": 7.9, "p5": 4.7}))
+
     def test_the_repository_bands_are_not_for_the_tier_2_box(self):
         self.assertEqual(experiment.noise_band(ROOT / "calibration" / "noise", "main", "m9gd.8xlarge"),
                          experiment.DEFAULT_NOISE)
