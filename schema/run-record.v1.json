@@ -149,7 +149,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["sustained_windows", "total_windows", "ingest_p5_bytes_per_s",
                        "ingest_median_bytes_per_s", "writes_median_per_s", "window_ingest_bytes_per_s",
-                       "cache_served", "ingest_sent_bytes", "bytes_ingested", "bytes_read_back",
+                       "window_read_back_bytes_per_s", "window_restore_bytes_per_s", "cache_served", "ingest_sent_bytes", "bytes_ingested", "bytes_read_back",
                        "bytes_restored", "blobs_written", "cap_reached", "ingest_cutoff_s"],
           "properties": {
             "sustained_windows": {"$ref": "#/$defs/count"},
@@ -159,12 +159,20 @@
             "writes_median_per_s": {"$ref": "#/$defs/rate_or_null"},
             "window_ingest_bytes_per_s": {"type": "array", "maxItems": 5000,
                                           "items": {"type": "number", "minimum": 0}},
+            "window_read_back_bytes_per_s": {"type": "array", "maxItems": 5000,
+                                             "items": {"type": "number", "minimum": 0}},
+            "window_restore_bytes_per_s": {"type": "array", "maxItems": 5000,
+                                           "items": {"type": "number", "minimum": 0}},
             "cache_served": {
               "type": "object", "additionalProperties": false,
-              "required": ["read_back_median_bytes_per_s", "restore_median_bytes_per_s"],
+              "required": ["read_back_p5_bytes_per_s", "read_back_median_bytes_per_s", "restore_p5_bytes_per_s",
+                           "restore_median_bytes_per_s", "restore_ranged_gets_median_per_s"],
               "properties": {
+                "read_back_p5_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
                 "read_back_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
-                "restore_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"}
+                "restore_p5_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
+                "restore_median_bytes_per_s": {"$ref": "#/$defs/rate_or_null"},
+                "restore_ranged_gets_median_per_s": {"$ref": "#/$defs/rate_or_null"}
               }
             },
             "ingest_sent_bytes": {"$ref": "#/$defs/count"},
