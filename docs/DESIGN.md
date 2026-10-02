@@ -4,7 +4,7 @@ Line references point at these commits: fil-forge/smelt `878700b`, piri `448f702
 
 ## 1. What forge-perf measures
 
-forge-perf tracks one number: the sustained ingest rate of the Forge storage stack under the storage-qualification drill's import profile (~128 MiB objects). The number is p5 of 30-second windows, the highest rate at least 95% of the windows held (`storage-qualification/internal/evidence/sustained.go:69-83`). The page shows the median beside it.
+forge-perf tracks one number: the sustained ingest rate of the Forge storage stack under the storage-qualification drill's import profile (~128 MiB objects). The number is p5 of 30-second windows, the highest rate at least 95% of the windows held (`storage-qualification/internal/evidence/sustained.go:69-83`). The page shows the median beside it. Each run's record also carries the same two figures for the drill's read streams: read-back, one GET of each whole blob 30 to 60 seconds after it was written, and restore, workers reading older blobs in block-sized ranges. Both read from ingot's local spool on the box's NVMe, which keeps every blob it accepted until spool eviction exists, so their rates measure ingot's read path from the spool.
 
 A dedicated EC2 box runs every Forge service from the published `ghcr.io/fil-forge/<svc>:main` images. A run starts whenever one of those images changes on main, or smelt does, or the harness (fil-one/storage-qualification, which builds the drill). The box pins every image by digest for the run, wipes everything afterwards, and publishes the result with the full commit and digest of every component.
 
@@ -201,7 +201,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 |---|---|
 | identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`, `experiment`), `pairing_id`, for an experiment's run its request, service, pull request, commit and role (`main` or `branch`), trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
 | `box`, `outcome` | box facts; class, reasons, flags, drill exit code and failure codes |
-| `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore rates, marked `cache_served` because read-back runs 30 to 60 seconds after each write |
+| `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore p5, median and per-window rates and restore's ranged GETs a second, grouped as `cache_served` and served from ingot's spool |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |
 | `instrument`, `trace` | two fingerprints; for a traced run, the sampling ratio, span and trace counts and the trace file's hash, else `null` |
