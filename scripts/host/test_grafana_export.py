@@ -242,7 +242,12 @@ class ExportTest(unittest.TestCase):
             "forge_perf_ingest_median_bytes_per_second": 26090000.0,
             "forge_perf_writes_per_second": 0.2,
             "forge_perf_sustained_windows": 6.0,
-            "forge_perf_bytes_ingested": 1073741824.0})
+            "forge_perf_bytes_ingested": 1073741824.0,
+            "forge_perf_read_back_p5_bytes_per_second": 25100000.0,
+            "forge_perf_read_back_median_bytes_per_second": 25800000.0,
+            "forge_perf_restore_p5_bytes_per_second": 16900000.0,
+            "forge_perf_restore_median_bytes_per_second": 18400000.0,
+            "forge_perf_restore_ranged_gets_per_second": 2.2})
         point = metrics["forge_perf_sustained_windows"][0]
         # 2026-10-01T12:09:30Z, the record's run_finished_at.
         self.assertEqual(point["timeUnixNano"], "1790856570000000000")
@@ -272,7 +277,17 @@ class ExportTest(unittest.TestCase):
         self.assertIn("forge_perf_sustained_windows", names)
         self.assertEqual(len(names), sum(isinstance(results[f], (int, float)) for f in (
             "ingest_p5_bytes_per_s", "ingest_median_bytes_per_s", "writes_median_per_s", "sustained_windows",
-            "bytes_ingested")))
+            "bytes_ingested")) + sum(isinstance(v, (int, float)) for v in results["cache_served"].values()))
+
+    def test_a_run_from_before_the_read_p5_sends_the_read_medians_alone(self):
+        for key in ("read_back_p5_bytes_per_s", "restore_p5_bytes_per_s", "restore_ranged_gets_median_per_s"):
+            self.record["drill"]["results"]["cache_served"][key] = None
+        proc = self.export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        (body,) = self.stub.bodies("/otlp/v1/metrics")
+        names = {m["name"] for m in body["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]}
+        self.assertEqual({n for n in names if "read_back" in n or "restore" in n},
+                         {"forge_perf_read_back_median_bytes_per_second", "forge_perf_restore_median_bytes_per_second"})
 
     def test_a_run_whose_drill_never_ran_sends_no_results(self):
         self.record = json.loads((FIXTURES / "stack-boot-failed" / "expected.json").read_text())

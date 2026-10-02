@@ -612,6 +612,29 @@ class BuildSite(unittest.TestCase):
             self.assertTrue((tmp / "_site/index.html").exists())
             self.assertEqual(json.loads((tmp / f"_site/data/runs/{second['run_id']}.json").read_text()), second)
 
+    def test_a_row_carries_the_read_rates_its_record_has(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runs = tmp / "results/runs/2026/10"
+            runs.mkdir(parents=True)
+            older = fixture_record("valid", 12)
+            # A record from before the read-back and restore p5 has only the medians.
+            for key in ("read_back_p5_bytes_per_s", "restore_p5_bytes_per_s", "restore_ranged_gets_median_per_s"):
+                del older["drill"]["results"]["cache_served"][key]
+            records = (fixture_record("valid", 11), older, fixture_record("stack-boot-failed", 13))
+            for r in records:
+                (runs / f"{r['run_id']}.json").write_text(json.dumps(r), encoding="utf-8")
+            subprocess.run([sys.executable, str(HERE / "build-site.py"), "--site", str(ROOT / "site"),
+                            "--data", str(ROOT / "data"), "--results", str(tmp / "results"),
+                            "--out", str(tmp / "_site"), "--now", NOW], check=True, capture_output=True)
+            index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
+            keys = ("read_back_p5_bytes_per_s", "read_back_median_bytes_per_s", "restore_p5_bytes_per_s",
+                    "restore_median_bytes_per_s", "restore_ranged_gets_median_per_s")
+            self.assertEqual([[r[k] for k in keys] for r in index["runs"]],
+                             [[25100000.0, 25800000.0, 16900000.0, 18400000.0, 2.2],
+                              [None, 25800000.0, None, 18400000.0, None],
+                              [None, None, None, None, None]])
+
     def test_an_experiment_row_carries_its_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

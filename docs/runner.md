@@ -381,6 +381,11 @@ Unsent counts what the collector accepted and had neither sent nor given up on w
 | `forge_perf_writes_per_second` | `drill.results.writes_median_per_s` |
 | `forge_perf_sustained_windows` | `drill.results.sustained_windows` |
 | `forge_perf_bytes_ingested` | `drill.results.bytes_ingested` |
+| `forge_perf_read_back_p5_bytes_per_second` | `drill.results.cache_served.read_back_p5_bytes_per_s` |
+| `forge_perf_read_back_median_bytes_per_second` | `drill.results.cache_served.read_back_median_bytes_per_s` |
+| `forge_perf_restore_p5_bytes_per_second` | `drill.results.cache_served.restore_p5_bytes_per_s` |
+| `forge_perf_restore_median_bytes_per_second` | `drill.results.cache_served.restore_median_bytes_per_s` |
+| `forge_perf_restore_ranged_gets_per_second` | `drill.results.cache_served.restore_ranged_gets_median_per_s` |
 
 Each carries the labels `box`, `instance_type`, `tier`, `series`, `class`, `traced` (`true` or `false`), `workers`, `size_bytes` (the drill's `stop_ingest_at_bytes`) and `run_id`, under the resource `service.name=forge-perf`. A field that is null leaves its gauge out, and a record without drill results, from a run whose drill never ran, sends no request.
 

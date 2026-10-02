@@ -108,7 +108,7 @@ setup
 step_run
 [ "$(requests)" = "/v1/metrics /v1/traces " ] || fail "requests: $(requests)"
 [ "$(jq -r .auth "$D"/grafana/*.json | sort -u)" = null ] || fail "the collector was sent a credential"
-has "$work/out" "grafana: spans $spans sent, 0 failed, 0 unsent; points 5 sent, 0 failed, 0 unsent"
+has "$work/out" "grafana: spans $spans sent, 0 failed, 0 unsent; points 10 sent, 0 failed, 0 unsent"
 # The collector: its name, the two ports on 127.0.0.1 only, the token file
 # read-only, the configuration, the pinned image and the four settings.
 image="$(awk '$1 == "OTEL_COLLECTOR_IMAGE" { sub(/:[^:\/]*$/, "", $2); print $2 "@" $3 }' "$repo/config/images.lock")"
@@ -220,7 +220,7 @@ cleaned "run fails"
 
 setup
 step_run GRAFANA_EXPORT=fail
-has "$work/out" "grafana: spans 0 sent, $spans failed, 0 unsent; points 0 sent, 5 failed, 0 unsent"
+has "$work/out" "grafana: spans 0 sent, $spans failed, 0 unsent; points 0 sent, 10 failed, 0 unsent"
 cleaned "export fails"
 
 setup
@@ -237,7 +237,7 @@ rm "$work/run/traces/traces.jsonl"
 start=$SECONDS
 step_run GRAFANA_EXPORT=stuck
 [ $((SECONDS - start)) -le 20 ] || fail "a stuck queue held the step $((SECONDS - start)) s on a 14 s budget"
-has "$work/out" "points 0 sent, 0 failed, 5 unsent"
+has "$work/out" "points 0 sent, 0 failed, 10 unsent"
 cleaned "stuck"
 
 # A collector log that holds the token is not kept.
