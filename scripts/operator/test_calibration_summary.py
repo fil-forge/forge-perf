@@ -17,7 +17,7 @@ MB = 1_000_000
 
 
 def record(run_id, p5, median, workers=32, cls="valid", reasons=(), flags=(),
-           instance_type="m9gd.2xlarge", cap=100_000_000_000, ingot="d"):
+           instance_type="m9gd.2xlarge", cap=100_000_000_000, ingot="d", reads=None):
     """The record fields the summary reads, and no others."""
     stamp = run_id.split("-")[1]
     return {
@@ -29,7 +29,8 @@ def record(run_id, p5, median, workers=32, cls="valid", reasons=(), flags=(),
         "instrument": {"fingerprint": "e" * 64},
         "drill": {
             "settings": {"workers": workers, "stop_ingest_at_bytes": cap},
-            "results": {"ingest_p5_bytes_per_s": p5, "ingest_median_bytes_per_s": median},
+            "results": {"ingest_p5_bytes_per_s": p5, "ingest_median_bytes_per_s": median,
+                        **({"cache_served": reads} if reads is not None else {})},
         },
         "provenance": {
             "forge_perf": {"sha": "a" * 40},
@@ -155,7 +156,7 @@ class Summary(unittest.TestCase):
         ids = self.add(*[record(rid(i), p * MB, (p + 50) * MB)
                          for i, p in enumerate([500, 510, 520, 530, 540])])
         self.run_cli("noise", "--series", "per-trigger", "--runs", *ids)
-        doc = self.output("noise/main-per-trigger.json")
+        doc = self.output("noise/main-m9gd.2xlarge-per-trigger.json")
         self.assertEqual(doc["p5"]["count"], 5)
         self.assertEqual(doc["p5"]["mean"], 520 * MB)
         self.assertEqual((doc["p5"]["min"], doc["p5"]["max"]), (500 * MB, 540 * MB))
@@ -168,9 +169,33 @@ class Summary(unittest.TestCase):
     def test_noise_fails_above_ten_percent_cv(self):
         ids = self.add(*[record(rid(i), p * MB, p * MB) for i, p in enumerate([300, 500, 700])])
         self.run_cli("noise", "--series", "nightly", "--runs", *ids)
-        doc = self.output("noise/main-nightly.json")
+        doc = self.output("noise/main-m9gd.2xlarge-nightly.json")
         self.assertGreater(doc["p5"]["cv"], 0.10)
         self.assertFalse(doc["pass"])
+
+    def test_noise_summarizes_each_read_stream(self):
+        def reads(i):
+            return {"read_back_p5_bytes_per_s": (500 + 10 * i) * MB, "read_back_median_bytes_per_s": 550 * MB,
+                    "restore_p5_bytes_per_s": 200 * MB, "restore_median_bytes_per_s": (200 + 100 * i) * MB}
+        ids = self.add(*[record(rid(i), 500 * MB, 550 * MB, reads=reads(i)) for i in range(3)])
+        self.run_cli("noise", "--series", "per-trigger", "--runs", *ids)
+        doc = self.output("noise/main-m9gd.2xlarge-per-trigger.json")
+        self.assertEqual([doc[s][k]["mean"] for s in ("read_back", "restore") for k in ("p5", "median")],
+                         [510 * MB, 550 * MB, 200 * MB, 300 * MB])
+
+    def test_a_noisy_restore_leaves_the_ingest_pass_alone(self):
+        ids = self.add(*[record(rid(i), 500 * MB, 550 * MB, reads={"restore_median_bytes_per_s": m * MB})
+                         for i, m in enumerate([100, 300, 500])])
+        self.run_cli("noise", "--series", "per-trigger", "--runs", *ids)
+        doc = self.output("noise/main-m9gd.2xlarge-per-trigger.json")
+        self.assertEqual((doc["restore"]["median"]["cv"] > 0.10, doc["pass"]), (True, True))
+
+    def test_a_run_without_a_read_value_leaves_its_stats_null(self):
+        ids = self.add(record(rid(0), 500 * MB, 550 * MB, reads={"restore_p5_bytes_per_s": 200 * MB}),
+                       record(rid(1), 500 * MB, 550 * MB))
+        self.run_cli("noise", "--series", "per-trigger", "--runs", *ids)
+        doc = self.output("noise/main-m9gd.2xlarge-per-trigger.json")
+        self.assertEqual((doc["restore"]["p5"], doc["read_back"]["median"]), (None, None))
 
     def test_noise_refuses_a_run_not_valid(self):
         ids = self.add(record(rid(0), 5, 5), record(rid(1), None, None, cls="invalid"))
