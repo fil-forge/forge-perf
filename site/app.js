@@ -53,43 +53,89 @@ function setTheme(choice) {
   if (state.data) drawHistory();
 }
 
-function thermometer({ gates, lit, merc, top }) {
-  const Y0 = 404;
+// Three thermometers on one scale: ingest against the gates, then read-back
+// and restore for the same run. On a narrow screen the gates keep only their
+// numbers; the list under the headline names them in full.
+function thermometers(view, narrow) {
+  const y = scaleY(view);
+  const r = view.merc?.run;
+  return [thermometer(view, y, narrow),
+    readThermometer("read_back", r, y, r ? r.median_bytes_per_s : null),
+    readThermometer("restore", r, y, null)];
+}
+
+// The vertical position of a rate: unmeasured gates take the space above Y1.
+function scaleY({ gates, top }) {
+  const Y0 = 404, Y1 = 24 + 44 * gates.filter((g) => !g.current).length;
+  return (v) => Y0 - (Math.min(v, top) / top) * (Y0 - Y1);
+}
+
+function thermometer({ gates, lit, merc }, y, narrow) {
   const unmeasured = gates.filter((g) => !g.current);
-  const Y1 = 24 + 44 * unmeasured.length;
-  const y = (v) => Y0 - (Math.min(v, top) / top) * (Y0 - Y1);
   const desc = [merc ? `p5 ${M.gbps(merc.run.p5_bytes_per_s)} GB/s, median ${M.gbps(merc.run.median_bytes_per_s)} GB/s.` : "No valid per-trigger or nightly run yet."];
-  const root = svg("svg", { viewBox: "0 0 240 480", role: "img", class: "thermo" });
-  root.append(svg("title", {}, "Ingest rate against three hardware gates"));
-  const d = svg("desc");
-  root.append(d);
-  root.append(svg("rect", { x: 50, y: 14, width: 28, height: 410, rx: 14, class: "tube" }));
-  root.append(svg("circle", { cx: 64, cy: 440, r: 24, class: "bulb" }));
-  if (merc) {
-    const top = y(merc.run.p5_bytes_per_s);
-    root.append(svg("rect", { x: 56, y: top, width: 16, height: 432 - top, rx: 4, class: "mercury" }));
-    const my = y(merc.run.median_bytes_per_s);
-    root.append(svg("path", { d: `M50 ${my} l-8 -5 v10 z`, class: "median" }));
-    root.append(svg("text", { x: 39, y: my - 2, "text-anchor": "end", class: "label secondary" }, "median"));
-    root.append(svg("text", { x: 39, y: my + 11, "text-anchor": "end", class: "label secondary" }, M.gbps(merc.run.median_bytes_per_s)));
-  }
+  const root = tube(narrow ? 120 : 240, "Ingest", "Ingest rate against three hardware gates",
+    y, merc?.run.p5_bytes_per_s, merc?.run.median_bytes_per_s);
   // Labels keep 34 px apart, pushed down from the top.
   const marks = gates.map((g, i) => ({ g, l: lit[i], y: g.current ? y(g.current.ceiling_bytes_per_s) : 24 + 44 * unmeasured.indexOf(g) + 22 }));
   let floor = -Infinity;
   for (const m of [...marks].sort((a, b) => a.y - b.y)) { m.ly = Math.max(m.y, floor + 34); floor = m.ly; }
+  const cx = narrow ? 92 : 97;
   for (const m of marks) {
     const value = m.g.current ? `${M.gbps(m.g.current.ceiling_bytes_per_s)} GB/s` : "not measured yet";
     root.append(svg("line", { x1: 46, x2: 82, y1: m.y, y2: m.y, class: m.g.current ? "gate" : "gate unmeasured" }));
-    if (m.ly !== m.y) root.append(svg("line", { x1: 82, x2: 90, y1: m.y, y2: m.ly - 4, class: "leader" }));
-    root.append(svg("circle", { cx: 97, cy: m.ly - 4, r: 6, class: m.l.run ? "lit" : "unlit" }));
-    if (m.l.run) root.append(svg("path", { d: `M94 ${m.ly - 4} l2 2.5 l4 -5`, class: "check" }));
-    const [first, second] = m.g.current ? [`Gate ${m.g.gate} · ${value}`, m.l.run ? `${m.g.instance_type} · reached` : m.g.instance_type]
-      : [`Gate ${m.g.gate} · ${m.g.instance_type}`, value];
-    root.append(svg("text", { x: 107, y: m.ly, class: "label" }, first));
-    root.append(svg("text", { x: 107, y: m.ly + 14, class: "label secondary" }, second));
+    if (m.ly !== m.y) root.append(svg("line", { x1: 82, x2: cx - 7, y1: m.y, y2: m.ly - 4, class: "leader" }));
+    root.append(svg("circle", { cx, cy: m.ly - 4, r: 6, class: m.l.run ? "lit" : "unlit" }));
+    if (m.l.run) root.append(svg("path", { d: `M${cx - 3} ${m.ly - 4} l2 2.5 l4 -5`, class: "check" }));
+    if (narrow) {
+      root.append(svg("text", { x: cx + 10, y: m.ly, class: "label" }, `G${m.g.gate}`));
+    } else {
+      const [first, second] = m.g.current ? [`Gate ${m.g.gate} · ${value}`, m.l.run ? `${m.g.instance_type} · reached` : m.g.instance_type]
+        : [`Gate ${m.g.gate} · ${m.g.instance_type}`, value];
+      root.append(svg("text", { x: 107, y: m.ly, class: "label" }, first));
+      root.append(svg("text", { x: 107, y: m.ly + 14, class: "label secondary" }, second));
+    }
     desc.push(`Gate ${m.g.gate}, ${m.g.instance_type}, ${value}, ${m.l.run ? "reached" : "not reached"}.`);
   }
-  d.textContent = desc.join(" ");
+  root.querySelector("desc").textContent = desc.join(" ");
+  return root;
+}
+
+// A read stream's thermometer: mercury at its p5, its median on the left and,
+// for read-back, the run's ingest median on the right, the volume it follows.
+function readThermometer(id, run, y, ingestMedian) {
+  const s = M.STREAMS.find((x) => x.id === id);
+  const p5 = run?.[s.p5], median = run?.[s.median];
+  const root = tube(120, s.label, `${s.label} rate on the scale of the ingest thermometer`, y, p5, median);
+  if (ingestMedian != null) {
+    const iy = y(ingestMedian);
+    root.append(svg("path", { d: `M78 ${iy} l8 -5 v10 z`, class: "median" }));
+    root.append(svg("text", { x: 89, y: iy - 2, class: "label secondary" }, "ingest"));
+    root.append(svg("text", { x: 89, y: iy + 11, class: "label secondary" }, M.gbps(ingestMedian)));
+  }
+  root.querySelector("desc").textContent = !run ? "No valid per-trigger or nightly run yet."
+    : [p5 == null ? "No p5 recorded." : `p5 ${M.gbps(p5)} GB/s.`, median == null ? "" : `Median ${M.gbps(median)} GB/s.`,
+      ingestMedian == null ? "" : `Ingest median ${M.gbps(ingestMedian)} GB/s.`].filter(Boolean).join(" ");
+  return root;
+}
+
+// The tube, the bulb, the mercury at p5, the median pointer and the stream's
+// name under the bulb. A missing p5 leaves the tube empty.
+function tube(width, name, title, y, p5, median) {
+  const root = svg("svg", { viewBox: `0 0 ${width} 500`, role: "img", class: "thermo" });
+  root.append(svg("title", {}, title), svg("desc"));
+  root.append(svg("rect", { x: 50, y: 14, width: 28, height: 410, rx: 14, class: "tube" }));
+  root.append(svg("circle", { cx: 64, cy: 440, r: 24, class: "bulb" }));
+  root.append(svg("text", { x: 64, y: 492, "text-anchor": "middle", class: "label name" }, name));
+  if (p5 != null) {
+    const top = y(p5);
+    root.append(svg("rect", { x: 56, y: top, width: 16, height: 432 - top, rx: 4, class: "mercury" }));
+  }
+  if (median != null) {
+    const my = y(median);
+    root.append(svg("path", { d: `M50 ${my} l-8 -5 v10 z`, class: "median" }));
+    root.append(svg("text", { x: 39, y: my - 2, "text-anchor": "end", class: "label secondary" }, "median"));
+    root.append(svg("text", { x: 39, y: my + 11, "text-anchor": "end", class: "label secondary" }, M.gbps(median)));
+  }
   return root;
 }
 
@@ -400,7 +446,11 @@ async function main() {
   const merc = M.mercury(d.runs, state.now);
   const lit = M.litGates(d.runs, d.gates);
   const view = { ...d, merc, lit, top: M.scaleTop(d.gates, merc) };
-  $("#summary").replaceChildren(h("div", { class: "thermo-wrap" }, thermometer(view)), headline(view));
+  const narrow = matchMedia("(max-width: 720px)");
+  const summary = () => $("#summary").replaceChildren(h("div", { class: "thermo-wrap" }, thermometers(view, narrow.matches)),
+    headline(view));
+  summary();
+  narrow.addEventListener("change", summary);
   // The history opens on the series of the run the mercury shows.
   if (merc) {
     state.series = merc.run.series;
