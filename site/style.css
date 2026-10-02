@@ -94,9 +94,10 @@ button:focus-visible, a:focus-visible, tr:focus-visible { outline: 2px solid var
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--chart-grid); vertical-align: top; }
 th { color: var(--text-secondary); font-weight: 600; }
+#runs .scroll { overflow-x: auto; }
 #runs tbody tr { cursor: pointer; }
 #runs tbody tr:hover { background: var(--surface-2); }
-#runs td:nth-child(n+5):nth-child(-n+9) { font-variant-numeric: tabular-nums; }
+#runs td:nth-child(n+5):nth-child(-n+14) { font-variant-numeric: tabular-nums; }
 #runs button { margin-top: 12px; font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--chart-chrome); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
 .outcome .icon { display: inline-block; width: 1em; text-align: center; }
 .outcome.valid .icon { color: var(--status-good); }

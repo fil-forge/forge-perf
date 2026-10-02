@@ -92,6 +92,27 @@ export function scaleTop(gates, merc) {
   return values.length ? 1.1 * Math.max(...values) : FALLBACK_TOP;
 }
 
+// The three streams a run measures and the index fields of each one's rates.
+export const STREAMS = [
+  { id: "ingest", label: "Ingest", p5: "p5_bytes_per_s", median: "median_bytes_per_s" },
+  { id: "read_back", label: "Read-back", p5: "read_back_p5_bytes_per_s", median: "read_back_median_bytes_per_s" },
+  { id: "restore", label: "Restore", p5: "restore_p5_bytes_per_s", median: "restore_median_bytes_per_s" },
+];
+
+// A read stream's headline line, or null when the run has no median for it.
+// A run from before the harness recorded read p5 shows the median alone.
+export function readLine(run, id) {
+  const s = STREAMS.find((x) => x.id === id);
+  const p5 = run[s.p5], median = run[s.median];
+  if (median == null) return null;
+  const parts = p5 == null ? [`${s.label} median ${gbps(median)} GB/s`]
+    : [`${s.label} ${gbps(p5)} GB/s held by 95% of windows`, `median ${gbps(median)} GB/s`];
+  if (id === "restore" && run.restore_ranged_gets_median_per_s != null) {
+    parts.push(`${perSecond(run.restore_ranged_gets_median_per_s)} ranged GETs/s`);
+  }
+  return parts.join(" · ");
+}
+
 export function gbps(bytes) {
   if (bytes == null) return "–";
   const v = bytes / 1e9;

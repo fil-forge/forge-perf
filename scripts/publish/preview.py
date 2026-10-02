@@ -47,7 +47,7 @@ def fixture(cls):
 
 
 def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=None, smelt=None,
-           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False, traced=False):
+           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False, traced=False, read_p5=True):
     r = copy.deepcopy(fixture(cls))
     if traced:
         # The traced fixture's trace block and flag, so the page shows a trace link.
@@ -73,6 +73,15 @@ def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=No
     if res and p5 is not None:
         res.update(ingest_p5_bytes_per_s=p5, ingest_median_bytes_per_s=round(p5 * 1.18),
                    writes_median_per_s=round(p5 * 1.18 / 134217728, 2))
+        # Read-back tracks the ingest median; restore runs at about half of it. A run from
+        # before the harness recorded read p5 (read_p5=False) has the medians alone.
+        restore_median = round(p5 * 0.62)
+        res["cache_served"] = {
+            "read_back_p5_bytes_per_s": round(p5 * 1.1) if read_p5 else None,
+            "read_back_median_bytes_per_s": round(p5 * 1.16),
+            "restore_p5_bytes_per_s": round(p5 * 0.5) if read_p5 else None,
+            "restore_median_bytes_per_s": restore_median,
+            "restore_ranged_gets_median_per_s": round(restore_median / 4194304, 1) if read_p5 else None}
         if windows is not None:
             res["sustained_windows"] = windows
             r["outcome"]["flags"] = [f for f in r["outcome"]["flags"] if f != "few_windows"] + \
@@ -137,8 +146,9 @@ def scenarios(now):
         later = i >= 5
         runs.append(record(hours(100 - 10 * i), p5=(0.30e9 if not later else 0.27e9) + 0.003e9 * (i % 3),
                            smelt="9c2e" * 10 if later else None,
-                           postgres=("sha256:" + "5" * 64) if later else None, kernel="6.14.0-1017-aws" if i >= 8 else None))
-    out["instrument-change"] = ("An instrument change (smelt, postgres) and a kernel change", runs,
+                           postgres=("sha256:" + "5" * 64) if later else None, kernel="6.14.0-1017-aws" if i >= 8 else None,
+                           read_p5=later))
+    out["instrument-change"] = ("An instrument change (smelt, postgres) and a kernel change; read p5 only after it", runs,
                                 [gate(1, 0.36e9, hours(200)), gate(2, 2.05e9, hours(200)), gate(3)], [], idle)
 
     runs = [record(hours(200 - 12 * i), p5=0.30e9 + 0.015e9 * i) for i in range(6)]
