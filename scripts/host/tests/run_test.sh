@@ -248,7 +248,12 @@ git -C "$work/sq-src" branch -q -D feature
 mkdir -p "$work/root/proc"
 printf 'processor\t: 0\nFeatures\t: fp asimd aes pmull sha1 sha2 crc32\nCPU implementer\t: 0x41\nCPU part\t: 0xd4f\n' \
   >"$work/root/proc/cpuinfo"
-printf 'MemTotal:       32450648 kB\n' >"$work/root/proc/meminfo"
+printf 'MemTotal:       32450648 kB\nDirty:            123456 kB\nWriteback:          7890 kB\n' >"$work/root/proc/meminfo"
+# nvme1n1 is the instance store in the lsblk stub below; nvme0n1 is the root.
+printf '%s\n' \
+  ' 259       0 nvme0n1 1 2 3 4 5 6 7 8 9 10 11' \
+  ' 259       1 nvme1n1 100 0 2048 5 200 0 4096 9 0 777 14' >"$work/root/proc/diskstats"
+printf 'cpu  10 20 30 40 50 60 70 80 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n' >"$work/root/proc/stat"
 mkdir -p "$work/root/sys/class/net/ens5/statistics"
 echo 1000 >"$work/root/sys/class/net/ens5/statistics/tx_bytes"
 
@@ -360,6 +365,11 @@ run 0 -- --set "$work/set.json" --workers 16
 [[ "$(runner '.provenance.forge_perf.instrument_tree')" =~ ^[0-9a-f]{64}$ ]] || fail "instrument tree"
 [ "$(runner .time.stack_up_at)" != null ] || fail "no stack_up_at"
 cmp -s "$work/box/state/runner.json" "$work/box/nvme/work/run/runner.json" || fail "run dir runner.json differs"
+# Per-second I/O: epoch, the instance store's sectors read and written and
+# ms busy, the cpu line's first eight counters, and Dirty and Writeback in kB.
+io="$(head -n 1 "$work/box/nvme/work/run/io.csv")"
+[ "$(awk '{ print NF }' <<<"$io")" = 14 ] && [ "$(cut -d' ' -f2- <<<"$io")" = "2048 4096 777 10 20 30 40 50 60 70 80 123456 7890" ] ||
+  fail "io.csv: $io"
 [ ! -e "$work/box/state/current.json" ] || fail "current.json left"
 jq -e --arg s "$sq_sha" '.harness.sha == $s' "$work/box/state/last-started.json" >/dev/null || fail "last-started"
 grep -q "network create --driver bridge --subnet 172.30.0.0/24 forge-network" "$D/docker.log" || fail "network"
