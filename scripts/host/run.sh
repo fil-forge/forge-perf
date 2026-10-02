@@ -776,14 +776,30 @@ step_latency() {
   esac
 }
 
+# io_line: one row of io.csv. The epoch; the instance store's cumulative
+# sectors read and written and milliseconds busy (fields 6, 10 and 13 of
+# /proc/diskstats); the cumulative user, nice, system, idle, iowait, irq,
+# softirq and steal jiffies of /proc/stat's cpu line; and Dirty and Writeback
+# from /proc/meminfo in kB. A source that cannot be read gives "-" fields, so
+# every row has 14. Raw evidence only: the record does not read it.
+io_line() {
+  local d c m
+  d="$(awk -v dev="$io_dev" 'dev != "" && $3 == dev { print $6, $10, $13 }' "$R/proc/diskstats" 2>/dev/null)"
+  c="$(awk '$1 == "cpu" { print $2, $3, $4, $5, $6, $7, $8, $9 }' "$R/proc/stat" 2>/dev/null)"
+  m="$(awk '/^Dirty:/ { d = $2 } /^Writeback:/ { w = $2 } END { if (d != "") print d, w + 0 }' "$R/proc/meminfo" 2>/dev/null)"
+  echo "$(date +%s) ${d:-- - -} ${c:-- - - - - - - -} ${m:-- -}" >>"$RUN/io.csv"
+}
+
 # sample: in the background during the drill, the primary interface's
-# transmitted bytes every second and the NVMe's free space every 30 seconds.
+# transmitted bytes and an io.csv row every second, and the NVMe's free space
+# every 30 seconds.
 sample() {
   local n=0 tx free
   while :; do
     if [ -n "$nic_if" ] && tx="$(cat "$R/sys/class/net/$nic_if/statistics/tx_bytes" 2>/dev/null)"; then
       echo "$(date +%s) $tx" >>"$RUN/nic.csv"
     fi
+    io_line
     if [ $((n % 30)) -eq 0 ] && ! host_ops_skipped; then
       free="$(df -Pk "$FORGE_PERF_NVME_MOUNT" 2>/dev/null | awk 'NR == 2 { print $4 * 1024 }')"
       if [[ "$free" =~ ^[0-9]+$ ]]; then
@@ -832,6 +848,11 @@ step_drill() {
   : >"$RUN/ethtool-post.txt"
   : >"$RUN/nic.csv"
   [ -z "$nic_if" ] || q host_read ethtool -S "$nic_if" >"$RUN/ethtool-pre.txt"
+  io_dev="$(instance_store_dev 2>/dev/null || true)"
+  io_dev="${io_dev##*/}"
+  : >"$RUN/io.csv"
+  # One row before the drill starts, as the baseline for the counters.
+  io_line
   sample &
   sampler=$!
   rj --arg t "$(now)" '.time.drill_started_at = $t'
@@ -1013,7 +1034,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end)}' \
   >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
-stop_requested="" drill_pid="" sampler="" nic_if="" record_class=""
+stop_requested="" drill_pid="" sampler="" nic_if="" io_dev="" record_class=""
 trap finish EXIT
 trap 'on_stop 143' TERM
 trap 'on_stop 130' INT
