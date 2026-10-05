@@ -1027,8 +1027,8 @@ done
   '{"objectstore.name":"allocations"}' ] || fail "span attributes $(jq -c . "$work/sent-traces")"
 jq -r .body "$D/grafana/000.json" | jq -e --arg id "$id" '[.resourceMetrics[0].scopeMetrics[0].metrics[]
   | .gauge.dataPoints[0].attributes | map({(.key): .value.stringValue}) | add | .run_id == $id and .traced == "true"
-  and .class == "valid"] | length == 5 and all' >/dev/null || fail "metrics body"
-has "$work/out" "grafana: spans 1 sent, 0 failed, 0 unsent; points 5 sent, 0 failed, 0 unsent"
+  and .class == "valid"] | length == 10 and all' >/dev/null || fail "metrics body"
+has "$work/out" "grafana: spans 1 sent, 0 failed, 0 unsent; points 10 sent, 0 failed, 0 unsent"
 order="$(grep -E '^=== (record|grafana|upload|wipe) ===' "$work/out" | tr -d '= ' | tr '\n' ' ')"
 [ "$order" = "record grafana upload wipe " ] || fail "close-out order: $order"
 has "$D/aws.log" "--name /forge-perf/grafana-token"
