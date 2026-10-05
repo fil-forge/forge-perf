@@ -1077,7 +1077,7 @@ for mode in refuse hang fail down; do
       sed 's/^GRAFANA_TIMEOUT_S=.*/GRAFANA_TIMEOUT_S=8/' "$work/checkout/config/grafana.conf" >"$work/grafana.conf"
       mv "$work/grafana.conf" "$work/checkout/config/grafana.conf"
       git -C "$work/checkout" commit -qam "short budget" ;;
-    fail) env=(GRAFANA_EXPORT=fail) line="grafana: spans 0 sent, 1 failed, 0 unsent; points 0 sent, 5 failed, 0 unsent" ;;
+    fail) env=(GRAFANA_EXPORT=fail) line="grafana: spans 0 sent, 1 failed, 0 unsent; points 0 sent, 10 failed, 0 unsent" ;;
     down) env=(GRAFANA_RUN_FAIL=1) line="grafana: cannot start the collector; nothing sent" ;;
   esac
   run 0 FORGE_PERF_TRACE_SETTLE_S=0 "${ports[@]}" "${env[@]}" -- --set "$work/set.json" --workers 16 --trace 0.1
