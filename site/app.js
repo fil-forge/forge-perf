@@ -101,6 +101,7 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
       h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`),
       h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${M.perSecond(r.writes_median_per_s)} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
+      ...["read_back", "restore"].map((id) => M.readLine(r, id)).filter(Boolean).map((line) => h("p", {}, line)),
       h("p", { class: "secondary" }, "Run ", h("a", { href: `#run=${r.run_id}` }, r.run_id),
         ` on ${r.box.instance_type}, ${utc(r.run_started_at)}, ${gb(r.size_bytes)}`),
       ...(tl ? [h("p", { class: "secondary" }, tl)] : []),
@@ -228,19 +229,24 @@ function experimentCell(note) {
 
 function table() {
   const runs = [...state.data.runs].reverse();
-  const head = ["Started (UTC)", "Series", "Box", "Outcome", "p5 GB/s", "Median GB/s", "Writes/s", "Windows", "RTT ms", "Changes"];
+  const head = ["Started (UTC)", "Series", "Box", "Outcome", "p5 GB/s", "Median GB/s", "Writes/s",
+    "Read-back p5 GB/s", "Read-back median GB/s", "Restore p5 GB/s", "Restore median GB/s", "Ranged GETs/s",
+    "Windows", "RTT ms", "Changes"];
   const body = h("tbody");
   for (const r of runs.slice(0, state.shown)) {
     const cells = [
       h("a", { href: `#run=${r.run_id}` }, utc(r.run_started_at).replace(" UTC", "")), r.series,
       `${r.box.id} · ${r.box.instance_type}`, outcome(r), M.gbps(r.p5_bytes_per_s), M.gbps(r.median_bytes_per_s),
-      M.perSecond(r.writes_median_per_s), r.sustained_windows ?? "–", r.rtt_median_ms ?? "–",
+      M.perSecond(r.writes_median_per_s), M.gbps(r.read_back_p5_bytes_per_s), M.gbps(r.read_back_median_bytes_per_s),
+      M.gbps(r.restore_p5_bytes_per_s), M.gbps(r.restore_median_bytes_per_s), M.perSecond(r.restore_ranged_gets_median_per_s),
+      r.sustained_windows ?? "–", r.rtt_median_ms ?? "–",
       r.experiment ? experimentCell(M.experimentNote(state.data.runs, r)) : M.changesText(r) || "–",
     ];
     body.append(h("tr", { onclick: (e) => { if (e.target.tagName !== "A") location.hash = `run=${r.run_id}`; } },
       cells.map((c, i) => h("td", { "data-label": head[i] }, c))));
   }
-  const el = h("div", {}, h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", { scope: "col" }, c)))), body));
+  const el = h("div", {}, h("div", { class: "scroll", tabindex: "0", role: "region", "aria-labelledby": "runs-title" },
+    h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", { scope: "col" }, c)))), body)));
   if (!runs.length) el.replaceChildren(h("p", { class: "empty" }, "No runs have been published."));
   if (runs.length > state.shown) {
     el.append(h("button", { type: "button", onclick: () => {
@@ -273,7 +279,7 @@ async function details(id) {
     h("h2", { tabindex: "-1" }, `Run ${id}`), h("a", { href: "#", class: "close" }, "Close")));
   panel.hidden = false;
   if (!rec) { panel.append(h("p", {}, "The record could not be loaded.")); panel.querySelector("h2").focus(); return; }
-  const t = rec.time, res = rec.drill.results || {}, o = rec.outcome;
+  const t = rec.time, res = rec.drill.results || {}, reads = res.cache_served || {}, o = rec.outcome;
   const dur = Math.round((Date.parse(t.run_finished_at) - Date.parse(t.run_started_at)) / 60000);
   const tl = traces(run);
   panel.append(
@@ -286,16 +292,17 @@ async function details(id) {
       finished: utc(t.run_finished_at), duration: `${dur} min`, ...(tl ? { traces: tl } : {}),
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
     ...experimentSection(run),
-    kv("Rates", { p5: rate(res.ingest_p5_bytes_per_s), median: rate(res.ingest_median_bytes_per_s),
-      writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s), steady_windows: res.sustained_windows, total_windows: res.total_windows,
+    kv("Rates", { ingest_p5: rate(res.ingest_p5_bytes_per_s), ingest_median: rate(res.ingest_median_bytes_per_s),
+      writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s),
+      "read-back_p5": rate(reads.read_back_p5_bytes_per_s), "read-back_median": rate(reads.read_back_median_bytes_per_s),
+      restore_p5: rate(reads.restore_p5_bytes_per_s), restore_median: rate(reads.restore_median_bytes_per_s),
+      restore_ranged_GETs_per_s: reads.restore_ranged_gets_median_per_s == null ? null : M.perSecond(reads.restore_ranged_gets_median_per_s),
+      steady_windows: res.sustained_windows, total_windows: res.total_windows,
       cap_reached: res.cap_reached, ingest_cutoff_s: res.ingest_cutoff_s, bytes_ingested: res.bytes_ingested, ingest_sent_bytes: res.ingest_sent_bytes,
       bytes_read_back: res.bytes_read_back, bytes_restored: res.bytes_restored, blobs_written: res.blobs_written,
-      window_rates: res.window_ingest_bytes_per_s && h("details", {}, h("summary", {}, `${res.window_ingest_bytes_per_s.length} windows, GB/s`),
-        res.window_ingest_bytes_per_s.map(M.gbps).join(" ")) }),
-    h("section", {}, h("h3", {}, "Cache-served rates"),
-      h("p", {}, "Read-back runs 30 to 60 seconds after each write, so these rates mostly measure the spool and page cache."),
-      kv("", { read_back_median: rate(res.cache_served?.read_back_median_bytes_per_s),
-        restore_median: rate(res.cache_served?.restore_median_bytes_per_s) }).querySelector("table")),
+      ingest_window_rates: windowRates(res.window_ingest_bytes_per_s),
+      "read-back_window_rates": windowRates(res.window_read_back_bytes_per_s),
+      restore_window_rates: windowRates(res.window_restore_bytes_per_s) }),
     kv("Requests", { ...(rec.drill.requests || {}), drill_exit: o.drill_exit, failure_codes: o.failure_codes.join(", ") || "none" }),
     kv("Drill settings", rec.drill.settings, "Not recorded: the settings file was missing or unreadable."),
     kv("Latency", Object.fromEntries(Object.entries(rec.latency).filter(([k]) => !["before", "after"].includes(k)))),
@@ -313,6 +320,9 @@ async function details(id) {
       raw_record: h("a", { href: `data/runs/${id}.json` }, `${id}.json`) }));
   panel.querySelector("h2").focus();
 }
+
+// A stream's per-window rates, folded; null for a record without them.
+const windowRates = (list) => list && h("details", {}, h("summary", {}, `${list.length} windows, GB/s`), list.map(M.gbps).join(" "));
 
 // The pull request an experiment's run tested, and the set it ran; nothing
 // for any other run.
