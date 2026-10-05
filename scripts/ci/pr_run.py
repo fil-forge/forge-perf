@@ -56,6 +56,7 @@ SAFE_TEXT_RE = re.compile(r"[^A-Za-z0-9 _.:,=/()+-]")
 
 STATES = ("queued", "running", "done", "failed", "refused")
 VERDICTS = ("faster", "slower", "within noise")
+READ_STREAMS = (("read_back", "Read-back"), ("restore", "Restore"))
 USAGE = "`/forge-perf` on the first line of the comment, optionally followed by `pairs=1` or `pairs=2`."
 
 
@@ -226,6 +227,12 @@ def check_status(status, expected_id):
     comp = status.get("comparison")
     if comp is not None and (not isinstance(comp, dict) or comp.get("verdict") not in VERDICTS):
         raise ValueError("status file has a malformed comparison")
+    # A status from before read streams were compared has neither object; a
+    # stream whose runs had no read median is null.
+    for stream, _ in READ_STREAMS:
+        read = (comp or {}).get(stream)
+        if read is not None and (not isinstance(read, dict) or read.get("verdict") not in VERDICTS):
+            raise ValueError("status file has a malformed comparison")
     return dict(status, runs=runs)
 
 
@@ -263,7 +270,11 @@ def state_text(phase, status=None, waited_s=0):
     if state == "running":
         return f"Running ({len(status['runs'])} run(s) recorded)"
     if state == "done":
-        return f"Done: {status['comparison']['verdict']}" if status.get("comparison") else "Done"
+        comp = status.get("comparison")
+        if not comp:
+            return "Done"
+        reads = [f"{label.lower()} {comp[k]['verdict']}" for k, label in READ_STREAMS if comp.get(k)]
+        return "Done: " + " · ".join([f"ingest {comp['verdict']}", *reads])
     return f"{state.capitalize()}: {safe(status.get('reason') or 'no reason given')}"
 
 
@@ -280,17 +291,22 @@ def runs_table(runs):
 
 
 def comparison_lines(comp):
-    noise_m, noise_p = comp.get("noise_median_pct"), comp.get("noise_p5_pct")
-    return [
-        "| | Median | p5 |",
-        "|---|---|---|",
-        f"| Branch against main | {pct(comp.get('median_delta_pct'))} | {pct(comp.get('p5_delta_pct'))} |",
-        f"| Noise band | ±{noise_m if isinstance(noise_m, (int, float)) else '–'}% "
-        f"| ±{noise_p if isinstance(noise_p, (int, float)) else '–'}% |",
-        "",
-        f"**Verdict: {comp['verdict']}**, judged on the median against its noise band. "
-        "Positive deltas mean the branch ingests faster.",
-    ]
+    lines = ["| Stream | Median | p5 | Median noise band | Verdict |", "|---|---|---|---|---|", stream_row("Ingest", comp)]
+    for key, label in READ_STREAMS:
+        if key in comp:
+            lines.append(stream_row(label, comp[key]))
+    return lines + ["", f"**Verdict: {comp['verdict']}** on ingest. Each stream is judged on its median, "
+                    "branch against main, against that stream's noise band. Positive deltas mean the branch is faster."]
+
+
+def stream_row(label, comp):
+    """One stream's row; a stream left out of the comparison shows dashes."""
+    if comp is None:
+        return f"| {label} | – | – | – | – |"
+    noise = comp.get("noise_median_pct")
+    noise = f"±{noise}%" if isinstance(noise, (int, float)) and not isinstance(noise, bool) else "–"
+    return (f"| {label} | {pct(comp.get('median_delta_pct'))} | {pct(comp.get('p5_delta_pct'))} | {noise} "
+            f"| {comp['verdict']} |")
 
 
 def render(ctx, phase, status=None, waited_s=0):
