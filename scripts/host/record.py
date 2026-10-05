@@ -519,16 +519,25 @@ def build(runner, run_dir, latency, env, traces_dir=None):
             sustained = count(facts.get("sustained_windows", 0))
             cap = facts.get("ingest_cutoff_reached") is True
             median = facts.get("sustained_ingest_median_bytes_per_second")
+            windows = drill.get("windows") or []
             record["drill"]["results"] = {
                 "sustained_windows": sustained,
-                "total_windows": len(drill.get("windows") or []),
+                "total_windows": len(windows),
                 "ingest_p5_bytes_per_s": facts.get("sustained_ingest_p5_bytes_per_second"),
                 "ingest_median_bytes_per_s": median,
                 "writes_median_per_s": facts.get("sustained_writes_median_per_second"),
-                "window_ingest_bytes_per_s": [w["ingest_bytes_per_second"] for w in drill.get("windows") or []],
+                "window_ingest_bytes_per_s": [w["ingest_bytes_per_second"] for w in windows],
+                "window_read_back_bytes_per_s": [w["read_bytes_per_second"] for w in windows],
+                # A window of no length restored nothing; the drill books its other rates as 0 too.
+                "window_restore_bytes_per_s": [w["restore_bytes"] / w["seconds"] if w["seconds"] > 0 else 0.0
+                                               for w in windows],
                 "cache_served": {
+                    "read_back_p5_bytes_per_s": facts.get("sustained_read_p5_bytes_per_second"),
                     "read_back_median_bytes_per_s": facts.get("sustained_read_median_bytes_per_second"),
-                    "restore_median_bytes_per_s": facts.get("sustained_restore_median_bytes_per_second")},
+                    "restore_p5_bytes_per_s": facts.get("sustained_restore_p5_bytes_per_second"),
+                    "restore_median_bytes_per_s": facts.get("sustained_restore_median_bytes_per_second"),
+                    "restore_ranged_gets_median_per_s":
+                        facts.get("sustained_restore_ranged_gets_median_per_second")},
                 "ingest_sent_bytes": count(facts["ingest_sent_bytes"]),
                 "bytes_ingested": drill["bytes_ingested"], "bytes_read_back": drill["bytes_read_back"],
                 "bytes_restored": drill["bytes_restored"], "blobs_written": count(facts["blobs_written"]),

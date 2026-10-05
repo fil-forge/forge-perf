@@ -99,8 +99,13 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `drill.results.ingest_median_bytes_per_s` | fact `sustained_ingest_median_bytes_per_second` |
 | `drill.results.writes_median_per_s` | fact `sustained_writes_median_per_second` |
 | `drill.results.window_ingest_bytes_per_s` | each window's `ingest_bytes_per_second`, in window order |
-| `drill.results.cache_served.read_back_median_bytes_per_s` | fact `sustained_read_median_bytes_per_second`. Read-back runs 30 to 60 seconds after each write, so the page cache serves most of it |
-| `drill.results.cache_served.restore_median_bytes_per_s` | fact `sustained_restore_median_bytes_per_second`, under the same caveat |
+| `drill.results.window_read_back_bytes_per_s` | each window's `read_bytes_per_second`, in window order |
+| `drill.results.window_restore_bytes_per_s` | each window's `restore_bytes` over its `seconds`, in window order; 0 for a window of no length |
+| `drill.results.cache_served.read_back_p5_bytes_per_s` | fact `sustained_read_p5_bytes_per_second`, over the same steady windows as ingest |
+| `drill.results.cache_served.read_back_median_bytes_per_s` | fact `sustained_read_median_bytes_per_second` |
+| `drill.results.cache_served.restore_p5_bytes_per_s` | fact `sustained_restore_p5_bytes_per_second` |
+| `drill.results.cache_served.restore_median_bytes_per_s` | fact `sustained_restore_median_bytes_per_second` |
+| `drill.results.cache_served.restore_ranged_gets_median_per_s` | fact `sustained_restore_ranged_gets_median_per_second`: the median over steady windows of ranged GETs a second, which only restore sends |
 | `drill.results.ingest_sent_bytes` | fact `ingest_sent_bytes` |
 | `drill.results.bytes_ingested`, `drill.results.bytes_read_back`, `drill.results.bytes_restored` | evidence `drill.bytes_ingested`, `bytes_read_back`, `bytes_restored` |
 | `drill.results.blobs_written` | fact `blobs_written` |
@@ -150,6 +155,8 @@ The pass summary `rtt`, from one pass of `latency.json`:
 | `rtt.connect_median_max_ms` | the larger of the connects' `connect_median_ms` |
 
 Rates stay in bytes per second as the drill reports them. The page divides by 10^9.
+
+Both read streams read from ingot's local spool on the box's NVMe. Ingot reads its spool before it asks Forge, and it keeps every blob it accepted until spool eviction exists. A 2,000 GB run fits on the box's 3,800 GB drive, and in a traced 2,000 GB run every read-back and restore GET read its blob from the spool. The read rates therefore measure ingot's read path from its spool. The group keeps the name `cache_served` from when read-back was thought to come from the page cache. A harness from before the read-back and restore p5 facts leaves those three fields null.
 
 ## Classification
 
@@ -287,4 +294,4 @@ The publish Action recomputes both fingerprints and rejects a record whose store
 
 ## Fixtures
 
-`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `traces/` for a traced run in the layout the collector writes under `$RUN/traces`, `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, a run whose run directory belongs to another run, which ends in the minimal record, a valid run with CPU caps, which the builder records as series `calibration` with `cpu_capped`, and a valid run traced at ratio 0.1, whose small synthetic `traces.jsonl` has spans from ingot, sprue and piri, from a service outside the list and from one without a name, and whose `collector-metrics.txt` has refused and failed-to-send spans. Span names, attribute values, metric help text and `collector.log` carry the marker too. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.
+`scripts/host/fixtures/<case>/` holds one case each: a smelt run directory under `run/` in the layout `perf-drill.sh run` writes, `netem/latency.json` (each absent when that step never ran), `traces/` for a traced run in the layout the collector writes under `$RUN/traces`, `runner.json`, and `expected.json`, the record the builder must produce. Every free-text field in them carries the marker `FIXTURE-FREE-TEXT` in place of real drill output, so a test can prove the marker never reaches a record. The cases are a valid run, availability errors, an integrity failure, `wrote_nothing`, `read_back_incomplete`, a restarted container, exit 1 without evidence, exit 2, a stack boot failure with neither a run directory nor a netem pass, a run whose run directory belongs to another run, which ends in the minimal record, a valid run with CPU caps, which the builder records as series `calibration` with `cpu_capped`, and a valid run traced at ratio 0.1, whose small synthetic `traces.jsonl` has spans from ingot, sprue and piri, from a service outside the list and from one without a name, and whose `collector-metrics.txt` has refused and failed-to-send spans. Span names, attribute values, metric help text and `collector.log` carry the marker too. The valid and traced cases carry the read-back and restore p5 and ranged GET facts; every other case leaves them out, so its record holds nulls. `scripts/host/test_schema.py` checks every `expected.json` against the schema. `scripts/host/test_record.py` builds each case with `record.py` and compares the result with `expected.json` field by field.

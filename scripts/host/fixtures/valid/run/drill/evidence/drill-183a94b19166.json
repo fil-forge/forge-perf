@@ -375,8 +375,11 @@
    "sustained_ingest_median_bytes_per_second": 26090000.0,
    "sustained_ingest_p5_bytes_per_second": 25360000.0,
    "sustained_writes_median_per_second": 0.2,
-   "sustained_read_median_bytes_per_second": 0.0,
-   "sustained_restore_median_bytes_per_second": 0.0
+   "sustained_read_median_bytes_per_second": 25800000.0,
+   "sustained_read_p5_bytes_per_second": 25100000.0,
+   "sustained_restore_median_bytes_per_second": 18400000.0,
+   "sustained_restore_p5_bytes_per_second": 16900000.0,
+   "sustained_restore_ranged_gets_median_per_second": 2.2
   }
  },
  "failures": [],

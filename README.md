@@ -1,6 +1,6 @@
 # forge-perf
 
-forge-perf tracks the sustained ingest rate of the Forge storage stack. A dedicated EC2 box runs every Forge service from the images published on main, drives them with the storage-qualification drill's import profile (~128 MiB objects), and publishes one number per run: p5 of 30-second windows, the highest rate at least 95% of the windows held. The median sits beside it.
+forge-perf tracks the sustained ingest rate of the Forge storage stack. A dedicated EC2 box runs every Forge service from the images published on main, drives them with the storage-qualification drill's import profile (~128 MiB objects), and publishes one number per run: p5 of 30-second windows, the highest rate at least 95% of the windows held. The median sits beside it. Each run also publishes the same figures for the drill's two read streams, read-back and restore, which ingot serves from its local spool until spool eviction exists.
 
 The results page will be served from GitHub Pages at https://fil-forge.github.io/forge-perf/ once the first run is published.
 
