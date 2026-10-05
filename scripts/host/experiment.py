@@ -181,9 +181,10 @@ def run_summary(role, run_id, record):
 
 
 def noise_band(noise_dir, box, instance_type):
-    """{stream: {median, p5}} in percent. Ingest takes twice the coefficients of
-    variation of the box's committed per-trigger noise band on its instance
-    type; every stream without one takes DEFAULT_NOISE."""
+    """{stream: {median, p5}} in percent: twice the coefficients of variation
+    of the box's committed per-trigger noise band on its instance type, or
+    DEFAULT_NOISE for a stream or figure the band lacks. Ingest's are at the
+    band's top level; a band from before read streams has none for them."""
     out = {k: dict(v) for k, v in DEFAULT_NOISE.items()}
     if noise_dir and box and instance_type:
         for path in sorted(Path(noise_dir).glob("*.json")):
@@ -192,6 +193,11 @@ def noise_band(noise_dir, box, instance_type):
                 if (band.get("kind"), band.get("series"), band.get("box"), band.get("instance_type"),
                         band.get("pass")) == ("noise", "per-trigger", box, instance_type, True):
                     out["ingest"] = {k: round(2 * 100 * band[k]["cv"], 1) for k in ("median", "p5")}
+                    for stream in ("read_back", "restore"):
+                        for k in ("median", "p5"):
+                            cv = ((band.get(stream) or {}).get(k) or {}).get("cv")
+                            if isinstance(cv, (int, float)) and not isinstance(cv, bool):
+                                out[stream][k] = round(2 * 100 * cv, 1)
                     return out
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
