@@ -59,6 +59,11 @@ GAUGES = (
     ("forge_perf_writes_per_second", "writes_median_per_s"),
     ("forge_perf_sustained_windows", "sustained_windows"),
     ("forge_perf_bytes_ingested", "bytes_ingested"),
+    ("forge_perf_read_back_p5_bytes_per_second", "cache_served.read_back_p5_bytes_per_s"),
+    ("forge_perf_read_back_median_bytes_per_second", "cache_served.read_back_median_bytes_per_s"),
+    ("forge_perf_restore_p5_bytes_per_second", "cache_served.restore_p5_bytes_per_s"),
+    ("forge_perf_restore_median_bytes_per_second", "cache_served.restore_median_bytes_per_s"),
+    ("forge_perf_restore_ranged_gets_per_second", "cache_served.restore_ranged_gets_median_per_s"),
 )
 
 
@@ -274,8 +279,10 @@ def metrics_body(record):
     attributes = [string_attr(k, str(v)) for k, v in labels.items() if v is not None]
     at = unix_nanos(record["time"]["run_finished_at"])
     metrics = []
-    for name, field in GAUGES:
-        value = results.get(field)
+    for name, path in GAUGES:
+        value = results
+        for key in path.split("."):
+            value = value.get(key) if isinstance(value, dict) else None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         metrics.append({"name": name, "gauge": {"dataPoints": [

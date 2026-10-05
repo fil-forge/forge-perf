@@ -50,6 +50,8 @@ def changes(record, previous):
 
 def row(record, previous):
     results = record["drill"]["results"] or {}
+    # A record from before the read-back and restore p5 lacks those keys.
+    reads = results.get("cache_served") or {}
     before = record["latency"]["before"] or {}
     return {
         "run_id": record["run_id"],
@@ -69,6 +71,11 @@ def row(record, previous):
         "p5_bytes_per_s": results.get("ingest_p5_bytes_per_s"),
         "median_bytes_per_s": results.get("ingest_median_bytes_per_s"),
         "writes_median_per_s": results.get("writes_median_per_s"),
+        "read_back_p5_bytes_per_s": reads.get("read_back_p5_bytes_per_s"),
+        "read_back_median_bytes_per_s": reads.get("read_back_median_bytes_per_s"),
+        "restore_p5_bytes_per_s": reads.get("restore_p5_bytes_per_s"),
+        "restore_median_bytes_per_s": reads.get("restore_median_bytes_per_s"),
+        "restore_ranged_gets_median_per_s": reads.get("restore_ranged_gets_median_per_s"),
         "sustained_windows": results.get("sustained_windows"),
         "rtt_median_ms": before.get("node_to_central_median_ms"),
         "fingerprint": record["instrument"]["fingerprint"],
