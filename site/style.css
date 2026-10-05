@@ -58,6 +58,7 @@ header .segmented { margin-top: 28px; }
 .segmented button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
 button:focus-visible, a:focus-visible, tr:focus-visible, .scroll:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 
+.controls { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .summary {
   display: grid; grid-template-columns: 480px 1fr; gap: 24px; align-items: start;
   background: var(--surface-1); border: 1px solid var(--chart-grid); border-radius: 12px; padding: 16px; margin-top: 24px;
