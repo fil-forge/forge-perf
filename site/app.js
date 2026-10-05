@@ -245,7 +245,7 @@ function table() {
     body.append(h("tr", { onclick: (e) => { if (e.target.tagName !== "A") location.hash = `run=${r.run_id}`; } },
       cells.map((c, i) => h("td", { "data-label": head[i] }, c))));
   }
-  const el = h("div", {}, h("div", { class: "scroll" },
+  const el = h("div", {}, h("div", { class: "scroll", tabindex: "0", role: "region", "aria-labelledby": "runs-title" },
     h("table", {}, h("thead", {}, h("tr", {}, head.map((c) => h("th", { scope: "col" }, c)))), body)));
   if (!runs.length) el.replaceChildren(h("p", { class: "empty" }, "No runs have been published."));
   if (runs.length > state.shown) {
