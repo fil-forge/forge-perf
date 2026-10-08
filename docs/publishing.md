@@ -151,7 +151,7 @@ Ingest applies every check and writes `runs/` and `status/` as in the workflow, 
 |---|---|
 | `forge-perf: publish failed` | Read the linked run's log. The usual causes are a revoked or missing `SLACK_BOT_TOKEN`, a changed trust on `forge-perf-ci-results`, and an unset `PUBLIC_DENYLIST_REGEX` (ingest exits 2). The next scheduled run retries once the cause is fixed. |
 | "Last published" hours old and no alert | The alert post itself failed, which points at `SLACK_BOT_TOKEN` first, or the schedule is disabled. `gh workflow list --all` shows `disabled_inactivity` after 60 days without activity in the repository; `gh workflow enable publish.yml` turns it back on. |
-| `invalid` with `disk_low` | ingot's spool outgrew the NVMe. Every run of that size repeats it until the size or the box changes. |
+| `invalid` with `disk_low` | ingot's spool outgrew the NVMe. Every run of that size repeats it until the size, the box or its local blob budget changes. |
 | `invalid` with `dirty_start` | The previous wipe left containers, volumes or piri objects. Run `scripts/host/wipe.sh` on the box, and read the previous run's journal for why its wipe did not finish. |
 | `invalid` with `image_changed` | A container ran an image other than its pinned digest. Check `config/images.tracked` and what pulled or retagged the image. |
 | `invalid` with `instrument_modified` | The box's forge-perf checkout has local edits. Read `git status` there and restore the checkout. |
