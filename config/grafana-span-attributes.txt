@@ -41,9 +41,10 @@ pgx.rows_affected
 error.type
 exception.type
 
-# ingot. Builds before fil-forge/ingot#218 name the ingot.reads.*.local counts
-# ingot.reads.*.spool. The ingot.sweep.* keys are on the spans of ingot's background sweeps: counts,
-# bytes, and a pass's stop reason from a fixed set.
+# ingot. Builds before fil-forge/ingot#218 name the ingot.reads.*.local
+# counts ingot.reads.*.spool. The ingot.sweep.* keys are on the spans of
+# ingot's background sweeps: counts, bytes, and a pass's stop reason from a
+# fixed set.
 ingot.auth.local_hit
 ingot.auth.path
 ingot.blob.bytes

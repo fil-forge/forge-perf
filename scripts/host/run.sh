@@ -709,8 +709,9 @@ collector_start() {
 # waits, scrapes the collector's counters from a container on forge-network,
 # stops it with a minute to flush and close traces.jsonl and metrics.jsonl,
 # keeps its log and removes it. Metrics come once an export interval (60 s
-# by default), so the last interval's never reach metrics.jsonl. Each part
-# is best effort; the record reads what is there.
+# by default), so metrics from the last interval, up to a minute before the
+# collector stops, never reach metrics.jsonl. Each part is best effort; the
+# record reads what is there.
 collector_close() {
   [ -n "$trace" ] && [ -d "$RUN/traces" ] && docker inspect "$collector" >/dev/null 2>&1 || return 0
   step "traces"

@@ -656,6 +656,8 @@ class Tracing(unittest.TestCase):
         path = case.traces / "collector-metrics.txt"
         scrapes = {
             "no counter": ("# HELP x y\notelcol_receiver_accepted_spans_total 5\n", 0),
+            "metric points, not spans": ("otelcol_receiver_refused_metric_points_total 7\n"
+                                         "otelcol_exporter_send_failed_metric_points 2\n", 0),
             "without _total, with a timestamp": ("otelcol_exporter_send_failed_spans{exporter=\"file\"} 4 1790856295000\n"
                                                  "otelcol_exporter_enqueue_failed_spans_total 1\n", 5),
             "a float the exporter writes": ("otelcol_processor_refused_spans_total{a=\"b c\"} 1.2e+01\n"
