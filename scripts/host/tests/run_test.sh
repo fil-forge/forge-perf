@@ -51,10 +51,14 @@ case "$*" in
     for v in INGOT_IMAGE PIRI_IMAGE UPLOAD_IMAGE POSTGRES_IMAGE IPNI_IMAGE ${EXTRA_IMAGE_VAR:-}; do echo "${!v}"; done ;;
   "compose config --format json")
     # As smelt's generator does: piri-0 gets the manifest's S3 target and the
-    # key from SMELT_PIRI_S3_*. OLD_SMELT: a smelt without storage.s3.
+    # key from SMELT_PIRI_S3_*. OLD_SMELT: a smelt without storage.s3. ingot
+    # gets INGOT_LOCAL_BLOB_MAX_BYTES, null when unset, unless SMELT_BUDGET
+    # names another value or none (a smelt that does not pass it through).
     ep="$(sed -n 's/^ *endpoint: //p' "$SMELT_MANIFEST")" pre="$(sed -n 's/^ *bucket_prefix: //p' "$SMELT_MANIFEST")piri-0-"
     [ -z "${OLD_SMELT:-}" ] || ep=piri-minio:9000 pre=piri-0-
-    jq -n --arg ep "$ep" --arg pre "$pre" --arg old "${OLD_SMELT:-}" '{services: ({ingot: {image: env.INGOT_IMAGE},
+    jq -n --arg ep "$ep" --arg pre "$pre" --arg old "${OLD_SMELT:-}" '{services: ({ingot: {image: env.INGOT_IMAGE,
+        environment: (if env.SMELT_BUDGET == "none" then {}
+          else {INGOT_LOCAL_BLOB_MAX_BYTES: (env.SMELT_BUDGET // env.INGOT_LOCAL_BLOB_MAX_BYTES)} end)},
       "piri-0": {image: env.PIRI_IMAGE, environment: {PIRI_S3_ENDPOINT: $ep, PIRI_S3_BUCKET_PREFIX: $pre,
         PIRI_S3_ACCESS_KEY_ID: (env.SMELT_PIRI_S3_ACCESS_KEY_ID // ""),
         PIRI_S3_SECRET_ACCESS_KEY: (env.SMELT_PIRI_S3_SECRET_ACCESS_KEY // "")}},
@@ -182,7 +186,7 @@ export PATH="$work/bin:$PATH"
 
 # The smelt and harness repositories the mirrors fetch.
 git init -q "$work/smelt-src"
-mkdir -p "$work/smelt-src/scripts" "$work/smelt-src/systems/piri" "$work/smelt-src/systems/ingot"
+mkdir -p "$work/smelt-src/scripts" "$work/smelt-src/systems/piri"
 # `run` writes a run directory as smelt's does, from the valid fixture, with
 # the command line built from the variables run.sh passes. DRILL=no-evidence:
 # exit 1 before any evidence. DRILL=hang: run until SIGINT, then record exit 2.
@@ -226,7 +230,6 @@ esac
 STUB
 chmod +x "$work/smelt-src/scripts/perf-drill.sh"
 echo 'PIRI_INDEXER=${PIRI_INDEXER:-on}' >"$work/smelt-src/systems/piri/entrypoint.sh"
-echo '      - INGOT_LOCAL_BLOB_MAX_BYTES' >"$work/smelt-src/systems/ingot/compose.yml"
 git -C "$work/smelt-src" add -A && git -C "$work/smelt-src" commit -qm smelt
 git -C "$work/smelt-src" checkout -q -b shakedown
 git -C "$work/smelt-src" commit -q --allow-empty -m pinned
@@ -918,13 +921,29 @@ budget 200GB
 run 0 INGOT_LOCAL_BLOB_MAX_BYTES=1 -- --set "$work/set.json" --workers 16 --until setup
 has "$D/up.env" "INGOT_LOCAL_BLOB_MAX_BYTES=200000000000"
 [ "$(runner .ingot_local_blob_max_bytes)" = 200000000000 ] || fail "budget $(runner .ingot_local_blob_max_bytes)"
-for bad in 0GB 200 200GiB; do
+for bad in 0GB 200 200GiB 100000000GB; do
   budget "$bad"
   run 2 -- --set "$work/set.json" --workers 16
   grep -q "LOCAL_BLOB_BUDGET in .* is not empty or a positive size in GB" "$work/out" || fail "$bad not refused"
   [ ! -e "$work/box/state/runner.json" ] || fail "a refused budget $bad wrote runner.json"
 done
 echo "ok: LOCAL_BLOB_BUDGET reaches smelt in bytes and runner.json, empty passes none, and a malformed one refuses"
+
+# The images step compares the budget smelt's compose model gives ingot with
+# the run's: a smelt that does not pass it through, or gives ingot one of its
+# own, stops the run before anything is pulled.
+budget 200GB
+run 1 SMELT_BUDGET=none -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "does not give ingot the local blob budget 200000000000" "$work/out" || fail "no budget message"
+! grep -q "^docker pull" "$D/docker.log" || fail "pulled before the budget check"
+budget ""
+run 1 SMELT_BUDGET=100000000000 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "does not give ingot the local blob budget none" "$work/out" || fail "no budget message"
+budget ""
+run 0 SMELT_BUDGET=none -- --set "$work/set.json" --workers 16 --until setup
+echo "ok: a smelt that gives ingot another budget than the run's stops the run; one that passes none is fine without a budget"
 
 # Where the ratio comes from: --trace over a pending trace_ratio over the
 # settings file's TRACE_RATIO. A campaign's traced run keeps series campaign.

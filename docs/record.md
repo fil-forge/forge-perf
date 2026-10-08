@@ -158,7 +158,7 @@ The pass summary `rtt`, from one pass of `latency.json`:
 
 Rates stay in bytes per second as the drill reports them. The page divides by 10^9.
 
-Both read streams read from ingot's local spool on the box's NVMe. Ingot reads its spool before it asks Forge, and it keeps every blob it accepted until spool eviction exists. A 2,000 GB run fits on the box's 3,800 GB drive, and in a traced 2,000 GB run every read-back and restore GET read its blob from the spool. The read rates therefore measure ingot's read path from its spool. The group keeps the name `cache_served` from when read-back was thought to come from the page cache. A harness from before the read-back and restore p5 facts leaves those three fields null.
+Both read streams read from ingot's local spool on the box's NVMe. Ingot reads its spool before it asks Forge, and it keeps every blob it accepted unless the box sets a local blob budget ([runner.md](runner.md#ingots-local-blob-budget)). A 2,000 GB run fits on the box's 3,800 GB drive, and in a traced 2,000 GB run every read-back and restore GET read its blob from the spool. The read rates therefore measure ingot's read path from its spool; with a budget, a blob evicted before the drill reads it comes from piri instead. The group keeps the name `cache_served` from when read-back was thought to come from the page cache. A harness from before the read-back and restore p5 facts leaves those three fields null.
 
 ## Classification
 

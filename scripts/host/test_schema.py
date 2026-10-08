@@ -170,6 +170,16 @@ class FixtureRecords(unittest.TestCase):
         self.assertNotEqual(traced["instrument"]["fingerprint"], valid["instrument"]["fingerprint"])
         self.assertEqual(fingerprints(dict(traced, trace=None))[0], valid["instrument"]["fingerprint"])
 
+    def test_a_local_blob_budget_changes_the_instrument_fingerprint_alone(self):
+        valid = expected(HERE / "fixtures" / "valid")
+        budgeted = dict(valid, ingot_local_blob_max_bytes=200000000000)
+        fingerprint, box_fingerprint = fingerprints(budgeted)
+        self.assertEqual(box_fingerprint, valid["instrument"]["box_fingerprint"])
+        self.assertNotEqual(fingerprint, valid["instrument"]["fingerprint"])
+        # record.py builds the same value (scripts/host/test_record.py), and the
+        # publish check's case for a budget-on run pins it.
+        self.assertEqual(fingerprint, "63a5426c3f3a1251e4d5d41daf827a2a9af0ee162483d0d562fb543524323ecf")
+
     def test_traced_and_trace_missing_follow_the_trace(self):
         for fixture in FIXTURES:
             with self.subTest(fixture=fixture.name):
@@ -255,6 +265,12 @@ class Rejections(unittest.TestCase):
             "trace ratio 0": lambda r: r.update(trace=dict(TRACE, ratio=0)),
             "trace ratio above 1": lambda r: r.update(trace=dict(TRACE, ratio=1.5)),
             "trace ratio as text": lambda r: r.update(trace=dict(TRACE, ratio="0.1")),
+            "local blob budget 0": lambda r: r.update(ingot_local_blob_max_bytes=0),
+            "negative local blob budget": lambda r: r.update(ingot_local_blob_max_bytes=-1),
+            "local blob budget as text": lambda r: r.update(ingot_local_blob_max_bytes="200000000000"),
+            "local blob budget as boolean": lambda r: r.update(ingot_local_blob_max_bytes=True),
+            "local blob budget as float": lambda r: r.update(ingot_local_blob_max_bytes=2e11),
+            "missing local blob budget": lambda r: r.pop("ingot_local_blob_max_bytes"),
             "negative span count": lambda r: r.update(trace=dict(TRACE, spans=-1)),
             "span count as float": lambda r: r.update(trace=dict(TRACE, spans=8.5)),
             "a service outside the list": lambda r: r.update(
