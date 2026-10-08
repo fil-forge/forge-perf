@@ -941,9 +941,11 @@ budget ""
 run 1 SMELT_BUDGET=100000000000 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
 grep -q "does not give ingot the local blob budget none" "$work/out" || fail "no budget message"
-budget ""
-run 0 SMELT_BUDGET=none -- --set "$work/set.json" --workers 16 --until setup
-echo "ok: a smelt that gives ingot another budget than the run's stops the run; one that passes none is fine without a budget"
+for none in none "" 0; do
+  budget ""
+  run 0 SMELT_BUDGET="$none" -- --set "$work/set.json" --workers 16 --until setup
+done
+echo "ok: a smelt that gives ingot another budget than the run's stops the run; none, empty or 0 is fine without a budget"
 
 # Where the ratio comes from: --trace over a pending trace_ratio over the
 # settings file's TRACE_RATIO. A campaign's traced run keeps series campaign.

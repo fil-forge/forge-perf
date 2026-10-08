@@ -413,7 +413,7 @@
                       "spec": {
                         "editorMode": "code",
                         "exemplar": false,
-                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes) (last_over_time(forge_perf_sustained_windows{box=~\"$box\", series=~\"$series\"}[$__range]))",
+                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes, local_blob_max_bytes) (last_over_time(forge_perf_sustained_windows{box=~\"$box\", series=~\"$series\"}[$__range]))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "",
@@ -437,7 +437,7 @@
                       "spec": {
                         "editorMode": "code",
                         "exemplar": false,
-                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes) (last_over_time(forge_perf_ingest_p5_bytes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
+                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes, local_blob_max_bytes) (last_over_time(forge_perf_ingest_p5_bytes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "",
@@ -461,7 +461,7 @@
                       "spec": {
                         "editorMode": "code",
                         "exemplar": false,
-                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes) (last_over_time(forge_perf_ingest_median_bytes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
+                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes, local_blob_max_bytes) (last_over_time(forge_perf_ingest_median_bytes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "",
@@ -485,7 +485,7 @@
                       "spec": {
                         "editorMode": "code",
                         "exemplar": false,
-                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes) (last_over_time(forge_perf_writes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
+                        "expr": "max by (run_id, box, instance_type, tier, series, class, traced, workers, size_bytes, local_blob_max_bytes) (last_over_time(forge_perf_writes_per_second{box=~\"$box\", series=~\"$series\"}[$__range]))",
                         "format": "table",
                         "instant": true,
                         "legendFormat": "",
@@ -527,7 +527,8 @@
                         "size_bytes": 9,
                         "series": 10,
                         "traced": 11,
-                        "box": 12
+                        "local_blob_max_bytes": 12,
+                        "box": 13
                       },
                       "renameByName": {
                         "run_id": "Run ID",
@@ -542,6 +543,7 @@
                         "size_bytes": "Size",
                         "series": "Series",
                         "traced": "Traced",
+                        "local_blob_max_bytes": "Local blob budget",
                         "box": "Box"
                       }
                     }
@@ -657,6 +659,18 @@
                   {
                     "matcher": {
                       "id": "byName",
+                      "options": "Local blob budget"
+                    },
+                    "properties": [
+                      {
+                        "id": "unit",
+                        "value": "decbytes"
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
                       "options": "Objects/s"
                     },
                     "properties": [
@@ -721,7 +735,7 @@
         "spec": {
           "id": 5,
           "title": "Read-back p5 per run",
-          "description": "Each point is one run's read-back p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Read-back is one GET of each whole blob 30 to 60 seconds after it was written, served from ingot's local spool. One colour per instance type. Runs before the harness recorded it have no point.",
+          "description": "Each point is one run's read-back p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Read-back is one GET of each whole blob 30 to 60 seconds after it was written, served from ingot's local spool unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -961,7 +975,7 @@
         "spec": {
           "id": 7,
           "title": "Restore p5 per run",
-          "description": "Each point is one run's restore p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Restore is workers reading older blobs in block-sized ranges, served from ingot's local spool. One colour per instance type. Runs before the harness recorded it have no point.",
+          "description": "Each point is one run's restore p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Restore is workers reading older blobs in block-sized ranges, served from ingot's local spool unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
           "links": [],
           "data": {
             "kind": "QueryGroup",

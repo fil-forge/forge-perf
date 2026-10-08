@@ -656,8 +656,10 @@ step_images() {
     "$RUN/compose-images.json" >/dev/null ||
     stop runner_error "smelt $smelt_sha does not point piri-0 at $FORGE_PERF_PIRI_S3_ENDPOINT/$FORGE_PERF_PIRI_BUCKET_PREFIX*"
   # A smelt that does not pass the budget through, or gives ingot one of its
-  # own, would run ingot with another budget than the record names.
-  jq -e --arg b "$blob_budget" '.ingot_budget == (if $b == "" then null else $b end)' \
+  # own, would run ingot with another budget than the record names. Empty and
+  # 0 are none, as ingot reads them.
+  jq -e --arg b "$blob_budget" \
+    '(.ingot_budget // "" | if . == "" or . == "0" then null else . end) == (if $b == "" then null else $b end)' \
     "$RUN/compose-images.json" >/dev/null ||
     stop runner_error "smelt $smelt_sha does not give ingot the local blob budget ${blob_budget:-none}"
   rj --slurpfile c "$RUN/compose-images.json" --arg trace "$trace" '.images |= map(. as $i | .services =
