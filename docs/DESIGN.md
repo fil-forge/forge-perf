@@ -175,7 +175,7 @@ The wipe, in order:
 
 The wipe never stops Docker, so it can run inside a unit ordered after Docker.
 
-smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`smelt/scripts/perf-drill.sh:307-324`). With piri's blobs in S3 only the spool grows, and without a local blob budget it keeps every ingested byte until the drill's sweep deletes the objects. smelt's check does not know about a budget, so a box that sets one sizes `DISK_FACTOR` to the budget and its headroom ([runner.md](runner.md#ingots-local-blob-budget)). `DISK_FACTOR=1.25` covers spool, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 1,200 GB needs 1,500 GB of about 1,863 GB **[est]** on the 1,900 GB drive. The first 100 GB run checks the factor against `du` of the volumes, and a run whose free space falls under 2 GB ends `invalid` (`disk_low`).
+smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`check_disk` in `smelt/scripts/perf-drill.sh`). With piri's blobs in S3 only the spool grows, and without a local blob budget it keeps every ingested byte until the wipe, since `--keep-objects` skips the drill's sweep. smelt's check does not know about a budget, so a box that sets one sizes `DISK_FACTOR` to the budget and its headroom for its largest run ([runner.md](runner.md#ingots-local-blob-budget)). `DISK_FACTOR=1.25` covers spool, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 1,200 GB needs 1,500 GB of about 1,863 GB **[est]** on the 1,900 GB drive. The first 100 GB run checks the factor against `du` of the volumes; with a budget, the first run larger than the budget checks it, since a smaller one never evicts. A run whose free space falls under 2 GB ends `invalid` (`disk_low`).
 
 ## 7. Results and the page
 
@@ -280,7 +280,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 
 **A tier 3 campaign:** commit a set and dispatch `campaign.yml` (`instance_type`, `hours` from 1 to 24, `set`, `runs`, `size`, `workers`, `duration`, `mode`). The box sweeps workers when given a list, runs the set, uploads and powers off, and schedules its own poweroff at its `ExpiresAt` tag. A `down` dispatch or the hourly reaper destroys it; the reaper takes any forge-perf instance other than `main` that is past `ExpiresAt` or stopped for an hour. A forgotten 12-hour campaign costs at most $52.
 
-**Nightly to 500 GB on tier 1** now that a box can give ingot a local blob budget (ingot's `local_blob_max_bytes`, fil-forge/ingot#218; the settings file's `LOCAL_BLOB_BUDGET`, [runner.md](runner.md#ingots-local-blob-budget)): one PR sets the budget, the cap and a `DISK_FACTOR` that fits them, and three runs rebuild the nightly band. Evicted blobs then come back from S3, adding GETs to the NIC.
+**Nightly to 500 GB on tier 1** now that a box can give ingot a local blob budget (ingot's `local_blob_max_bytes`, fil-forge/ingot#218; the settings file's `LOCAL_BLOB_BUDGET`, [runner.md](runner.md#ingots-local-blob-budget)): one PR sets the budget, the cap and a `DISK_FACTOR` that fits them, and three runs rebuild the nightly band. With 466 GB free **[est]**, the factor from runner.md's formula fits a 500 GB nightly only with a budget of at most about 370 GB (466 ÷ 1.25). Evicted blobs then come back from S3, adding GETs to the NIC.
 
 | Secret | Where | Rotation |
 |---|---|---|
