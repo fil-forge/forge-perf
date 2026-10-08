@@ -205,6 +205,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |
 | `instrument`, `trace` | two fingerprints; for a traced run, the sampling ratio, span and trace counts and the trace file's hash, else `null` |
+| `ingot_local_blob_max_bytes` | ingot's local blob budget from the settings file, or `null` for none ([runner.md](runner.md#ingots-local-blob-budget)) |
 
 The record builder copies named fields and nothing else, because the drill's report, console output, evidence notes and failure details are free text; it takes `failures[].code`, a closed set, and named numeric facts. The box checks the record against the schema, a denylist pattern and piri's key ID. The Action repeats the checks, using the schema at the record's own forge-perf SHA, and recomputes the fingerprints; `check.yml` runs the denylist over the tree and commit messages.
 

@@ -33,6 +33,7 @@ The drill's report, `drill.out`, `stats.csv`, the other service logs, the provid
 | `raw_missing` | the run left no raw tarball: collection failed, a credential appeared in the collected files, or piri's key was never read to check against |
 | `caps` | the CPU caps `campaign.sh --cap` set, as `{"<service>": "<CPUs>"}`, or `{}`. The record takes only whether it is empty: a capped run gets the flag `cpu_capped` and series `calibration`, and the service names and CPUs stay in the raw tarball |
 | `trace` | `{"ratio": "<RATIO>"}` for a traced run, the sampling ratio as a decimal in (0, 1] with at most six places; null, or absent in a runner from before tracing, otherwise |
+| `ingot_local_blob_max_bytes` | the settings file's `LOCAL_BLOB_BUDGET` in bytes (GB = 10^9), which the run passed to ingot as `INGOT_LOCAL_BLOB_MAX_BYTES`; null when it is empty, or absent in a runner from before the setting |
 
 `scripts/host/record.py` is the builder:
 
@@ -144,6 +145,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `trace.spans_by_service.other` | the spans whose resource has any other `service.name`, or none. The record names no service the list does not, so no span text reaches it |
 | `trace.dropped_spans` | the sum over `collector-metrics.txt`, the collector's Prometheus scrape, of every sample of `otelcol_receiver_refused_spans`, `otelcol_receiver_failed_spans`, `otelcol_processor_refused_spans`, `otelcol_processor_dropped_spans`, `otelcol_exporter_send_failed_spans` and `otelcol_exporter_enqueue_failed_spans`, each with or without the `_total` suffix. A counter never incremented may be absent and counts 0. Null when the file is missing or a counter's value is not a number of zero or more. Above 0, the traces are incomplete; the drill's numbers are not affected |
 | `trace.file_bytes`, `trace.file_sha256` | the size and SHA-256 of the whole of `traces.jsonl` as the run left it. The copy in the raw tarball matches them unless the collect step's credential scrub removed a line from it |
+| `ingot_local_blob_max_bytes` | runner `ingot_local_blob_max_bytes`: ingot's local blob budget, which its sweeper evicts cached bodies to stay under; null for a run without one, whose ingot keeps every body it accepted |
 
 The pass summary `rtt`, from one pass of `latency.json`:
 
@@ -277,10 +279,13 @@ Both are the SHA-256 of canonical JSON: `json.dumps(obj, sort_keys=True, separat
  "settings": drill.settings,
  "target_rtt_us": round(latency.target_rtt_ms * 1000),
  "jitter_us": 0,
- "trace_ratio_ppm": round(trace.ratio * 1000000)}   # a traced run only
+ "trace_ratio_ppm": round(trace.ratio * 1000000),   # a traced run only
+ "ingot_local_blob_max_bytes": ingot_local_blob_max_bytes}   # a run with a budget only
 ```
 
 The key `trace_ratio_ppm` is present only when `trace` is not null, so an untraced run hashes exactly the inputs above it and keeps the fingerprint it had before tracing existed. A traced run's fingerprint differs from an untraced run's, and from a run traced at another ratio, because tracing is part of the instrument; the span counts and the trace file are outside the fingerprint. The ratio has at most six decimal places, so the integer names it exactly.
+
+The key `ingot_local_blob_max_bytes` is likewise present only when the record's value is not null, so a run without a budget keeps the fingerprint it had before the setting existed. The budget is part of the instrument: ingot evicts to it during the drill, so read-back and restore may read an evicted body from piri instead of ingot's disk.
 
 Every input exists in every record, including the minimal one, so runs on the same instrument share a fingerprint whether or not their drill wrote evidence. The Go toolchain that builds the drill is outside the list for that reason: `provenance.harness.go_version` comes only from the evidence, and `host/versions.env`, which pins Go with `GOTOOLCHAIN=local`, is inside `instrument_tree`.
 

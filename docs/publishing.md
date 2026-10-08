@@ -105,7 +105,7 @@ The Slack post comes before the commit to `results`, and a failed post fails the
 | `gates`, `overrides` | `data/gates.json` (null while absent) and `data/overrides.json` |
 | `heartbeats` | per box, the heartbeat's `at`, `state`, `wake_at`, `poll_failures`, `run_started_at`, `sleep_enabled` and `up_since` after the ingest job checked each against its pattern, or null |
 
-`instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip), `trace` (the trace ratio, or tracing turned on or off) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
+`instrument_changes` lists what differs from the previous run of the same series on the same box that has drill settings: `forge-perf` (the instrument tree), `smelt`, `harness`, each instrument image's repository, `settings`, `latency` (the target round trip), `trace` (the trace ratio, or tracing turned on or off), `local-blob-budget` (ingot's local blob budget, or the budget turned on or off) and `box` (the box fingerprint). It is null for a series' first run. A record without drill settings (a broken host, `preflight_failed`) is compared on everything except `settings` and `box`, and the run after it is compared against the last run before it that had settings.
 
 ## Gates
 

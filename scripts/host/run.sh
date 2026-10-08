@@ -239,6 +239,14 @@ settings_json="$(jq -nce --arg manifest "$MANIFEST_NAME" --arg window "${WINDOW:
    enforce_floor: ($floor == "true"), progress_s: ($progress | secs), keep_objects: ($keep == "1")}
   | if [.[] | select(. == null)] == [] then . else error("unreadable") end')" ||
   refuse "a drill setting in $settings (or --size/--duration) is malformed"
+# Ingot's local blob budget in bytes, or empty for none. Every compose call of
+# the run gives ingot that budget or none, never a caller's own.
+budget="$(jq -nre --arg budget "${LOCAL_BLOB_BUDGET:-}" '
+  if $budget == "" then "" else
+    $budget | (capture("^(?<n>[0-9]+(\\.[0-9]+)?)GB$") | .n | tonumber * 1e9 | round) // 0
+    | if . > 0 then . else error("unreadable") end end')" ||
+  refuse "LOCAL_BLOB_BUDGET in $settings is not empty or a positive size in GB"
+if [ -n "$budget" ]; then export INGOT_LOCAL_BLOB_MAX_BYTES="$budget"; else unset INGOT_LOCAL_BLOB_MAX_BYTES; fi
 
 # The pinned images: VARIABLE repo tag digest role, and each exported as
 # VARIABLE=repo@digest for every compose call of the run.
@@ -606,6 +614,9 @@ step_checkout() {
     grep -q "$knob" "$SMELT/scripts/perf-drill.sh" || stop runner_error "smelt $smelt_sha has no $knob in perf-drill.sh"
   done
   grep -q PIRI_INDEXER "$SMELT/systems/piri/entrypoint.sh" || stop runner_error "smelt $smelt_sha has no PIRI_INDEXER"
+  # An older smelt would run ingot without the budget the record names.
+  [ -z "$budget" ] || grep -q INGOT_LOCAL_BLOB_MAX_BYTES "$SMELT/systems/ingot/compose.yml" ||
+    stop runner_error "smelt $smelt_sha does not pass INGOT_LOCAL_BLOB_MAX_BYTES to ingot"
   within 900 go_module_fetch_failed go -C "$SQ" mod download
   within 900 harness_build_failed go -C "$SQ" build -o bin/drill ./cmd/drill
 }
@@ -1021,7 +1032,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
   --arg started "$started" --argjson settings "$settings_json" \
   --arg fp "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" --arg tree "$(instrument_tree)" \
   --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" \
-  --arg trace "$trace" --argjson experiment "$experiment" '
+  --arg trace "$trace" --arg budget "$budget" --argjson experiment "$experiment" '
   {run_id: $run_id, series: $series, pairing_id: $pairing, experiment: $experiment,
    trigger: {reason: $reason, changed: $changed},
    superseded: $superseded, box: $box,
@@ -1031,7 +1042,8 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
-   raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end)}' \
+   raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end),
+   ingot_local_blob_max_bytes: (if $budget == "" then null else ($budget | tonumber) end)}' \
   >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
 stop_requested="" drill_pid="" sampler="" nic_if="" io_dev="" record_class=""

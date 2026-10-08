@@ -92,6 +92,8 @@ def fingerprints(record):
     }
     if record["trace"] is not None:
         instrument["trace_ratio_ppm"] = round(record["trace"]["ratio"] * 1000000)
+    if record["ingot_local_blob_max_bytes"] is not None:
+        instrument["ingot_local_blob_max_bytes"] = record["ingot_local_blob_max_bytes"]
     box = record["box"]
     box_facts = {k: box[k] for k in ("instance_type", "arch", "ami_id", "kernel", "docker_server",
                                      "docker_compose", "cpu")}

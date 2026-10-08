@@ -137,7 +137,7 @@ cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
-  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
+  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+|INGOT_LOCAL_BLOB_MAX_BYTES)=' |
     sort >"$D/up.env"
   [ ! -e "$D/otel" ] || touch "$D/otel-at-up"
   [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
@@ -182,7 +182,7 @@ export PATH="$work/bin:$PATH"
 
 # The smelt and harness repositories the mirrors fetch.
 git init -q "$work/smelt-src"
-mkdir -p "$work/smelt-src/scripts" "$work/smelt-src/systems/piri"
+mkdir -p "$work/smelt-src/scripts" "$work/smelt-src/systems/piri" "$work/smelt-src/systems/ingot"
 # `run` writes a run directory as smelt's does, from the valid fixture, with
 # the command line built from the variables run.sh passes. DRILL=no-evidence:
 # exit 1 before any evidence. DRILL=hang: run until SIGINT, then record exit 2.
@@ -226,6 +226,7 @@ esac
 STUB
 chmod +x "$work/smelt-src/scripts/perf-drill.sh"
 echo 'PIRI_INDEXER=${PIRI_INDEXER:-on}' >"$work/smelt-src/systems/piri/entrypoint.sh"
+echo '      - INGOT_LOCAL_BLOB_MAX_BYTES' >"$work/smelt-src/systems/ingot/compose.yml"
 git -C "$work/smelt-src" add -A && git -C "$work/smelt-src" commit -qm smelt
 git -C "$work/smelt-src" checkout -q -b shakedown
 git -C "$work/smelt-src" commit -q --allow-empty -m pinned
@@ -899,6 +900,31 @@ run 0 OTEL_ENDPOINT=http://elsewhere:4318 OTEL_EXPORTER_OTLP_ENDPOINT=http://els
 ! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
   fail "stray tracing variables reached make up: $(grep ^OTEL_ "$D/up.env")"
 echo "ok: an untraced run passes no caller OTEL_* variable to smelt"
+
+# LOCAL_BLOB_BUDGET: empty gives ingot no budget, not even the caller's; a size
+# in GB reaches smelt in bytes and lands in runner.json; anything else refuses.
+budget() {
+  setup
+  sed "s/^LOCAL_BLOB_BUDGET=.*/LOCAL_BLOB_BUDGET=$1/" "$work/checkout/config/settings/m9gd.2xlarge.env" \
+    >"$work/settings.env"
+  mv "$work/settings.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
+  git -C "$work/checkout" commit -q --allow-empty -am budget
+}
+budget ""
+run 0 INGOT_LOCAL_BLOB_MAX_BYTES=1 -- --set "$work/set.json" --workers 16 --until setup
+lacks "$D/up.env" "INGOT_LOCAL_BLOB_MAX_BYTES="
+[ "$(runner .ingot_local_blob_max_bytes)" = null ] || fail "no budget, runner has $(runner .ingot_local_blob_max_bytes)"
+budget 200GB
+run 0 INGOT_LOCAL_BLOB_MAX_BYTES=1 -- --set "$work/set.json" --workers 16 --until setup
+has "$D/up.env" "INGOT_LOCAL_BLOB_MAX_BYTES=200000000000"
+[ "$(runner .ingot_local_blob_max_bytes)" = 200000000000 ] || fail "budget $(runner .ingot_local_blob_max_bytes)"
+for bad in 0GB 200 200GiB; do
+  budget "$bad"
+  run 2 -- --set "$work/set.json" --workers 16
+  grep -q "LOCAL_BLOB_BUDGET in .* is not empty or a positive size in GB" "$work/out" || fail "$bad not refused"
+  [ ! -e "$work/box/state/runner.json" ] || fail "a refused budget $bad wrote runner.json"
+done
+echo "ok: LOCAL_BLOB_BUDGET reaches smelt in bytes and runner.json, empty passes none, and a malformed one refuses"
 
 # Where the ratio comes from: --trace over a pending trace_ratio over the
 # settings file's TRACE_RATIO. A campaign's traced run keeps series campaign.
