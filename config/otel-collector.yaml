@@ -2,14 +2,15 @@
 # (docs/runner.md, "Tracing"), image OTEL_COLLECTOR_IMAGE in images.lock.
 #
 # Services send OTLP to otel-collector:4318 on forge-network. Every span and
-# metric gets the run's ID as a resource attribute, so those from services
+# metric gets the run's ID as a resource attribute, so spans from services
 # that do not read OTEL_RESOURCE_ATTRIBUTES (piri) carry it too. The file
 # exporters write one OTLP JSON request per line into the run directory, the
 # spans to traces.jsonl and the services' metrics to metrics.jsonl, which
 # collect.sh puts in the private raw tarball. They neither rotate, which would
 # drop the start of the drill, nor compress, which would hide a credential
 # from collect.sh's check. The collector's own counters on :8888 (accepted,
-# refused, dropped and failed spans) are scraped after the drill.
+# refused, dropped and failed spans and metric points) are scraped after the
+# drill.
 
 receivers:
   otlp:

@@ -219,7 +219,7 @@ class FixtureRecords(unittest.TestCase):
                     self.assertIn(MARKER, doc["provider"]["config_note"])
                     self.assertTrue(all(MARKER in f["detail"] for f in doc["drill"].get("failures", [])))
                     self.assertTrue(all(MARKER in n for n in doc["drill"]["facts"]["notes"]))
-                for name in ("traces.jsonl", "collector-metrics.txt", "collector.log"):
+                for name in ("traces.jsonl", "metrics.jsonl", "collector-metrics.txt", "collector.log"):
                     path = fixture / "traces" / name
                     self.assertTrue(not path.exists() or MARKER in path.read_text(encoding="utf-8"))
 

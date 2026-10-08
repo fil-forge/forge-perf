@@ -705,10 +705,12 @@ collector_start() {
 }
 
 # collector_close: after the drill, before collect. The services export
-# their last batches within seconds (the SDKs' default delay is 5 s), so it
+# their last spans within seconds (the SDKs' default delay is 5 s), so it
 # waits, scrapes the collector's counters from a container on forge-network,
-# stops it with a minute to flush and close traces.jsonl, keeps its log and
-# removes it. Each part is best effort; the record reads what is there.
+# stops it with a minute to flush and close traces.jsonl and metrics.jsonl,
+# keeps its log and removes it. Metrics come once an export interval (60 s
+# by default), so the last interval's never reach metrics.jsonl. Each part
+# is best effort; the record reads what is there.
 collector_close() {
   [ -n "$trace" ] && [ -d "$RUN/traces" ] && docker inspect "$collector" >/dev/null 2>&1 || return 0
   step "traces"
@@ -717,7 +719,7 @@ collector_close() {
     curl -sf --max-time 20 http://otel-collector:8888/metrics >"$RUN/traces/collector-metrics.txt" ||
     { echo "run.sh: cannot scrape the trace collector's metrics" >&2; rm -f "$RUN/traces/collector-metrics.txt"; }
   timeout --kill-after=10 90 docker stop -t 60 "$collector" >/dev/null ||
-    echo "run.sh: the trace collector did not stop cleanly; traces.jsonl may end in a partial line" >&2
+    echo "run.sh: the trace collector did not stop cleanly; traces.jsonl and metrics.jsonl may end in a partial line" >&2
   docker logs "$collector" >"$RUN/traces/collector.log" 2>&1 || echo "run.sh: no trace collector log" >&2
   docker rm -f "$collector" >/dev/null || echo "run.sh: the wipe removes the trace collector" >&2
 }

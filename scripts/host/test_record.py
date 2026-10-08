@@ -698,7 +698,7 @@ class Tracing(unittest.TestCase):
 
     def test_trace_text_never_reaches_the_record(self):
         case = Case(self, "traced")
-        for name in ("traces.jsonl", "collector-metrics.txt", "collector.log"):
+        for name in ("traces.jsonl", "metrics.jsonl", "collector-metrics.txt", "collector.log"):
             self.assertIn(MARKER, (case.traces / name).read_text(encoding="utf-8"))
         self.assertEqual(case.cli().returncode, 0)
         text = case.out.read_text(encoding="utf-8")
