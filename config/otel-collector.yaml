@@ -1,14 +1,15 @@
 # The trace collector a traced run starts beside the stack as forge-perf-otel
 # (docs/runner.md, "Tracing"), image OTEL_COLLECTOR_IMAGE in images.lock.
 #
-# Services send OTLP to otel-collector:4318 on forge-network. Every span gets
-# the run's ID as a resource attribute, so spans from services that do not
-# read OTEL_RESOURCE_ATTRIBUTES (piri) carry it too. The file exporter writes
-# one OTLP JSON ExportTraceServiceRequest per line into the run directory,
-# which collect.sh puts in the private raw tarball. It neither rotates, which
-# would drop the start of the drill, nor compresses, which would hide a
-# credential from collect.sh's check. The collector's own counters on :8888
-# (accepted, refused, dropped and failed spans) are scraped after the drill.
+# Services send OTLP to otel-collector:4318 on forge-network. Every span and
+# metric gets the run's ID as a resource attribute, so those from services
+# that do not read OTEL_RESOURCE_ATTRIBUTES (piri) carry it too. The file
+# exporters write one OTLP JSON request per line into the run directory, the
+# spans to traces.jsonl and the services' metrics to metrics.jsonl, which
+# collect.sh puts in the private raw tarball. They neither rotate, which would
+# drop the start of the drill, nor compress, which would hide a credential
+# from collect.sh's check. The collector's own counters on :8888 (accepted,
+# refused, dropped and failed spans) are scraped after the drill.
 
 receivers:
   otlp:
@@ -19,8 +20,8 @@ receivers:
         endpoint: 0.0.0.0:4317
 
 processors:
-  # Refuses spans before the container's 2 GB memory limit is reached; the
-  # refusals show in the scraped counters.
+  # Refuses spans and metrics before the container's 2 GB memory limit is
+  # reached; the refusals show in the scraped counters.
   memory_limiter:
     check_interval: 1s
     limit_mib: 1536
@@ -35,6 +36,9 @@ processors:
 exporters:
   file:
     path: /traces/traces.jsonl
+    format: json
+  file/metrics:
+    path: /traces/metrics.jsonl
     format: json
 
 service:
@@ -52,3 +56,7 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]
       exporters: [file]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [file/metrics]
