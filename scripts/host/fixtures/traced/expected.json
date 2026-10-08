@@ -471,5 +471,6 @@
     "dropped_spans": 3,
     "file_bytes": 3627,
     "file_sha256": "e80284035980218975dd3baad18aaf612df10896ef124ee029ef8711d8166aeb"
-  }
+  },
+  "ingot_local_blob_max_bytes": null
 }

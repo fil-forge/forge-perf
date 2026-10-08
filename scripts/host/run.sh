@@ -30,7 +30,8 @@
 # reached --until, or another run holds the lock; 1 a step stopped the run, or
 # the record or the wipe failed, and runner.json names the reason; 2 the run
 # did not start (usage, no settings for this instance type, WORKERS empty, an
-# unusable set, a malformed trace ratio); 130 or 143 a stop request, after the record and the wipe.
+# unusable set, a malformed trace ratio or local blob budget); 130 or 143 a stop request, after the
+# record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
 # pending.json.rejected, so the next poll does not start it again, and an
 # experiment's run as pending-experiment.json.rejected.
@@ -239,6 +240,19 @@ settings_json="$(jq -nce --arg manifest "$MANIFEST_NAME" --arg window "${WINDOW:
    enforce_floor: ($floor == "true"), progress_s: ($progress | secs), keep_objects: ($keep == "1")}
   | if [.[] | select(. == null)] == [] then . else error("unreadable") end')" ||
   refuse "a drill setting in $settings (or --size/--duration) is malformed"
+# Ingot's local blob budget in bytes, or empty for none, at most 2^53 - 1 so
+# jq and the record hold it exactly. Every compose call of the run gives ingot
+# that budget or none, never a caller's own.
+blob_budget="$(jq -nre --arg budget "${LOCAL_BLOB_BUDGET:-}" '
+  if $budget == "" then "" else
+    $budget | (capture("^(?<n>[0-9]+(\\.[0-9]+)?)GB$") | .n | tonumber * 1e9 | round) // 0
+    | if . > 0 and . <= 9007199254740991 then . else error("unreadable") end end')" ||
+  refuse "LOCAL_BLOB_BUDGET in $settings is not empty or a positive size in GB (at most 9,007,199 GB)"
+if [ -n "$blob_budget" ]; then
+  export INGOT_LOCAL_BLOB_MAX_BYTES="$blob_budget"
+else
+  unset INGOT_LOCAL_BLOB_MAX_BYTES
+fi
 
 # The pinned images: VARIABLE repo tag digest role, and each exported as
 # VARIABLE=repo@digest for every compose call of the run.
@@ -627,11 +641,13 @@ step_images() {
   [ -z "$bad" ] || stop runner_error "images outside the pinned set: $(tr '\n' ' ' <<<"$bad")"
 
   # The interpolated model would carry piri's key, so this call runs without
-  # it and only each service's image and piri's S3 target reach the disk.
+  # it and only each service's image, piri's S3 target and ingot's local blob
+  # budget reach the disk.
   (cd "$SMELT" && limited "${SMELT_ENV[@]}" -u SMELT_PIRI_S3_ACCESS_KEY_ID -u SMELT_PIRI_S3_SECRET_ACCESS_KEY \
     docker compose config --format json) |
     jq '{services: (.services | map_values({image})),
-         piri_s3: (.services["piri-0"].environment // {} | {PIRI_S3_ENDPOINT, PIRI_S3_BUCKET_PREFIX})}' \
+         piri_s3: (.services["piri-0"].environment // {} | {PIRI_S3_ENDPOINT, PIRI_S3_BUCKET_PREFIX}),
+         ingot_budget: (.services.ingot.environment // {} | .INGOT_LOCAL_BLOB_MAX_BYTES)}' \
       >"$RUN/compose-images.json" || stop runner_error "docker compose config failed"
   # A smelt without the manifest's storage.s3 drops it and runs piri against
   # an in-stack MinIO, which would measure another topology.
@@ -639,6 +655,13 @@ step_images() {
     '.piri_s3 == {PIRI_S3_ENDPOINT: $e, PIRI_S3_BUCKET_PREFIX: $p} and (.services | has("piri-minio") | not)' \
     "$RUN/compose-images.json" >/dev/null ||
     stop runner_error "smelt $smelt_sha does not point piri-0 at $FORGE_PERF_PIRI_S3_ENDPOINT/$FORGE_PERF_PIRI_BUCKET_PREFIX*"
+  # A smelt that does not pass the budget through, or gives ingot one of its
+  # own, would run ingot with another budget than the record names. Empty and
+  # 0 are none, as ingot reads them.
+  jq -e --arg b "$blob_budget" \
+    '(.ingot_budget // "" | if . == "" or . == "0" then null else . end) == (if $b == "" then null else $b end)' \
+    "$RUN/compose-images.json" >/dev/null ||
+    stop runner_error "smelt $smelt_sha does not give ingot the local blob budget ${blob_budget:-none}"
   rj --slurpfile c "$RUN/compose-images.json" --arg trace "$trace" '.images |= map(. as $i | .services =
     if $i.variable == "NETSHOOT_IMAGE" then ["netem"]
     elif $i.variable == "OTEL_COLLECTOR_IMAGE" then (if $trace == "" then [] else ["otel-collector"] end)
@@ -1021,7 +1044,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
   --arg started "$started" --argjson settings "$settings_json" \
   --arg fp "$(git -C "$FORGE_PERF_CHECKOUT" rev-parse HEAD)" --arg tree "$(instrument_tree)" \
   --arg smelt "$smelt_sha" --arg harness "$harness_sha" --argjson images "$images_json" --argjson caps "$caps" \
-  --arg trace "$trace" --argjson experiment "$experiment" '
+  --arg trace "$trace" --arg budget "$blob_budget" --argjson experiment "$experiment" '
   {run_id: $run_id, series: $series, pairing_id: $pairing, experiment: $experiment,
    trigger: {reason: $reason, changed: $changed},
    superseded: $superseded, box: $box,
@@ -1031,7 +1054,8 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
-   raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end)}' \
+   raw_missing: false, caps: $caps, trace: (if $trace == "" then null else {ratio: $trace} end),
+   ingot_local_blob_max_bytes: (if $budget == "" then null else ($budget | tonumber) end)}' \
   >"$state/runner.json.tmp"
 mv "$state/runner.json.tmp" "$state/runner.json"
 stop_requested="" drill_pid="" sampler="" nic_if="" io_dev="" record_class=""

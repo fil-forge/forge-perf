@@ -51,10 +51,14 @@ case "$*" in
     for v in INGOT_IMAGE PIRI_IMAGE UPLOAD_IMAGE POSTGRES_IMAGE IPNI_IMAGE ${EXTRA_IMAGE_VAR:-}; do echo "${!v}"; done ;;
   "compose config --format json")
     # As smelt's generator does: piri-0 gets the manifest's S3 target and the
-    # key from SMELT_PIRI_S3_*. OLD_SMELT: a smelt without storage.s3.
+    # key from SMELT_PIRI_S3_*. OLD_SMELT: a smelt without storage.s3. ingot
+    # gets INGOT_LOCAL_BLOB_MAX_BYTES, null when unset, unless SMELT_BUDGET
+    # names another value or none (a smelt that does not pass it through).
     ep="$(sed -n 's/^ *endpoint: //p' "$SMELT_MANIFEST")" pre="$(sed -n 's/^ *bucket_prefix: //p' "$SMELT_MANIFEST")piri-0-"
     [ -z "${OLD_SMELT:-}" ] || ep=piri-minio:9000 pre=piri-0-
-    jq -n --arg ep "$ep" --arg pre "$pre" --arg old "${OLD_SMELT:-}" '{services: ({ingot: {image: env.INGOT_IMAGE},
+    jq -n --arg ep "$ep" --arg pre "$pre" --arg old "${OLD_SMELT:-}" '{services: ({ingot: {image: env.INGOT_IMAGE,
+        environment: (if env.SMELT_BUDGET == "none" then {}
+          else {INGOT_LOCAL_BLOB_MAX_BYTES: (env.SMELT_BUDGET // env.INGOT_LOCAL_BLOB_MAX_BYTES)} end)},
       "piri-0": {image: env.PIRI_IMAGE, environment: {PIRI_S3_ENDPOINT: $ep, PIRI_S3_BUCKET_PREFIX: $pre,
         PIRI_S3_ACCESS_KEY_ID: (env.SMELT_PIRI_S3_ACCESS_KEY_ID // ""),
         PIRI_S3_SECRET_ACCESS_KEY: (env.SMELT_PIRI_S3_SECRET_ACCESS_KEY // "")}},
@@ -137,7 +141,7 @@ cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
-  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
+  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+|INGOT_LOCAL_BLOB_MAX_BYTES)=' |
     sort >"$D/up.env"
   [ ! -e "$D/otel" ] || touch "$D/otel-at-up"
   [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
@@ -899,6 +903,49 @@ run 0 OTEL_ENDPOINT=http://elsewhere:4318 OTEL_EXPORTER_OTLP_ENDPOINT=http://els
 ! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
   fail "stray tracing variables reached make up: $(grep ^OTEL_ "$D/up.env")"
 echo "ok: an untraced run passes no caller OTEL_* variable to smelt"
+
+# LOCAL_BLOB_BUDGET: empty gives ingot no budget, not even the caller's; a size
+# in GB reaches smelt in bytes and lands in runner.json; anything else refuses.
+budget() {
+  setup
+  sed "s/^LOCAL_BLOB_BUDGET=.*/LOCAL_BLOB_BUDGET=$1/" "$work/checkout/config/settings/m9gd.2xlarge.env" \
+    >"$work/settings.env"
+  mv "$work/settings.env" "$work/checkout/config/settings/m9gd.2xlarge.env"
+  git -C "$work/checkout" commit -q --allow-empty -am budget
+}
+budget ""
+run 0 INGOT_LOCAL_BLOB_MAX_BYTES=1 -- --set "$work/set.json" --workers 16 --until setup
+lacks "$D/up.env" "INGOT_LOCAL_BLOB_MAX_BYTES="
+[ "$(runner .ingot_local_blob_max_bytes)" = null ] || fail "no budget, runner has $(runner .ingot_local_blob_max_bytes)"
+budget 200GB
+run 0 INGOT_LOCAL_BLOB_MAX_BYTES=1 -- --set "$work/set.json" --workers 16 --until setup
+has "$D/up.env" "INGOT_LOCAL_BLOB_MAX_BYTES=200000000000"
+[ "$(runner .ingot_local_blob_max_bytes)" = 200000000000 ] || fail "budget $(runner .ingot_local_blob_max_bytes)"
+for bad in 0GB 200 200GiB 100000000GB; do
+  budget "$bad"
+  run 2 -- --set "$work/set.json" --workers 16
+  grep -q "LOCAL_BLOB_BUDGET in .* is not empty or a positive size in GB" "$work/out" || fail "$bad not refused"
+  [ ! -e "$work/box/state/runner.json" ] || fail "a refused budget $bad wrote runner.json"
+done
+echo "ok: LOCAL_BLOB_BUDGET reaches smelt in bytes and runner.json, empty passes none, and a malformed one refuses"
+
+# The images step compares the budget smelt's compose model gives ingot with
+# the run's: a smelt that does not pass it through, or gives ingot one of its
+# own, stops the run before anything is pulled.
+budget 200GB
+run 1 SMELT_BUDGET=none -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "does not give ingot the local blob budget 200000000000" "$work/out" || fail "no budget message"
+! grep -q "^docker pull" "$D/docker.log" || fail "pulled before the budget check"
+budget ""
+run 1 SMELT_BUDGET=100000000000 -- --set "$work/set.json" --workers 16
+[ "$(runner '.reasons | join(",")')" = runner_error ] || fail "reasons $(runner .reasons)"
+grep -q "does not give ingot the local blob budget none" "$work/out" || fail "no budget message"
+for none in none "" 0; do
+  budget ""
+  run 0 SMELT_BUDGET="$none" -- --set "$work/set.json" --workers 16 --until setup
+done
+echo "ok: a smelt that gives ingot another budget than the run's stops the run; none, empty or 0 is fine without a budget"
 
 # Where the ratio comes from: --trace over a pending trace_ratio over the
 # settings file's TRACE_RATIO. A campaign's traced run keeps series campaign.
