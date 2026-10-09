@@ -274,6 +274,7 @@ export PIRI_INDEXER=off SPRUE_INDEXER_ENDPOINT='' SPRUE_INDEXER_DID=''
 # Only a traced run's collector_start sets these; a caller's own would reach
 # the services of an untraced run.
 unset OTEL_ENDPOINT OTEL_EXPORTER_OTLP_ENDPOINT OTEL_TRACES_SAMPLER_ARG OTEL_RESOURCE_ATTRIBUTES
+unset OTEL_METRIC_EXPORT_INTERVAL
 go_cache="${FORGE_PERF_GO_CACHE-/var/cache/forge-perf/go}"
 if [ -n "$go_cache" ]; then
   export GOCACHE="$go_cache/build" GOMODCACHE="$go_cache/mod" GOTOOLCHAIN=local
@@ -702,13 +703,20 @@ collector_start() {
     stop stack_boot_failed "cannot start the trace collector"
   export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 OTEL_ENDPOINT=http://otel-collector:4318
   export OTEL_TRACES_SAMPLER_ARG="$trace" OTEL_RESOURCE_ATTRIBUTES="forge_perf.run_id=$run_id"
+  # ingot reads its local blob usage once an export, and its sweeper evicts
+  # on a fixed cycle; at the SDK's default interval every sample would land
+  # at the same point of that cycle and could miss each peak.
+  export OTEL_METRIC_EXPORT_INTERVAL=5000
 }
 
 # collector_close: after the drill, before collect. The services export
-# their last batches within seconds (the SDKs' default delay is 5 s), so it
+# their last spans within seconds (the SDKs' default delay is 5 s), so it
 # waits, scrapes the collector's counters from a container on forge-network,
-# stops it with a minute to flush and close traces.jsonl, keeps its log and
-# removes it. Each part is best effort; the record reads what is there.
+# stops it with a minute to flush and close traces.jsonl and metrics.jsonl,
+# keeps its log and removes it. Metrics come once an export interval, which
+# collector_start sets, so metrics from the last interval before the
+# collector stops never reach metrics.jsonl. Each part is best effort; the
+# record reads what is there.
 collector_close() {
   [ -n "$trace" ] && [ -d "$RUN/traces" ] && docker inspect "$collector" >/dev/null 2>&1 || return 0
   step "traces"
@@ -717,7 +725,7 @@ collector_close() {
     curl -sf --max-time 20 http://otel-collector:8888/metrics >"$RUN/traces/collector-metrics.txt" ||
     { echo "run.sh: cannot scrape the trace collector's metrics" >&2; rm -f "$RUN/traces/collector-metrics.txt"; }
   timeout --kill-after=10 90 docker stop -t 60 "$collector" >/dev/null ||
-    echo "run.sh: the trace collector did not stop cleanly; traces.jsonl may end in a partial line" >&2
+    echo "run.sh: the trace collector did not stop cleanly; traces.jsonl and metrics.jsonl may end in a partial line" >&2
   docker logs "$collector" >"$RUN/traces/collector.log" 2>&1 || echo "run.sh: no trace collector log" >&2
   docker rm -f "$collector" >/dev/null || echo "run.sh: the wipe removes the trace collector" >&2
 }

@@ -470,6 +470,20 @@
     },
     "dropped_spans": 3,
     "file_bytes": 3627,
-    "file_sha256": "e80284035980218975dd3baad18aaf612df10896ef124ee029ef8711d8166aeb"
+    "file_sha256": "e80284035980218975dd3baad18aaf612df10896ef124ee029ef8711d8166aeb",
+    "local_blobs": {
+      "samples": 3,
+      "peak_usage_bytes": 255000000000,
+      "last_usage_bytes": 200000000000,
+      "budget_bytes": 200000000000,
+      "removed_bytes": {
+        "released": 0,
+        "parked": 0,
+        "accepted": 0,
+        "budget": 0,
+        "budget_forced": 610000000000,
+        "orphan": 1000000
+      }
+    }
   }
 }

@@ -563,7 +563,7 @@ When a valid run's p5 reaches gate 1:
 
 ## Reading a run's traces
 
-Box runs are traced at 10% by default (`TRACE_RATIO=0.1` in each box type's settings file); `--trace RATIO` on `run.sh` or `campaign.sh` sets another ratio for a run, and `--trace 0` runs it untraced ([runner.md](runner.md#tracing)). A traced run keeps its spans in the raw tarball under `run/traces/`: the collector's `traces.jsonl`, one OTLP JSON export request per line, with `collector-metrics.txt` and `collector.log` beside it. The record carries only counts. Reading the spans takes operator credentials for the dev account, since the results role cannot read `raw/`:
+Box runs are traced at 10% by default (`TRACE_RATIO=0.1` in each box type's settings file); `--trace RATIO` on `run.sh` or `campaign.sh` sets another ratio for a run, and `--trace 0` runs it untraced ([runner.md](runner.md#tracing)). A traced run keeps its spans in the raw tarball under `run/traces/`: the collector's `traces.jsonl`, one OTLP JSON export request per line, with `collector-metrics.txt` and `collector.log` beside it. `metrics.jsonl` holds, in the same form, the metrics of the services that send any: today ingot's, such as `ingot.local_blobs.usage`, one sample every 5 seconds (every 60 with a smelt from before fil-forge/smelt#71). The record carries only counts and a summary of that usage (`trace.local_blobs`). Reading the spans takes operator credentials for the dev account, since the results role cannot read `raw/`:
 
 ```sh
 scripts/operator/traces.sh <run_id>                  # to local/traces/<run_id>/
