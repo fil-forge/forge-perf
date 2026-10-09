@@ -225,6 +225,7 @@ class FixtureRecords(unittest.TestCase):
 
 
 TRACE = expected(HERE / "fixtures" / "traced")["trace"]
+BLOBS = TRACE["local_blobs"]
 
 
 class Rejections(unittest.TestCase):
@@ -259,6 +260,14 @@ class Rejections(unittest.TestCase):
                 trace=dict(TRACE, spans_by_service=dict(TRACE["spans_by_service"], grafana=1))),
             "a service missing": lambda r: r.update(trace=dict(TRACE, spans_by_service={"ingot": 8})),
             "trace file hash": lambda r: r.update(trace=dict(TRACE, file_sha256="e80284")),
+            "no local blob samples": lambda r: r.update(trace=dict(TRACE, local_blobs=dict(BLOBS, samples=0))),
+            "negative peak usage": lambda r: r.update(
+                trace=dict(TRACE, local_blobs=dict(BLOBS, peak_usage_bytes=-1))),
+            "budget as text": lambda r: r.update(trace=dict(TRACE, local_blobs=dict(BLOBS, budget_bytes="200GB"))),
+            "a removal reason outside the list": lambda r: r.update(
+                trace=dict(TRACE, local_blobs=dict(BLOBS, removed_bytes=dict(BLOBS["removed_bytes"], evicted=1)))),
+            "a removal reason missing": lambda r: r.update(
+                trace=dict(TRACE, local_blobs=dict(BLOBS, removed_bytes={"budget": 1}))),
             "free text": lambda r: r["provenance"]["images"][0].update(ref="has spaces in it"),
         }
         for name, change in cases.items():
@@ -267,7 +276,7 @@ class Rejections(unittest.TestCase):
 
     def test_a_trace_with_unread_files_validates(self):
         missing = dict(TRACE, traces=0, spans=0, spans_by_service=dict.fromkeys(TRACE["spans_by_service"], 0),
-                       dropped_spans=None, file_bytes=0, file_sha256=None)
+                       dropped_spans=None, file_bytes=0, file_sha256=None, local_blobs=None)
         self.assertEqual(self.rejected(lambda r: r.update(trace=missing)), [])
 
     def test_errors_never_carry_the_value(self):

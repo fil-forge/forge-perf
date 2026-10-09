@@ -283,7 +283,8 @@
     },
     "trace": {"oneOf": [{"type": "null"}, {
       "type": "object", "additionalProperties": false,
-      "required": ["ratio", "traces", "spans", "spans_by_service", "dropped_spans", "file_bytes", "file_sha256"],
+      "required": ["ratio", "traces", "spans", "spans_by_service", "dropped_spans", "file_bytes", "file_sha256",
+                   "local_blobs"],
       "properties": {
         "ratio": {"type": "number", "minimum": 0.000001, "maximum": 1},
         "traces": {"$ref": "#/$defs/count"},
@@ -301,7 +302,29 @@
         },
         "dropped_spans": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
         "file_bytes": {"$ref": "#/$defs/count"},
-        "file_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+        "file_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+        "local_blobs": {"oneOf": [{"type": "null"}, {
+          "type": "object", "additionalProperties": false,
+          "required": ["samples", "peak_usage_bytes", "last_usage_bytes", "budget_bytes", "removed_bytes"],
+          "properties": {
+            "samples": {"type": "integer", "minimum": 1},
+            "peak_usage_bytes": {"$ref": "#/$defs/count"},
+            "last_usage_bytes": {"$ref": "#/$defs/count"},
+            "budget_bytes": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
+            "removed_bytes": {
+              "type": "object", "additionalProperties": false,
+              "required": ["released", "parked", "accepted", "budget", "budget_forced", "orphan"],
+              "properties": {
+                "released": {"$ref": "#/$defs/count"},
+                "parked": {"$ref": "#/$defs/count"},
+                "accepted": {"$ref": "#/$defs/count"},
+                "budget": {"$ref": "#/$defs/count"},
+                "budget_forced": {"$ref": "#/$defs/count"},
+                "orphan": {"$ref": "#/$defs/count"}
+              }
+            }
+          }
+        }]}
       }
     }]}
   },
