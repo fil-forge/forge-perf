@@ -707,17 +707,24 @@ class Tracing(unittest.TestCase):
                 "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": service}}]},
                 "scopeMetrics": [{"metrics": list(metrics)}]}]})
 
-        def point(t, value, **attrs):
-            return {"timeUnixNano": str(t), "asInt": value,
-                    "attributes": [{"key": k, "value": {"stringValue": v}} for k, v in attrs.items()]}
+        def point(t, value, start=None, **attrs):
+            out = {"timeUnixNano": str(t), "asInt": value,
+                   "attributes": [{"key": k, "value": {"stringValue": v}} for k, v in attrs.items()]}
+            return out if start is None else out | {"startTimeUnixNano": start}
 
         def usage(t, spool, cache):
             return {"name": "ingot.local_blobs.usage",
                     "gauge": {"dataPoints": [point(t, spool, dir="spool"), point(t, cache, dir="cache")]}}
 
-        def removed(t, value, temporality=2, reason="budget"):
+        def removed(t, value, temporality=2, reason="budget", start=None):
             return {"name": "ingot.local_blobs.removed_bytes",
-                    "sum": {"aggregationTemporality": temporality, "dataPoints": [point(t, value, reason=reason)]}}
+                    "sum": {"aggregationTemporality": temporality,
+                            "dataPoints": [point(t, value, start, reason=reason)]}}
+
+        def one_dir(t, value, dir_, key="asInt"):
+            data_point = point(t, "0", dir=dir_)
+            del data_point["asInt"]
+            return {"name": "ingot.local_blobs.usage", "gauge": {"dataPoints": [data_point | {key: value}]}}
 
         budget = {"name": "ingot.local_blobs.budget", "gauge": {"dataPoints": [point(1, "50")]}}
         files = {
@@ -737,6 +744,17 @@ class Tracing(unittest.TestCase):
                                              export("ingot", usage(3, "1.5", "1")),
                                              export("ingot", usage(4, str(2 ** 53), "1"))],
                                             {"samples": 1, "peak_usage_bytes": 2}),
+            "a restart starts the counter again": ([export("ingot", usage(1, "1", "1"), removed(2, "500", start="1"),
+                                                           removed(3, "520", start="1"), removed(6, "30", start="5"))],
+                                                   {"removed": {"budget": 550}}),
+            "dirs split across lines": ([export("ingot", one_dir(1, "5", "spool")),
+                                         export("ingot", one_dir(1, "10", "cache"))],
+                                        {"samples": 1, "peak_usage_bytes": 15}),
+            "a double or a number in place of a count": ([export("ingot", usage(1, "1", "1")),
+                                                          export("ingot", one_dir(2, 9.5, "spool", "asDouble"),
+                                                                 one_dir(2, 9.5, "cache", "asDouble")),
+                                                          export("ingot", one_dir(3, 9, "spool"), one_dir(3, 9, "cache"))],
+                                                         {"samples": 1, "peak_usage_bytes": 2}),
             "one dir only": ([export("ingot", {"name": "ingot.local_blobs.usage",
                                                "gauge": {"dataPoints": [point(1, "5", dir="spool")]}})], None),
             "no ingot points": ([export("upload", usage(1, "1", "1")), "not json"], None),

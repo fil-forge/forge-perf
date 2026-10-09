@@ -11,7 +11,8 @@ classification order, the reasons and the flags. The builder copies named
 fields and nothing else. It never reads the drill's report, drill.out, the
 other service logs, or the free-text parts of the evidence and metadata. From
 a traced run's trace files (--traces, the run's traces/ directory) it takes
-counts and a hash, never a span's name, attributes or timing.
+counts, a hash and ingot's local blob numbers, never a span's name, attributes
+or timing, or any metric's text.
 
 `build` falls back to the minimal record when the run directory belongs to
 another run, when any input cannot be read as expected, or when the full
@@ -318,36 +319,41 @@ def read_local_blobs(path):
     the usage gauge, once an export interval, so the peak is the highest sampled usage,
     not the highest between samples. A line that is not an OTLP JSON metric export, or
     whose values are not counts, adds nothing, as in read_spans."""
-    usage, budget, removed = {}, None, {}
+    usage, budget, totals, deltas = {}, None, {}, dict.fromkeys(LOCAL_BLOB_REASONS, 0)
     try:
         with open(path, "rb") as f:
             for line in f:
-                for name, key, time, value, delta in export_local_blob_points(line) or []:
+                for name, key, time, value, delta, start in export_local_blob_points(line) or []:
                     if name == "usage":
                         usage.setdefault(time, {})[key] = value
                     elif name == "budget":
                         budget = max(budget or (time, value), (time, value))
                     elif delta:
-                        last, total = removed.get(key, (0, 0))
-                        removed[key] = (max(last, time), total + value)
+                        deltas[key] += value
                     else:
-                        removed[key] = max(removed.get(key, (0, 0)), (time, value))
+                        # A restart starts ingot's counters again under a new
+                        # start time, so each run of a counter keeps its own
+                        # latest point, and the runs add up.
+                        totals[key, start] = max(totals.get((key, start), (0, 0)), (time, value))
     except OSError:
         return None
     samples = {time: sum(dirs.values()) for time, dirs in usage.items() if set(dirs) == LOCAL_BLOB_DIRS}
     if not samples:
         return None
+    removed = dict(deltas)
+    for (reason, _), (_, value) in totals.items():
+        removed[reason] += value
     return {"samples": len(samples), "peak_usage_bytes": max(samples.values()),
             "last_usage_bytes": samples[max(samples)], "budget_bytes": None if budget is None else budget[1],
-            "removed_bytes": {reason: removed.get(reason, (0, 0))[1] for reason in LOCAL_BLOB_REASONS}}
+            "removed_bytes": removed}
 
 
 def export_local_blob_points(line):
-    """[(name, key, time, value, delta)] for ingot's local blob points in one line of
-    metrics.jsonl: the usage gauge by dir, the budget gauge (key None) and the removed
+    """[(name, key, time, value, delta, start)] for ingot's local blob points in one line
+    of metrics.jsonl: the usage gauge by dir, the budget gauge (key None) and the removed
     bytes counter by reason, its delta set when the sum is sent as deltas rather than
-    totals. [] for a blank line, or None when the line is not an OTLP JSON metric export
-    or a value is not a count."""
+    totals, and start the point's startTimeUnixNano, if any. [] for a blank line, or None
+    when the line is not an OTLP JSON metric export or a value is not a count."""
     if not line.strip():
         return []
     out = []
@@ -375,11 +381,12 @@ def export_local_blob_points(line):
                             if not values or values[0] not in keys:
                                 continue
                             key = values[0]
-                        time, value = point["timeUnixNano"], point["asInt"]
+                        time, value, start = point["timeUnixNano"], point["asInt"], point.get("startTimeUnixNano")
                         if not (isinstance(time, str) and TIME_TEXT.match(time)
-                                and isinstance(value, str) and COUNT_TEXT.match(value) and int(value) < 2 ** 53):
+                                and isinstance(value, str) and COUNT_TEXT.match(value) and int(value) < 2 ** 53
+                                and (start is None or isinstance(start, str) and TIME_TEXT.match(start))):
                             return None
-                        out.append((name, key, int(time), int(value), delta))
+                        out.append((name, key, int(time), int(value), delta, start))
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None
     return out
