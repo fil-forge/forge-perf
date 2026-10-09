@@ -394,7 +394,7 @@ grep -q "build -o bin/drill ./cmd/drill" "$D/go.log" || fail "drill not built"
 lacks "$D/docker.log" "update --cpus"
 [ "$(runner .trace)" = null ] || fail "an untraced run has trace $(runner .trace)"
 lacks "$D/docker.log" "forge-perf-otel"
-! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES|METRIC_EXPORT_INTERVAL)=' "$D/up.env" ||
   fail "an untraced run exported tracing variables: $(grep ^OTEL_ "$D/up.env")"
 [ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services | length] | join(",")')" = 0 ] ||
   fail "an untraced run maps the collector image to a service"
@@ -845,6 +845,7 @@ has "$D/up.env" "OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318"
 has "$D/up.env" "OTEL_ENDPOINT=http://otel-collector:4318"
 has "$D/up.env" "OTEL_TRACES_SAMPLER_ARG=0.1"
 has "$D/up.env" "OTEL_RESOURCE_ATTRIBUTES=forge_perf.run_id=$id"
+has "$D/up.env" "OTEL_METRIC_EXPORT_INTERVAL=5000"
 [ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services[]] | join(",")')" = otel-collector ] ||
   fail "the collector image's services"
 order="$(grep -nE 'otel-collector:8888/metrics|stop -t 60 forge-perf-otel|logs forge-perf-otel|rm -f forge-perf-otel' \
@@ -894,9 +895,10 @@ echo "ok: a traced --until run leaves the collector running"
 # the services see none of them.
 setup
 run 0 OTEL_ENDPOINT=http://elsewhere:4318 OTEL_EXPORTER_OTLP_ENDPOINT=http://elsewhere:4318 \
-  OTEL_TRACES_SAMPLER_ARG=1 OTEL_RESOURCE_ATTRIBUTES=x=y -- --set "$work/set.json" --workers 16 --until setup
+  OTEL_TRACES_SAMPLER_ARG=1 OTEL_RESOURCE_ATTRIBUTES=x=y OTEL_METRIC_EXPORT_INTERVAL=1000 \
+  -- --set "$work/set.json" --workers 16 --until setup
 [ "$(runner .trace)" = null ] || fail "trace $(runner .trace)"
-! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES|METRIC_EXPORT_INTERVAL)=' "$D/up.env" ||
   fail "stray tracing variables reached make up: $(grep ^OTEL_ "$D/up.env")"
 echo "ok: an untraced run passes no caller OTEL_* variable to smelt"
 
@@ -943,7 +945,7 @@ untraced_run() {
   [ "$(runner .trace)" = null ] || fail "$1: runner.json trace $(runner .trace)"
   [ "$(jq -c .trace "$D/record.json")" = null ] || fail "$1: record trace $(jq -c .trace "$D/record.json")"
   lacks "$D/docker.log" "forge-perf-otel"
-  ! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES)=' "$D/up.env" ||
+  ! grep -qE '^OTEL_(EXPORTER_OTLP_ENDPOINT|ENDPOINT|TRACES_SAMPLER_ARG|RESOURCE_ATTRIBUTES|METRIC_EXPORT_INTERVAL)=' "$D/up.env" ||
     fail "$1: exported tracing variables: $(grep ^OTEL_ "$D/up.env")"
   [ "$(runner '[.images[] | select(.variable == "OTEL_COLLECTOR_IMAGE") | .services | length] | join(",")')" = 0 ] ||
     fail "$1: the collector image maps to a service"
