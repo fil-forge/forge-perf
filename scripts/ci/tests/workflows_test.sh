@@ -63,10 +63,14 @@ fi
 [ "$(echo "$refs" | awk '{ print $1 }')" -ge 5 ] || { echo "FAIL: fewer than five forge-perf checkouts: $refs" >&2; exit 1; }
 echo "ok: pr-run.yml checks forge-perf out at its own commit"
 
-# Comments and reactions go through the issues API, which issues: write
-# covers; the one pull request call reads it. No job may ask for more.
-if grep -nE '^\s*pull-requests:\s*write' "$pr_run"; then
-  echo "FAIL: pr-run.yml asks for pull-requests: write" >&2
+# The check, wait and report jobs comment on the pull request and react to its
+# comment through the issues API. GitHub checks pull-requests: write for a
+# comment whose issue is a pull request, so every job that writes issues must
+# write pull requests too.
+issues_write="$(grep -cE '^\s*issues:\s*write' "$pr_run")"
+prs_write="$(grep -cE '^\s*pull-requests:\s*write' "$pr_run")"
+if [ "$issues_write" -lt 1 ] || [ "$issues_write" != "$prs_write" ]; then
+  echo "FAIL: pr-run.yml has $issues_write issues: write but $prs_write pull-requests: write" >&2
   exit 1
 fi
-echo "ok: pr-run.yml only reads pull requests"
+echo "ok: pr-run.yml jobs that write issues also write pull requests"
