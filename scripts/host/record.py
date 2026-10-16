@@ -11,7 +11,8 @@ classification order, the reasons and the flags. The builder copies named
 fields and nothing else. It never reads the drill's report, drill.out, the
 other service logs, or the free-text parts of the evidence and metadata. From
 a traced run's trace files (--traces, the run's traces/ directory) it takes
-counts and a hash, never a span's name, attributes or timing.
+counts, a hash and ingot's local blob numbers, never a span's name, attributes
+or timing, or any metric's text.
 
 `build` falls back to the minimal record when the run directory belongs to
 another run, when any input cannot be read as expected, or when the full
@@ -71,6 +72,14 @@ TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 # spans_by_service names each service that traces in the stack; any other
 # service.name, or none, counts as `other`, so no span text reaches the record.
 TRACE_SERVICES = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["spans_by_service"]["required"])
+# ingot's local blob metrics in metrics.jsonl: the usage gauge's dirs, summed,
+# and the removal counter's reasons, the record's keys. A point with any other
+# dir or reason is left out, so no metric text reaches the record.
+LOCAL_BLOB_DIRS = {"spool", "cache"}
+LOCAL_BLOB_REASONS = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["local_blobs"]["oneOf"][1]
+                          ["properties"]["removed_bytes"]["required"])
+COUNT_TEXT = re.compile(r"^[0-9]{1,16}$")
+TIME_TEXT = re.compile(r"^[0-9]{1,20}$")
 # The collector's counters of spans it refused, failed to send or dropped,
 # with or without the _total suffix its Prometheus exporter adds.
 DROPPED_SPANS = re.compile(r"^otelcol_(receiver_refused|receiver_failed|processor_refused|processor_dropped"
@@ -283,14 +292,101 @@ def export_spans(line):
     try:
         doc = json.loads(line)
         for rs in doc["resourceSpans"]:
-            names = [a["value"].get("stringValue") for a in (rs.get("resource") or {}).get("attributes") or []
-                     if a["key"] == "service.name"]
-            service = names[0] if names and names[0] in TRACE_SERVICES else "other"
+            service = resource_service(rs)
+            service = service if service in TRACE_SERVICES else "other"
             for ss in rs.get("scopeSpans") or []:
                 for span in ss.get("spans") or []:
                     if not isinstance(span["traceId"], str) or not TRACE_ID.match(span["traceId"]):
                         return None
                     out.append((service, span["traceId"]))
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return None
+    return out
+
+
+def resource_service(resource_data):
+    """The service.name of an OTLP JSON resourceSpans or resourceMetrics entry, or None."""
+    names = [a["value"].get("stringValue") for a in (resource_data.get("resource") or {}).get("attributes") or []
+             if a["key"] == "service.name"]
+    return names[0] if names else None
+
+
+def read_local_blobs(path):
+    """ingot's local blob storage over the run, from metrics.jsonl: how many usage
+    samples the file holds, the highest and the last usage (spool and cache together),
+    the budget ingot last reported, and the bytes it removed by reason. None when the
+    file is missing or holds no sample with both dirs. A sample is one collection of
+    the usage gauge, once an export interval, so the peak is the highest sampled usage,
+    not the highest between samples. A line that is not an OTLP JSON metric export, or
+    whose values are not counts, adds nothing, as in read_spans."""
+    usage, budget, totals, deltas = {}, None, {}, dict.fromkeys(LOCAL_BLOB_REASONS, 0)
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                for name, key, time, value, delta, start in export_local_blob_points(line) or []:
+                    if name == "usage":
+                        usage.setdefault(time, {})[key] = value
+                    elif name == "budget":
+                        budget = max(budget or (time, value), (time, value))
+                    elif delta:
+                        deltas[key] += value
+                    else:
+                        # A restart starts ingot's counters again under a new
+                        # start time, so each run of a counter keeps its own
+                        # latest point, and the runs add up.
+                        totals[key, start] = max(totals.get((key, start), (0, 0)), (time, value))
+    except OSError:
+        return None
+    samples = {time: sum(dirs.values()) for time, dirs in usage.items() if set(dirs) == LOCAL_BLOB_DIRS}
+    if not samples:
+        return None
+    removed = dict(deltas)
+    for (reason, _), (_, value) in totals.items():
+        removed[reason] += value
+    return {"samples": len(samples), "peak_usage_bytes": max(samples.values()),
+            "last_usage_bytes": samples[max(samples)], "budget_bytes": None if budget is None else budget[1],
+            "removed_bytes": removed}
+
+
+def export_local_blob_points(line):
+    """[(name, key, time, value, delta, start)] for ingot's local blob points in one line
+    of metrics.jsonl: the usage gauge by dir, the budget gauge (key None) and the removed
+    bytes counter by reason, its delta set when the sum is sent as deltas rather than
+    totals, and start the point's startTimeUnixNano, if any. [] for a blank line, or None
+    when the line is not an OTLP JSON metric export or a value is not a count."""
+    if not line.strip():
+        return []
+    out = []
+    try:
+        for rm in json.loads(line)["resourceMetrics"]:
+            if resource_service(rm) != "ingot":
+                continue
+            for sm in rm.get("scopeMetrics") or []:
+                for metric in sm.get("metrics") or []:
+                    if metric["name"] == "ingot.local_blobs.usage":
+                        name, data, attr, keys = "usage", metric["gauge"], "dir", LOCAL_BLOB_DIRS
+                    elif metric["name"] == "ingot.local_blobs.budget":
+                        name, data, attr, keys = "budget", metric["gauge"], None, None
+                    elif metric["name"] == "ingot.local_blobs.removed_bytes":
+                        name, data, attr, keys = "removed", metric["sum"], "reason", LOCAL_BLOB_REASONS
+                    else:
+                        continue
+                    # OTLP's AGGREGATION_TEMPORALITY_DELTA.
+                    delta = data.get("aggregationTemporality") == 1
+                    for point in data.get("dataPoints") or []:
+                        key = None
+                        if attr is not None:
+                            values = [a["value"].get("stringValue") for a in point.get("attributes") or []
+                                      if a["key"] == attr]
+                            if not values or values[0] not in keys:
+                                continue
+                            key = values[0]
+                        time, value, start = point["timeUnixNano"], point["asInt"], point.get("startTimeUnixNano")
+                        if not (isinstance(time, str) and TIME_TEXT.match(time)
+                                and isinstance(value, str) and COUNT_TEXT.match(value) and int(value) < 2 ** 53
+                                and (start is None or isinstance(start, str) and TIME_TEXT.match(start))):
+                            return None
+                        out.append((name, key, int(time), int(value), delta, start))
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None
     return out
@@ -323,7 +419,7 @@ def trace_block(runner, traces_dir):
         return None, set()
     block = {"ratio": trace_ratio(spec["ratio"]), "traces": 0, "spans": 0,
              "spans_by_service": dict.fromkeys(TRACE_SERVICES, 0), "dropped_spans": None,
-             "file_bytes": 0, "file_sha256": None}
+             "file_bytes": 0, "file_sha256": None, "local_blobs": None}
     flags = {"traced"}
     spans = read_spans(Path(traces_dir) / "traces.jsonl") if traces_dir is not None else None
     if spans is None:
@@ -332,6 +428,7 @@ def trace_block(runner, traces_dir):
         block.update(zip(("traces", "spans", "spans_by_service", "file_bytes", "file_sha256"), spans))
     if traces_dir is not None:
         block["dropped_spans"] = read_dropped(Path(traces_dir) / "collector-metrics.txt")
+        block["local_blobs"] = read_local_blobs(Path(traces_dir) / "metrics.jsonl")
     return block, flags
 
 
