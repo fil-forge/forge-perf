@@ -46,11 +46,13 @@ scripts/operator/calibration-summary.py noise --series per-trigger --runs <id> .
 scripts/operator/calibration-summary.py noise --series nightly --runs <id> ...
 scripts/operator/calibration-summary.py falsification \
   --band calibration/noise/main-per-trigger.json \
-  --check older-digest=<id>,<id>,<id> --check cpu-cap=<id>,<id>,<id>
+  --check ingot-1cpu=<id>,<id>,<id> --check piri-0-1cpu=<id>,<id>,<id>
 scripts/operator/calibration-summary.py --records <dir> --out-dir <dir> workers --runs <id> ...
 ```
 
 `--records`, `--ref` and `--out-dir` go before or after the subcommand.
+
+A noise file is named for its box and series, not its instance type, so calibrating a new type replaces the band the last one wrote: tier 3's per-trigger band replaced tier 1's in commit 740e5d6, and `noise/main-nightly.json` is still tier 1's. A falsification file copies what it needs from its band, but its command reproduces it only against that band, which git keeps: `falsification/2026-09-27.json` comes back byte for byte with `--band` naming a file that holds `git show 296f011:calibration/noise/main-per-trigger.json`. Today's `main-per-trigger.json` refuses its runs, which ran on m9gd.2xlarge.
 
 A file holds the box and instance type the runs share, and per run its ID, start time, class, reasons, flags, workers, ingest cap, p5 and median, and its forge-perf, smelt and harness SHAs with the digest of every image. It holds nothing else from the records and no time of its own making, so the same runs always give the same bytes. Rates are bytes per second. A falsification check name is lowercase letters, digits and hyphens.
 
