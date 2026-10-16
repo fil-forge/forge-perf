@@ -23,7 +23,7 @@ module "constants" {
 }
 
 variable "instance_type" {
-  description = "The persistent box's instance type, one of the three tiers' (docs/DESIGN.md section 3)."
+  description = "The persistent box's instance type, one of the three tiers' types (docs/DESIGN.md section 3)."
   type        = string
 }
 
