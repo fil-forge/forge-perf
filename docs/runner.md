@@ -405,7 +405,7 @@ campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE] [--duration D
 
 For each run it writes `pending.json` with `kind: campaign`, the set, and the workers, size, duration and pairing ID it was given, under `poll.lock`, then runs `systemctl start --wait forge-perf-run.service`. It removes the run's `last-run.json` and any campaign `pending.json` left behind, so the poller neither retries a campaign's run nor finds one after the campaign. One workers value, or none, runs N times as series `campaign`; a comma list runs N rounds over it, reversed every other round, as series `calibration`. A pairing ID (`pair-<yyyymmdd>-<id>`) makes each record's trigger `pairing`. `SERIES_LIVE=0` still turns every series into `calibration`.
 
-`--cap` is for the tier 1 falsification check ([DESIGN.md §9](DESIGN.md#9-calibration-and-ceilings)): a run with ingot and piri-0 held to one CPU each must land below the noise band.
+`--cap` is for the tier 1 falsification check ([DESIGN.md §9](DESIGN.md#9-calibration-and-ceilings)): runs with ingot held to one CPU, and runs with piri-0 held to one CPU, must each land below the noise band.
 
 ```
 campaign.sh --set calibration/sets/cal-1.json --runs 3 --cap ingot=1.0,piri-0=1.0
