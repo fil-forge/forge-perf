@@ -735,7 +735,7 @@
         "spec": {
           "id": 5,
           "title": "Read-back p5 per run",
-          "description": "Each point is one run's read-back p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Read-back is one GET of each whole blob 30 to 60 seconds after it was written, served from ingot's local spool unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
+          "description": "Each point is one run's read-back p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Read-back is one GET of each whole blob 30 to 60 seconds after it was written, served from ingot's local disk unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -975,7 +975,7 @@
         "spec": {
           "id": 7,
           "title": "Restore p5 per run",
-          "description": "Each point is one run's restore p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Restore is workers reading older blobs in block-sized ranges, served from ingot's local spool unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
+          "description": "Each point is one run's restore p5, the highest rate at least 95% of its steady windows held, at the time the run finished. Restore is workers reading older blobs in block-sized ranges, served from ingot's local disk unless a local blob budget evicted the blob first. One colour per instance type. Runs before the harness recorded it have no point.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
