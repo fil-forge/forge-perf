@@ -18,7 +18,7 @@ The box models a production appliance at a storage provider's site about 25 ms r
 
 | Production | On the box |
 |---|---|
-| Appliance NVMe: OS, Postgres, ingot spool, Docker | Instance-store NVMe holds every Docker volume |
+| Appliance NVMe: OS, Postgres, ingot's local blobs, Docker | Instance-store NVMe holds every Docker volume |
 | Provider S3 behind piri, same site | AWS S3 in us-east-2 through a gateway endpoint, no added delay |
 | Central services in Ohio | Same host, 25 ms round trip added between node and central containers |
 | S3 clients at the appliance's site | Drill on the same host, Docker bridge to ingot, no added delay |
@@ -175,7 +175,7 @@ The wipe, in order:
 
 The wipe never stops Docker, so it can run inside a unit ordered after Docker.
 
-smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`check_disk` in `smelt/scripts/perf-drill.sh`). With piri's blobs in S3 only ingot's local disk grows, and without a local blob budget ingot keeps every ingested byte until the wipe, since `--keep-objects` skips the drill's sweep. smelt's check does not know about a budget, so a box whose largest run no longer fits at 1.25 sizes `DISK_FACTOR` for that run from its budget ([runner.md](runner.md#ingots-local-blob-budget)). `DISK_FACTOR=1.25` covers ingot's local blobs, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 1,200 GB needs 1,500 GB of about 1,863 GB **[est]** on the 1,900 GB drive. The first 100 GB run checks the factor against `du` of the volumes. A budgeted factor needs a run larger than about 1.1 × the budget to check it, since a smaller one never fills the headroom: its peak use should stay under about 0.25 × its size + 1.1 × the budget. The lowest free space in the run's `disk.csv` shows that peak; a `du` after the run can read up to a tenth of the budget low, since the sweeper keeps ingot's usage between 90% of the budget and the headroom above it. A run whose free space falls under 2 GB ends `invalid` (`disk_low`).
+smelt's disk check needs `DISK_FACTOR × STOP_INGEST_AT` free on ingot's `/data` (`check_disk` in `smelt/scripts/perf-drill.sh`). With piri's blobs in S3 only ingot's local blobs grow, and without a local blob budget ingot keeps every ingested byte until the wipe, since `--keep-objects` skips the drill's sweep. smelt's check does not know about a budget, so a box whose largest run no longer fits at 1.25 sizes `DISK_FACTOR` for that run from its budget ([runner.md](runner.md#ingots-local-blob-budget)). `DISK_FACTOR=1.25` covers ingot's local blobs, Postgres, catalog and logs **[est]**. On tier 1, 350 GB needs 437.5 GB of the 466 GB **[est]** that ext4 leaves on the 474 GB drive; on tier 2, 1,200 GB needs 1,500 GB of about 1,863 GB **[est]** on the 1,900 GB drive. The first 100 GB run checks the factor against `du` of the volumes. A budgeted factor needs a run larger than about 1.1 × the budget to check it, since a smaller one never fills the headroom: its peak use should stay under about 0.25 × its size + 1.1 × the budget. The lowest free space in the run's `disk.csv` shows that peak; a `du` after the run can read up to a tenth of the budget low, since the sweeper keeps ingot's usage between 90% of the budget and the headroom above it. A run whose free space falls under 2 GB ends `invalid` (`disk_low`).
 
 ## 7. Results and the page
 

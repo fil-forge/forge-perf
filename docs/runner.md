@@ -511,7 +511,7 @@ On a laptop, `FORGE_PERF_HOST_OPS=skip` turns every host-level operation into a 
 
 Skip mode also narrows what the wipe removes, since a laptop runs other things. It removes containers of compose project `smelt` (or `$COMPOSE_PROJECT_NAME`) and those named `smeltery-*` or `forge-perf-*`, volumes of that project or named `smelt_*`, and only those images outside the pinned set whose repository is a pinned `ghcr.io/fil-forge/` one. Third-party images such as `postgres` stay, since other projects on a laptop share them. Everything else on the laptop stays. Without `flock` installed (macOS), the lock is skipped with a message.
 
-A local MinIO stands in for AWS S3. piri reaches it from its container as `host.docker.internal:9000`, the laptop as `localhost:9000`. It keeps its objects in `local/minio-data` on the laptop's disk. The MinIO image declares `/data` a volume, so without the bind mount every container leaves an anonymous volume on Docker's disk, where ingot's spool also grows during a drill. From the root of a forge-perf checkout (`local/` is ignored by git):
+A local MinIO stands in for AWS S3. piri reaches it from its container as `host.docker.internal:9000`, the laptop as `localhost:9000`. It keeps its objects in `local/minio-data` on the laptop's disk. The MinIO image declares `/data` a volume, so without the bind mount every container leaves an anonymous volume on Docker's disk, where ingot's local blobs also grow during a drill. From the root of a forge-perf checkout (`local/` is ignored by git):
 
 ```sh
 mkdir -p local/state local/nvme local/outbox local/run local/minio-data
