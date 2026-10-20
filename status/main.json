@@ -3,5 +3,9 @@
     "no_data"
   ],
   "conditions": [],
+  "idle_since": {
+    "at": "2026-10-20T15:04:28Z",
+    "up_since": "2026-10-20T15:02:13Z"
+  },
   "infra_streak": 0
 }
