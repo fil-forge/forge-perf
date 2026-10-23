@@ -64,6 +64,7 @@ def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=No
     if broken:
         # No settings file, NVMe unmounted, Docker down: a schema-valid preflight_failed record.
         r["outcome"]["reasons"] = ["preflight_failed"]
+        r["outcome"]["stopped_step"] = "preflight"
         r["drill"]["settings"] = None
         r["box"].update(docker_server=None, docker_compose=None)
         r["box"]["nvme"] = {"model": None, "size_bytes": None, "filesystem": None}

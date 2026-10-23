@@ -83,7 +83,8 @@
     },
     "outcome": {
       "type": "object", "additionalProperties": false,
-      "required": ["class", "reasons", "restarted_services", "flags", "drill_exit", "failure_codes"],
+      "required": ["class", "reasons", "restarted_services", "flags", "drill_exit", "stopped_step",
+                   "failure_codes"],
       "properties": {
         "class": {"enum": ["valid", "availability_warning", "invalid", "failed", "no_data"]},
         "reasons": {"type": "array", "uniqueItems": true, "items": {"enum": [
@@ -102,6 +103,8 @@
           "few_windows", "cap_not_reached", "nic_allowance_exceeded", "offered_rate_near_median",
           "superseded", "raw_missing", "cpu_capped", "traced", "trace_missing"]}},
         "drill_exit": {"enum": [0, 1, 2, null]},
+        "stopped_step": {"enum": ["preflight", "checkout", "images", "boot", "setup", "latency", "drill", "check",
+                                  null]},
         "failure_codes": {"type": "array", "uniqueItems": true, "items": {"enum": [
           "config_error", "interrupted", "unexpected_error", "transport_error", "timeout",
           "access_denied", "not_found", "conflict", "bucket_create_failed", "bucket_offline",

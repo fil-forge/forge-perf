@@ -1027,7 +1027,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
           run_finished_at: null},
-   settings: $settings,
+   step: "preflight", settings: $settings,
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
@@ -1052,7 +1052,11 @@ esac
 exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 
+# runner.json names the step in progress, so a record whose run a step stopped
+# says which step (outcome.stopped_step); null means every step ran.
 for s in $STEPS; do
+  rj --arg s "$s" '.step = $s'
   "step_$s"
   [ "$s" != "$until" ] || break
 done
+[ -n "$until" ] || rj '.step = null'

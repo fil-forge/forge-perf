@@ -244,7 +244,7 @@ It needs a digest for every line of `config/images.tracked`. A set without `smel
 
 ### Steps
 
-Each step runs its slow commands under `timeout` with the budget below, and every other `docker` and `aws` call gets a minute (`FORGE_PERF_CALL_TIMEOUT`); an overrun stops the run with reason `step_timeout`. Any other failure stops it with the reason in the table, which `runner.json` records. A failure the table does not name is `runner_error`.
+Each step runs its slow commands under `timeout` with the budget below, and every other `docker` and `aws` call gets a minute (`FORGE_PERF_CALL_TIMEOUT`); an overrun stops the run with reason `step_timeout`. Any other failure stops it with the reason in the table, which `runner.json` records. A failure the table does not name is `runner_error`. `runner.json` also holds the step in progress as `step`, null once every step has run, and the record carries it as `outcome.stopped_step`, so a stopped run's record says where it stopped as well as why ([record.md](record.md#field-sources)). The error itself stays in the unit's journal.
 
 | Step | What it does | Budget | Reasons |
 |---|---|---|---|

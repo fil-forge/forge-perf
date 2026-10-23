@@ -179,6 +179,22 @@ class Publish(unittest.TestCase):
         self.assertEqual(len(alerts), 1)
         self.assertIn("ended failed (reasons integrity_failure; failure codes integrity_failure)", alerts[0])
 
+    def test_an_alert_names_the_step_that_stopped_the_run(self):
+        self.record(fixture_record("stack-boot-failed", 12, series="per-trigger"))
+        alerts = self.ingest()["alerts"]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("ended no_data (reasons stack_boot_failed; stopped in step boot).", alerts[0])
+
+    def test_a_record_from_before_the_stopped_step_alerts_without_it(self):
+        sys.path.insert(0, str(HERE))
+        import ingest
+
+        record = fixture_record("stack-boot-failed", 12, series="per-trigger")
+        del record["outcome"]["stopped_step"]
+        alerts = ingest.record_alerts(record, None, {})
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("ended no_data (reasons stack_boot_failed).", alerts[0])
+
     def test_classes_that_do_not_alert(self):
         self.record(fixture_record("read-back-incomplete", 12))
         self.record(fixture_record("availability-errors", 13))
@@ -577,7 +593,7 @@ class Publish(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(HERE / "ingest.py"), "--self-test"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("25 of 25 cases as expected", proc.stdout)
+        self.assertIn("28 of 28 cases as expected", proc.stdout)
 
 
 class BuildSite(unittest.TestCase):
