@@ -460,5 +460,6 @@
   "fingerprint": "8f7cd845cc6dbd086c8b97010b61f1e0a5a9a75a21e6d53cd6c034daf77b8935",
   "box_fingerprint": "6a9671c55a094891e37420d819659dc8b1785747109e13d9e56f512f542eb95d"
  },
- "trace": null
+ "trace": null,
+ "ingot_local_blob_max_bytes": null
 }

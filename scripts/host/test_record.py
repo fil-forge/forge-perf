@@ -706,6 +706,36 @@ class Tracing(unittest.TestCase):
         self.assertNotIn("0af7651916cd43dd8448eb211c80319c", text)
 
 
+class LocalBlobBudget(unittest.TestCase):
+    def test_a_run_without_a_budget_records_null_whether_or_not_the_runner_says_so(self):
+        # A runner from before the setting has no key; one after writes null.
+        # Both give the fixture's record byte for byte, fingerprint included.
+        for fixture in ("valid", "traced", "stack-boot-failed"):
+            for budget in ("absent", None):
+                with self.subTest(fixture=fixture, budget=budget):
+                    case = Case(self, fixture)
+                    if budget is None:
+                        case.edit("runner.json", lambda d: d.update(ingot_local_blob_max_bytes=None))
+                    self.assertEqual(case.cli().returncode, 0)
+                    self.assertEqual(load(case.out), case.expected)
+
+    def test_the_budget_is_recorded_and_enters_the_fingerprint(self):
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d.update(ingot_local_blob_max_bytes=200000000000))
+        rec = case.build()
+        self.assertEqual(rec["ingot_local_blob_max_bytes"], 200000000000)
+        self.assertEqual(rec["instrument"]["box_fingerprint"], case.expected["instrument"]["box_fingerprint"])
+        self.assertNotEqual(rec["instrument"]["fingerprint"], case.expected["instrument"]["fingerprint"])
+        case.edit("runner.json", lambda d: d.update(ingot_local_blob_max_bytes=100000000000))
+        self.assertNotEqual(case.build()["instrument"]["fingerprint"], rec["instrument"]["fingerprint"])
+
+    def test_a_record_with_a_budget_passes_the_schema(self):
+        case = Case(self, "valid")
+        case.edit("runner.json", lambda d: d.update(ingot_local_blob_max_bytes=200000000000))
+        self.assertEqual(case.cli().returncode, 0)
+        self.assertEqual(load(case.out)["ingot_local_blob_max_bytes"], 200000000000)
+
+
 class NetemLines(unittest.TestCase):
     KNOWN = record.services()
 

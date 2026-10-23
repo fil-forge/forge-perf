@@ -577,7 +577,7 @@ class Publish(unittest.TestCase):
         proc = subprocess.run([sys.executable, str(HERE / "ingest.py"), "--self-test"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertIn("25 of 25 cases as expected", proc.stdout)
+        self.assertIn("27 of 27 cases as expected", proc.stdout)
 
 
 class BuildSite(unittest.TestCase):
@@ -655,6 +655,24 @@ class BuildSite(unittest.TestCase):
                               ("experiment", "branch", f"exp-{EXPERIMENT['request_id']}")])
             # Each series compares with its own runs.
             self.assertEqual([r["instrument_changes"] for r in index["runs"]], [None, None, []])
+
+    def test_turning_the_local_blob_budget_on_off_or_to_another_size_is_an_instrument_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            runs = tmp / "results/runs/2026/10"
+            runs.mkdir(parents=True)
+            records = [fixture_record("valid", hour) for hour in range(11, 16)]
+            del records[0]["ingot_local_blob_max_bytes"]  # a record from before the setting
+            for r, budget in zip(records[2:], (200000000000, 100000000000, None)):
+                r["ingot_local_blob_max_bytes"] = budget
+            for r in records:
+                (runs / f"{r['run_id']}.json").write_text(json.dumps(r), encoding="utf-8")
+            subprocess.run([sys.executable, str(HERE / "build-site.py"), "--site", str(ROOT / "site"),
+                            "--data", str(ROOT / "data"), "--results", str(tmp / "results"),
+                            "--out", str(tmp / "_site"), "--now", NOW], check=True, capture_output=True)
+            index = json.loads((tmp / "_site/data/index.json").read_text(encoding="utf-8"))
+            self.assertEqual([r["instrument_changes"] for r in index["runs"]],
+                             [None, [], ["local-blob-budget"], ["local-blob-budget"], ["local-blob-budget"]])
 
     def test_turning_tracing_on_or_off_is_an_instrument_change(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,7 +6,8 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_id", "series", "pairing_id", "experiment", "trigger", "box", "time", "outcome",
-               "drill", "latency", "network", "provenance", "instrument", "trace"],
+               "drill", "latency", "network", "provenance", "instrument", "trace",
+               "ingot_local_blob_max_bytes"],
   "properties": {
     "schema": {"const": "forge-perf.run/v1"},
     "run_id": {"$ref": "#/$defs/run_id"},
@@ -303,7 +304,8 @@
         "file_bytes": {"$ref": "#/$defs/count"},
         "file_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
       }
-    }]}
+    }]},
+    "ingot_local_blob_max_bytes": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1}]}
   },
   "$defs": {
     "run_id": {"type": "string", "pattern": "^[a-z0-9]{2,12}-[0-9]{8}t[0-9]{6}z$"},
