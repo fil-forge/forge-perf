@@ -1,6 +1,6 @@
 # forge-perf design
 
-Line references point at these commits: fil-forge/smelt `878700b`, piri `448f702`, ingot `c08e0f1`, infra-nodes `82c23b2` and infra-central `05073ee` (each `main` on 2026-09-25); fil-one/storage-qualification `5cfeaf3`; and minio-go `v7.3.0`. storage-qualification is private; its references serve readers with access. **[unverified]** marks behavior the first boot or the calibration session must confirm; **[est]** marks an estimate.
+Line references point at these commits: fil-forge/smelt `878700b`, piri `448f702`, ingot `c08e0f1`, infra-nodes `82c23b2` and infra-central `05073ee` (each `main` on 2026-09-25); fil-one/storage-qualification `5cfeaf3`; and minio-go `v7.3.0`. storage-qualification is private; its references serve readers with access. **[unverified]** marks behavior not yet confirmed; **[est]** marks an estimate.
 
 ## 1. What forge-perf measures
 
@@ -9,8 +9,6 @@ forge-perf tracks one number: the sustained ingest rate of the Forge storage sta
 A dedicated EC2 box runs every Forge service from the published `ghcr.io/fil-forge/<svc>:main` images. A run starts whenever one of those images changes on main, or smelt does, or the harness (fil-one/storage-qualification, which builds the drill). The box pins every image by digest for the run, wipes everything afterwards, and publishes the result with the full commit and digest of every component.
 
 The page shows the number as a thermometer. The mercury is the latest valid p5, and three gates mark the measured ceilings of three instance types: for each, the lower of its sustained S3 PUT throughput and its NVMe sequential write throughput. A gate lights when a valid run's p5 reaches it. Each ceiling measures one limit in isolation, so the stack's reachable rate sits below it. The top gate's instance has a raw NIC figure of 4.25 GB/s, above the drill's 3 GB/s target.
-
-The one measurement so far comes from a laptop (50 GB cap, 10-second windows, piri on its filesystem, no added latency): 0.10 GB/s median and 0.04 GB/s p5, and none of 33,759 requests failed.
 
 ## 2. The topology modeled
 
@@ -37,7 +35,7 @@ smelt's ingot also follows swarf's revocation firehose and reaches OpenBao over 
 
 ## 3. The box and its tiers
 
-One persistent box runs in the dev account (654654381893, us-east-2): tier 3, resized in place from tier 1 after gate 1 lit on 2026-09-28 and from tier 2 after its own network bounded the number on 2026-09-30. It sleeps between runs, so it bills only for the hours it runs. Campaigns run short-lived boxes beside it: a campaign box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
+One persistent box runs in the dev account (654654381893, us-east-2): tier 3, because tier 2's 17 Gbps network bounded the number (a tier 2 nightly sent 2.13 GB/s out while it ingested 1.77 GB/s). Campaigns run short-lived boxes beside it: a campaign box runs one committed set several times, publishes and is destroyed. All three are Graviton5 m9gd instances on one pinned arm64 Ubuntu 24.04 AMI; type and architecture are OpenTofu variables.
 
 | Tier | Type | Cores | Memory | Instance store (4 KiB read/write IOPS) | Network | On-demand |
 |---|---|---|---|---|---|---|
@@ -45,9 +43,9 @@ One persistent box runs in the dev account (654654381893, us-east-2): tier 3, re
 | 2 | m9gd.8xlarge | 32 | 128 GiB | 1,900 GB (698k / 349k) | 17 Gbps | ~$1,468/month |
 | 3 | m9gd.16xlarge | 64 | 256 GiB | 3,800 GB (1.40M / 698k) | 34 Gbps | $4.02/hour while it runs |
 
-Tier 1 costs $395 a month **[est]** with storage, IPv4 and S3 requests, and tier 2 about $1,500 **[est]**. An AWS budget on the `Project` tag alerts on overspend.
+Two AWS budgets on the `Project` tag alert by email: `forge-perf-monthly` when actual or forecast monthly spend passes `budget_monthly_usd` in `terraform/envs/bootstrap/account/terraform.tfvars`, and `forge-perf-internet-egress` when internet egress passes $25 in a month.
 
-The persistent box can sleep between runs. With `SLEEP_WHEN_IDLE=1` it powers itself off when a poll finds nothing to do, and a Lambda outside the box starts it for the nightly run, a `/forge-perf` request or a new image set (docs/runner.md, "Sleeping"). The box then bills only for the hours it runs, which is what makes a larger type affordable as the persistent box. Each start can land on a different host, so a box that sleeps needs its noise band measured across restarts.
+The persistent box sleeps between runs. With `SLEEP_WHEN_IDLE=1` in `config/launch.conf` it powers itself off when a poll finds nothing to do, and a Lambda outside the box starts it for the nightly run, a `/forge-perf` request or a new image set (docs/runner.md, "Sleeping"). The box then bills for compute only while it runs, and asleep costs only its root volume, which is what makes tier 3 affordable as the persistent box. Each start can land on a different host, so the per-trigger noise band is measured across restarts: the three runs behind `calibration/noise/main-per-trigger.json` each started from a fresh boot after the box slept (forge-perf commit 740e5d6).
 
 The instrument is everything that measures the Forge images: box type, AMI, kernel, Docker, smelt, the harness, the third-party images and forge-perf itself. Each change to it is a reviewed PR and a marker on the page.
 
@@ -57,7 +55,7 @@ The layout follows infra-nodes and infra-central (`versions.tofu`, a `versions.t
 
 | Root | Applied by | Holds |
 |---|---|---|
-| `envs/bootstrap/account` | operator | state bucket `forge-perf-tfstate-654654381893`, CI roles, results bucket, requests bucket, piri IAM user, budget |
+| `envs/bootstrap/account` | operator | state bucket `forge-perf-tfstate-654654381893`, CI roles, results bucket, requests bucket, piri IAM user, budgets |
 | `envs/network` | `deploy.yml` on main | `172.31.200.0/24` in the default VPC, its route table and S3 gateway endpoint |
 | `envs/box/main` | `deploy.yml` on main, after approval | the persistent box and its piri buckets |
 | `envs/box/campaign` | `campaign.yml` | a campaign or calibration box, destroyed after use |
@@ -77,6 +75,7 @@ The instance role reads `/forge-perf/*` parameters, writes its own prefixes of t
 | `forge-perf-poll.timer`, `forge-perf-nightly.timer` | call `poll.sh` every 5 minutes and at 03:00 UTC |
 | `forge-perf-run.service` | `run.sh`; `Type=oneshot`, `TimeoutStartSec=6h`, `TimeoutStopSec=45min`, `KillMode=mixed`, `ExecStopPost=wipe.sh --if-dirty`, no `Restart=`, as infra-nodes' reconcile unit |
 | `forge-perf-campaign.service` | campaign boxes only: one set, N times, each through `forge-perf-run.service` |
+| `forge-perf-final-flush.service` | campaign boxes only: at shutdown, after the run and campaign units stop and before the network goes, uploads what the outbox holds |
 | `forge-perf-experiment.service` | one experiment's pair, each run through `forge-perf-run.service`; started by `poll.sh`, never enabled |
 
 The units use `Wants=` and `After=docker.service`, since `Requires=` would stop them with Docker. Between runs `poll.sh` calls `update.sh`, modeled on infra-nodes' reconcile (`infra-nodes/scripts/host/reconcile.sh:16-29`, `infra-nodes/scripts/host/lib.sh:145-184`): re-exec from a copy, reset to `origin/main`, sync units, rerun `provision.sh` when `host/` changed, enable the units in `systemd/enabled.<mode>`. Campaign boxes never update.
@@ -184,7 +183,7 @@ Raw run data stays in a private bucket. The public record carries a fixed allowl
 ```
 box ──► s3://forge-perf-results-654654381893/raw/<box>/<run_id>/raw.tar.zst   private
     └─► s3://forge-perf-results-654654381893/published/<box>/<run_id>.json    allowlisted record
-publish.yml, every 15 min, one at a time, role forge-perf-ci-results
+publish.yml, dispatched by each new record, every 15 min as a fallback, one at a time, role forge-perf-ci-results
     ├─ validate, commit to branch results as runs/<yyyy>/<mm>/<run_id>.json
     └─ build the site from site/, data/ and the records; deploy Pages
 ```
@@ -224,7 +223,7 @@ Series `calibration` and `experiment` post nothing, whatever their class, and le
 
 Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is the slowest window, `smelt/docs/PERF_TESTING.md:215-216`), `cap_not_reached`, `nic_allowance_exceeded`, `offered_rate_near_median`, `superseded`, `raw_missing`, `cpu_capped`, `traced`, `trace_missing`. A reviewed PR to `data/overrides.json` citing an issue can reclassify a run; records are never edited.
 
-`publish.yml` posts to `#filone-alerts` with `SLACK_BOT_TOKEN`, as `infra-nodes/.github/workflows/smoke.yml:205-238` does, once per box and class until that box records `valid` or `availability_warning`. It also alerts once when the persistent box's heartbeat is 30 minutes old, six polls in a row fail, one run has held the box for 7 hours, or no record has arrived in 26 hours. GitHub disables scheduled workflows in a public repository after 60 days without activity, so the page shows when it was last published.
+`publish.yml` posts to `#filone-alerts` with `SLACK_BOT_TOKEN`, as `infra-nodes/.github/workflows/smoke.yml:205-238` does, once per box and class until that box records `valid` or `availability_warning`. It also alerts once when a condition on the persistent box starts: its heartbeat is 30 minutes old or six polls in a row fail, unless its last heartbeat says it is asleep; one run has held it for 7 hours; its newest run started more than 26 hours ago; it is not back from sleep 20 minutes after it should be; or it has stayed up idle for over 3 hours with sleeping on (docs/publishing.md, "Alerts"). GitHub disables scheduled workflows in a public repository after 60 days without activity, so the page shows when it was last published.
 
 ### The page
 
@@ -235,49 +234,46 @@ A static site in `site/`, with Observable Plot and d3 vendored:
 3. The runs table, with ingest, read-back and restore rates, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text. An experiment's run names its pull request, the set it ran and the other runs of its pairing.
 4. How it is measured: the method, the workload (the drill's import profile, ~128 MiB objects) and the gaps from §2.
 
-## 8. smelt changes
+## 8. smelt settings
 
-Five upstream PRs give smelt every setting forge-perf needs. Each is opt-in and reproduces today's stack when unset, so forge-perf keeps no compose override file. All five are on smelt main, which runs follow.
+Runs follow smelt main: `SMELT_REF` in `config/smelt.conf` is empty, and a commit set there pins smelt instead. Each setting forge-perf uses is opt-in in smelt and reproduces the default stack when unset, so forge-perf keeps no compose override file. `step_checkout` in `scripts/host/run.sh` stops a run whose smelt lacks `KEEP_OBJECTS`, `DISK_FACTOR` or `PERF_EXTRA_METADATA` in its `scripts/perf-drill.sh`, or `PIRI_INDEXER` in piri's entrypoint; `step_images` stops one whose compose does not point piri-0 at the box's S3 endpoint and bucket prefix, or still runs `piri-minio`.
 
-| PR | Change | forge-perf sets |
+| Setting | What it does in smelt | What forge-perf sets |
 |---|---|---|
-| 1. piri on external S3 | manifest `storage.s3` (`endpoint`, `bucket_prefix`, `insecure`) replaces the hard-coded MinIO (`smelt/pkg/generate/compose.go:41-44, 90-96`); credentials from the shell, empty ones refused | regional endpoint, box prefix, `SMELT_PIRI_S3_*` |
-| 2. Indexing off | `PIRI_INDEXER=off` drops piri's indexer and IPNI settings; sprue's indexer variables pass through | `PIRI_INDEXER=off SPRUE_INDEXER_ENDPOINT= SPRUE_INDEXER_DID=` |
-| 3. Third-party images | `${POSTGRES_IMAGE:-postgres:16-alpine}`, and the same for OpenBao, redis, dynamodb-local and smtp4dev | `config/images.lock` digests |
-| 4. Record what ran | full SHAs; each image's digest and revision (today short sibling SHAs, `smelt/scripts/perf-lib.sh:37-67`); all settings; `PERF_EXTRA_METADATA` | run ID, series, box |
-| 5. Drill flags, disk check | one recorded variable per drill flag; `DISK_FACTOR` in place of the fixed 2.5; host check only on Docker Desktop | §4 flags, `DISK_FACTOR=1.25` |
+| piri on external S3 (fil-forge/smelt#58) | the manifest's `storage.s3` (`endpoint`, `bucket_prefix`, `insecure`) points a piri node at a store outside the stack, which then runs without `piri-minio`; the credentials come from `SMELT_PIRI_S3_ACCESS_KEY_ID` and `SMELT_PIRI_S3_SECRET_ACCESS_KEY` in the shell, and piri's entrypoint refuses empty ones | `config/smelt-manifest.yml.tmpl` with the regional endpoint and the box's bucket prefix, from `config/piri-s3.env` and `/etc/forge-perf/box.conf`; piri's key from SSM |
+| Indexing off (#59) | `PIRI_INDEXER=off` leaves piri's indexer and IPNI announce settings out of its config; `SPRUE_INDEXER_ENDPOINT` and `SPRUE_INDEXER_DID` pass through to sprue, and empty values clear its indexer | `PIRI_INDEXER=off SPRUE_INDEXER_ENDPOINT= SPRUE_INDEXER_DID=` |
+| Third-party images (#60) | `POSTGRES_IMAGE`, `OPENBAO_IMAGE`, `REDIS_IMAGE`, `DYNAMODB_LOCAL_IMAGE` and `SMTP4DEV_IMAGE` select those images, as `IPNI_IMAGE`, `BLOCKCHAIN_IMAGE` and `MINIO_IMAGE` already did; each defaults to smelt's own tag | each as `<repo>@<digest>` from `config/images.lock` |
+| Run metadata (#61) | `perf-drill.sh` records full SHAs, each container's image digest and revision label, every setting, and `PERF_EXTRA_METADATA`, one JSON object, verbatim as `extra` | `{"forge_perf": {"run_id": …, "series": …}}` |
+| Drill flags and disk check (#62) | a recorded variable per drill flag; `DISK_FACTOR` is the free disk the check needs as a multiple of `STOP_INGEST_AT` (1.25 by default with piri's blobs in an external S3, 2.5 otherwise); the host filesystem is checked only under Docker Desktop | the settings file's values (§4), `CONFIG_NOTE=forge-perf/<run_id>`, `DISK_FACTOR=1.25` |
+| Tracing (#66) | ingot, sprue and hilt take `OTEL_TRACES_SAMPLER_ARG` and `OTEL_RESOURCE_ATTRIBUTES` from the shell, and each piri node, like those three, sends traces to `OTEL_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`) when one is set | for a traced run, the ratio, `forge_perf.run_id=<run_id>` and the collector at `http://otel-collector:4318` (`otel-collector` is `forge-perf-otel`'s network alias, §11) |
 
-PR 5 stacks on PR 4; the others are independent. piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`minio-go/api.go:299-303`). A sixth PR, for the tracing phase, passes `OTEL_TRACES_SAMPLER_ARG` and `OTEL_RESOURCE_ATTRIBUTES` to ingot, sprue and hilt, which already read them (`ingot/cmd/telemetry.go:51`), and gives each piri node a trace endpoint when one is set.
+piri needs no region setting: minio-go v7.3.0 derives us-east-2 from the endpoint `s3.us-east-2.amazonaws.com` (`minio-go/api.go:299-303`).
 
 ## 9. Calibration and ceilings
 
 One session measures all three instance types in turn. A tier's ceiling is the lower of two measurements, each scored as p5 of 30-second windows over its sustained segment.
 
-**S3 PUT.** `cmd/s3-ceiling` reproduces piri's call: minio-go v7.3.0 (piri's pin, `piri/go.mod:44`; CI fails if they diverge), TLS to the regional endpoint, piri's static key, `PutObject` of 134,217,728 bytes from a non-seekable body into the box's own `pdp` bucket, 8 workers per core. AWS documents burst bandwidth as lasting typically 5 to 60 minutes. On m9gd.2xlarge the phase therefore runs 75 minutes and scores its last 30, starting once `bw_out_allowance_exceeded` has risen steadily for 5 minutes (counter name **[unverified]**). The larger types are rated sustained and run 30 minutes.
+**S3 PUT.** `cmd/s3-ceiling` reproduces piri's call: minio-go v7.3.0 (piri's pin, `piri/go.mod:44`; CI fails if they diverge), TLS to the regional endpoint, piri's static key, `PutObject` of 134,217,728 bytes from a non-seekable body into the box's own `pdp` bucket, 8 workers per core. AWS documents burst bandwidth as lasting typically 5 to 60 minutes. On m9gd.2xlarge the phase therefore runs 75 minutes and scores its last 30, starting once `bw_out_allowance_exceeded` has risen steadily for 5 minutes. The larger types are rated sustained and run 30 minutes.
 
-**NVMe write.** `scripts/host/ceiling-nvme.sh` discards the device and runs `fio --direct=1 --ioengine=io_uring --rw=write --bs=1M --iodepth=32 --numjobs=4 --size=25% --offset_increment=25%` over it. A 100 GB file write on ext4 sets the ceiling instead if it lands more than 10% lower. Tier 1's drive is rated at 87,209 4 KiB write IOPS (0.36 GB/s at that size), so it may set gate 1 below the NIC's 0.53 GB/s.
+**NVMe write.** `scripts/host/ceiling-nvme.sh` discards the device and runs `fio --direct=1 --ioengine=io_uring --rw=write --bs=1M --iodepth=32 --numjobs=4 --size=25% --offset_increment=25%` over it. A 100 GB file write on ext4 sets the ceiling instead if it lands more than 10% lower. S3 PUT sets all three gates (`data/gates.json`): on tier 1 the drive wrote 0.59 GB/s, and S3 PUT held 0.52 GB/s, just under the NIC's 0.53 GB/s baseline.
 
 For each type, `campaign.yml` with `mode=calibration` starts a box and `scripts/operator/calibrate-ceilings.sh <type>` measures it over SSM and tears it down. Evidence lands in `calibration/ceilings/<date>/<type>/` and the gates in `data/gates.json`, in one reviewed PR. A session costs under $25 **[est]**.
 
-**Tier 1 calibration** takes 20 runs and 12 hours of box time **[est]** on one committed set (`calibration/sets/cal-1.json`). Until it passes, `config/launch.conf` labels every run `calibration`.
+**Tier calibration** freezes a type's `WORKERS` and measures the noise bands its runs are judged against. `config/launch.conf` sets `SERIES_LIVE=1`, so runs publish in their own series; with 0, `run.sh` publishes every run but an experiment as series `calibration`. Tier 1's calibration is 20 valid runs of one committed set (`calibration/sets/cal-1.json`), with results under `calibration/` (calibration/README.md, "Tier calibration").
 
-1. Workers sweep: 16, 32 and 64, two 100 GB runs each, in the order 16, 32, 64, 64, 32, 16. The smallest value within 5% of the best mean p5 and median wins; an availability error disqualifies a value.
-2. Repeat runs: five at 100 GB and three at 350 GB give each series its noise band, the range an unchanged stack falls in (`calibration/noise/main-<series>.json`). The drill draws a new blob-size seed every run, so the band includes that variation. Above 10% coefficient of variation the series stays unpublished. If the first steady window is consistently the lowest, `RAMP` goes to 30s.
-3. Falsification: an older digest for one service, from a merged performance PR, must land below the per-trigger band in three runs of three, and so must a run with ingot capped at one CPU (`docker update --cpus 1.0`). That check runs on a held persistent box as `campaign.sh --cap ingot=1.0,piri-0=1.0`, which caps piri-0 as well and publishes every run as series `calibration` with the flag `cpu_capped`.
+1. Workers sweep. Tier 1's: 16, 32 and 64, two 100 GB runs each, in the order 16, 32, 64, 64, 32, 16. The smallest value within 5% of the best mean p5 and median wins; an availability error disqualifies a value. Tier 1's settings file takes the winner, 32. Tier 2's sweep, at 500 GB, levelled off at 256, and its settings file takes 64, a realistic concurrency no higher than the winner; tier 3's settings file takes tier 2's 64.
+2. Repeat runs give each series its noise band, the range an unchanged stack falls in (`calibration/noise/main-<series>.json`). Tier 1's per-trigger band came from five runs at 100 GB and its nightly band from three at 350 GB. The nightly band is still tier 1's; tier 3's per-trigger band, from three 2,000 GB runs each started from a fresh boot (§3), replaced tier 1's. The drill draws a new blob-size seed every run, so the band includes that variation. A band passes when its p5 coefficient of variation is at most 10%. `RAMP` stays 10s unless the first steady window is consistently the lowest.
+3. Falsification: three runs with ingot capped at one CPU and three with piri-0 capped at one CPU all land below the lowest p5 of tier 1's per-trigger band (`calibration/falsification/2026-09-27.json`, which records that band). The caps run on a held persistent box as `campaign.sh --cap <service>=1.0`, which publishes every run as series `calibration` with the flag `cpu_capped`.
 
-A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350 GB gives 22 and 500 GB gives 31; at 2.1 GB/s, 500 GB gives 7. Any valid run can light a gate, and one under 20 windows carries `few_windows`. Tier 3 campaigns run 2 TB, which gives 22 windows at 3 GB/s.
+A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350 GB gives 22 and 500 GB gives 31; at 2.1 GB/s, 500 GB gives 7. Any valid run can light a gate, and one under 20 windows carries `few_windows`. Tier 3 runs 2,000 GB per trigger, which gives 22 windows at 3 GB/s.
 
 ## 10. Operations
 
 **Access:** `scripts/operator/ssm-session.sh main`, then `scripts/host/status.sh` for the hold, sets, last run and timers. `scripts/operator/hold.sh main on|off` sets the hold once the box is idle, and `box-update.sh main` runs `update.sh` over SSM.
 
-**Tier 1 to tier 2**, when gate 1 lights:
+**Resizing the persistent box:** a reviewed PR sets `instance_type` in `terraform/envs/box/main/terraform.tfvars` and adds `config/settings/<type>.env`, since `run.sh` refuses every run on a type without one. Once the box is held and idle, a reviewer approves `apply-box-main`, and `deploy.yml` stops, modifies and starts the same instance, whose instance store comes back blank (docs/operations.md, "The persistent box"). The page marks the first run on the new type. When one committed set runs on both types under one pairing ID (`campaign.sh --set <file> --pairing <id>`), the page also compares the two types' medians at the largest size both ran (docs/publishing.md, "The page"); past values never change. The steps are in docs/operations.md, "Tier 1 to tier 2", including `box-update.sh main` on the held box after the merge and the budget raise.
 
-1. `hold.sh main on`. `scripts/operator/set-from-record.sh <run_id>` writes the set of the run that lit gate 1 to `calibration/sets/tier2-bridge.json`; run `campaign.sh --set <file> --runs 3 --pairing <id>` at both sizes.
-2. Merge a PR setting `instance_type = "m9gd.8xlarge"` in `terraform/envs/box/main/terraform.tfvars` and adding `config/settings/m9gd.8xlarge.env` with `WORKERS` empty. After approval, `deploy.yml` stops, modifies and starts the same instance.
-3. Check the new NVMe, sweep workers upward from the tier 1 value until the rate levels off, freeze `WORKERS` in a PR at a realistic concurrency no higher than the winner (tier 2: 64, where the sweep levelled off at 256), repeat the paired runs at the tier 1 sizes, release the hold. The page shows the box change and the offset between paired medians; past values never change.
-
-**A tier 3 campaign:** commit a set and dispatch `campaign.yml` (`instance_type`, `hours` from 1 to 24, `set`, `runs`, `size`, `workers`, `duration`, `mode`). The box sweeps workers when given a list, runs the set, uploads and powers off, and schedules its own poweroff at its `ExpiresAt` tag. A `down` dispatch or the hourly reaper destroys it; the reaper takes any forge-perf instance other than `main` that is past `ExpiresAt` or stopped for an hour. A forgotten 12-hour campaign costs at most $52.
+**A campaign:** commit a set and dispatch `campaign.yml` (`instance_type`, `hours` from 1 to 24, `set`, `runs`, `size`, `workers`, `duration`, `mode`). The box sweeps workers when given a list, runs the set, uploads and powers off, and schedules its own poweroff at its `ExpiresAt` tag. A `down` dispatch or the hourly reaper destroys it; the reaper takes any forge-perf instance other than `main` that is past `ExpiresAt` or stopped for an hour. A forgotten 12-hour tier 3 campaign costs at most $52.
 
 **Nightly to 500 GB on tier 1** once a spool budget lands on ingot `:main` (fil-forge/ingot#184, `spool_max_bytes`, a draft): one PR sets the budget and the cap, and three runs rebuild the nightly band. Evicted blobs then come back from S3, adding GETs to the NIC.
 
@@ -287,27 +283,27 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 | read-only access to fil-one/storage-qualification: a dedicated GitHub App (Contents: read, installed on that repository alone) | SSM `/forge-perf/harness-app` | the App key yearly, and when someone with access leaves |
 | denylist pattern | SSM `/forge-perf/denylist`; secret `PUBLIC_DENYLIST_REGEX` | on change |
 | `SLACK_BOT_TOKEN` | repository secret | with the Slack app |
+| Grafana Cloud access policy token (writes metrics and traces only) | SSM `/forge-perf/grafana-token` | yearly, and when someone with access leaves |
+| GitHub dispatch token (fine-grained, Actions: read and write on forge-perf alone) | EventBridge connection `forge-perf-github-dispatch` | before it expires, and when its owner leaves |
 
 **Alerts.** A boot failure usually means a new `:main` image needs a smelt change; a container restart mid-run is a bug in that service; an integrity failure is reproduced once with `run.sh --set <that set> --series calibration` before anyone blames a PR.
 
 ## 11. Later phases
 
-**Dev as deployed.** After ingot's spool cleanup lands, a 5 to 10 GB drill after each dev deploy becomes its own series: schema v2 adds `dev` to `series` and a `target`. With 2 to 7 windows per run, that series reports the median.
+**Dev as deployed** (not built). A 5 to 10 GB drill after each dev deploy becomes its own series: schema v2 adds `dev` to `series` and a `target`. With 2 to 7 windows per run, that series reports the median.
 
 **Tracing.** A 500 GB run makes about 340,000 requests, so a traced run samples a share of them at ingot, and the services it calls follow its decision. Tracing is on by default: each box's settings file sets `TRACE_RATIO=0.1`, so every run traces 10% of its requests, about 0.45 GB of spans for a tier 2 trigger run and 1.1 GB for a nightly. `--trace` on `run.sh` or `campaign.sh` sets another share for a run, and `--trace 0` runs it untraced; paired runs with and without `--trace 0` measure tracing's cost against the noise band. A local run stays untraced. A traced run starts a collector, `forge-perf-otel`, on `forge-network` before the stack boots. The collector is otelcol-contrib pinned in `config/images.lock`, outside smelt's services, so netem never delays it. It stamps the run ID on every span, which spares piri a change to read `OTEL_RESOURCE_ATTRIBUTES`, and writes OTLP JSON into the run directory. After the drill the run scrapes the collector's counters and stops it, so the traces reach the private raw tarball through the collect step before the wipe (docs/runner.md, "Tracing"). The services receive the ratio and run ID through smelt PR 6, which also gives piri a trace endpoint. Turning tracing on is an instrument change. After the record, every run sends its results, and a traced run its spans scrubbed to an allowlist of attributes, to the team's Grafana Cloud stack; the step is best effort and never changes the record (docs/runner.md, "Grafana").
 
-**Manual runs and bisect.** `run.sh --set <file>` ships with the first version; experiments (§4) queue one pull request's image against main's set. Some old digests will not boot against current smelt.
+**Manual runs and bisect.** `run.sh --set <file>` runs a committed set as a manual run, series `calibration` unless `--series` names another; experiments (§4) queue one pull request's image against main's set. Some old digests will not boot against current smelt.
 
 ## 12. Open questions
 
 | Question | Behavior until decided |
 |---|---|
-| Should only runs with 20 or more steady windows light a gate? A 100 GB run at gate 1 has about 6. | any valid run lights a gate |
+| Should only runs with 20 or more steady windows light a gate? A 2,000 GB tier 3 trigger run at gate 3 has about 16. | any valid run lights a gate |
 | Can an `availability_warning` run light a gate? | no |
-| Can a tier 1 run above the NIC baseline light gate 1? | yes, flagged |
 | Keep the stack after an integrity failure? | wiped |
 | Should guppy and indexing-service, off the drill path, trigger runs? | they trigger runs |
 | A weekly reference run of `cal-1` to separate host drift from code? | none |
-| Log scale for the thermometer? At 0.04 GB/s a linear tube is 1% full. | linear |
-| Does ingot's catalog shipping, with sprue's indexer cleared, back up over 500 GB? | measured on the first such run |
-| **[unverified]** Graviton5 support in the pinned kernel; ENA counter names; the instance-store model string; m9gd in us-east-2a; `172.31.200.0/24` free; `--if-none-match` in the pinned AWS CLI; the AMI's time source; whether the Action's pushes count as activity for GitHub's 60-day rule | first boot and calibration |
+| Does ingot's catalog shipping, with sprue's indexer cleared, back up over 500 GB? | not yet measured, though valid runs of 1,200 GB and more have completed since 2026-09-29 |
+| **[unverified]** Whether the Action's pushes count as activity for GitHub's 60-day rule | the page shows when it was last published (§7) |
