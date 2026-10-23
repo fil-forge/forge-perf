@@ -2,7 +2,8 @@
 #
 # Placeholder credentials and every lookup overridden, so it needs no AWS
 # account: `tofu test` in this directory. Each run plans the module alone with
-# the root's values; root.tftest.hcl checks the root's own wiring.
+# the root's values, except `instance_type`, pinned to tier 1's type so a resize
+# leaves these checks alone; root.tftest.hcl checks the root's own wiring.
 
 provider "aws" {
   region                      = "us-east-2"
