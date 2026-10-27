@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -351,14 +350,27 @@ func writeTemp(t *testing.T, s string) string {
 }
 
 // pinnedMinioGo is the minio-go version go.mod requires, which the build info
-// and so the summary must report.
+// and so the summary must report. It reads only require lines and require
+// blocks, as check-minio-pin.sh does.
 func pinnedMinioGo(t *testing.T) string {
 	t.Helper()
-	m := regexp.MustCompile(`(?m)^\s*(?:require\s+)?github\.com/minio/minio-go/v7 (v\S+)`).FindSubmatch(must(os.ReadFile("../../go.mod")))
-	if m == nil {
-		t.Fatal("go.mod does not require github.com/minio/minio-go/v7")
+	const module = "github.com/minio/minio-go/v7"
+	inRequire := false
+	for _, line := range strings.Split(string(must(os.ReadFile("../../go.mod"))), "\n") {
+		f := strings.Fields(line)
+		switch {
+		case len(f) == 2 && f[0] == "require" && f[1] == "(":
+			inRequire = true
+		case inRequire && len(f) > 0 && f[0] == ")":
+			inRequire = false
+		case len(f) >= 3 && f[0] == "require" && f[1] == module:
+			return f[2]
+		case inRequire && len(f) >= 2 && f[0] == module:
+			return f[1]
+		}
 	}
-	return string(m[1])
+	t.Fatalf("go.mod does not require %s", module)
+	return ""
 }
 
 func must[T any](v T, err error) T {
