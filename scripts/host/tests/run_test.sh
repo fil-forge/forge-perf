@@ -870,7 +870,9 @@ zstd -dc "$D/raw.tar.zst" | tar -tf - >"$work/list"
 has "$work/list" "./run/traces/traces.jsonl"
 has "$work/list" "./run/traces/collector-metrics.txt"
 has "$work/list" "./run/traces/collector.log"
-zstd -dc "$D/raw.tar.zst" | tar -xOf - ./run/traces/collector-metrics.txt | grep -q otelcol_receiver_accepted_spans ||
+# grep reads to the end: exiting at the match can end tar with SIGPIPE, and
+# under pipefail that fails the check.
+zstd -dc "$D/raw.tar.zst" | tar -xOf - ./run/traces/collector-metrics.txt | grep otelcol_receiver_accepted_spans >/dev/null ||
   fail "no collector counters"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
 python3 "$repo/scripts/host/schemacheck.py" "$repo/schema/run-record.v1.json" "$D/record.json" >/dev/null || fail "schema"
@@ -881,7 +883,7 @@ setup
 run 1 OTEL_DIES=1 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 1
 [ "$(runner '.reasons | join(",")')" = stack_boot_failed ] || fail "reasons $(runner .reasons)"
 grep -q "the trace collector stopped while the stack booted" "$work/out" || fail "no collector message"
-zstd -dc "$D/raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/collector.log || fail "no collector log in the tarball"
+zstd -dc "$D/raw.tar.zst" | tar -tf - | grep -xF ./run/traces/collector.log >/dev/null || fail "no collector log in the tarball"
 [ ! -e "$D/otel" ] || fail "the collector was not removed"
 echo "ok: a collector that dies during the boot stops the run as stack_boot_failed"
 

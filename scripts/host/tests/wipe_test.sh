@@ -521,7 +521,9 @@ recover_ok "a traced run"
   fail "the collector was not stopped first: $(grep 'stop -t' "$D/log")"
 zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -xOf - ./run/traces/collector.log >"$work/log"
 has "$work/log" "collector log c5"
-zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/traces.jsonl ||
+# grep reads to the end: exiting at the match can end tar with SIGPIPE, and
+# under pipefail that fails the check.
+zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -tf - | grep -xF ./run/traces/traces.jsonl >/dev/null ||
   fail "traces.jsonl not in the tarball"
 count "$D/containers" 0
 echo "ok: recovery stops a traced run's collector first, keeps its log and traces, and wipes it"
