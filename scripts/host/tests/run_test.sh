@@ -93,7 +93,13 @@ case "$*" in
   # ingot's catalog report. CATALOG_FAIL: an image without the command.
   "exec cid-ingot /usr/bin/ingot catalog usage")
     [ -z "${CATALOG_FAIL:-}" ] || { echo "unknown command \"catalog\" for \"ingot\"" >&2; exit 2; }
-    cat "$FIXTURES/valid/catalog/usage.json" ;;
+    # CATALOG_DRIFT: segments still shipping, so no two reports agree.
+    if [ -n "${CATALOG_DRIFT:-}" ]; then
+      echo x >>"$D/drift"
+      jq --argjson n "$(wc -l <"$D/drift")" '.total.forge_bytes += $n' "$FIXTURES/valid/catalog/usage.json"
+    else
+      cat "$FIXTURES/valid/catalog/usage.json"
+    fi ;;
   "logs --timestamps"*)
     printf '%s\n' "2026-10-01T12:00:00Z started" "2026-10-01T12:00:01Z access_key_id: AKIAFAKEKEYID"
     [ -z "${LEAK:-}" ] || echo "2026-10-01T12:00:02Z s3 {fake-secret-value}" ;;
@@ -840,6 +846,14 @@ echo "ok: a local netem tolerance reaches netem.sh"
   fail "an ingot without the catalog command: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
 echo "ok: an ingot without the catalog command leaves the record's catalog null and the run valid"
 
+setup
+run 0 CATALOG_DRIFT=1 -- --set "$work/set.json" --workers 16
+[ "$(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 9 ] ||
+  fail "the catalog step made $(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log") calls, want 9"
+[ "$(jq -c .catalog "$D/record.json")" = null ] && [ "$(outcome)" = "valid " ] ||
+  fail "reports that never agree: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
+echo "ok: catalog reports that never agree leave the record's catalog null after nine calls"
+
 # A traced run: the collector starts on forge-network after the network and
 # before the stack, smelt sees the endpoint, ratio and run ID, and after the
 # drill its counters, file and log land in the raw tarball before the wipe.
@@ -1055,7 +1069,9 @@ has "$D/aws.log" "--name /forge-perf/grafana-token"
 lacks "$work/out" "$token"
 ! grep -rqF "$token" "$work/box/state" "$work/box/nvme" "$work/box/outbox" "$D/record.json" "$D/docker.log" \
   "$D/aws.log" "$D/grafana-run.args" || fail "the token reached a file"
-! zstd -dc "$D/raw.tar.zst" | tar -xOf - | grep -qF "$token" || fail "the token reached the raw tarball"
+# grep reads to the end: exiting at a match can end tar with SIGPIPE, which
+# under pipefail would turn a leak into a pass.
+! zstd -dc "$D/raw.tar.zst" | tar -xOf - | grep -F "$token" >/dev/null || fail "the token reached the raw tarball"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
 echo "ok: a traced run sends scrubbed spans and its results between the record and the upload, and the token stays off disk"
 

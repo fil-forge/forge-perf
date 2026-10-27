@@ -891,24 +891,31 @@ step_drill() {
 }
 
 # step_catalog: ingot's catalog figures for the record (docs/record.md,
-# "catalog"): `ingot catalog usage` in the ingot container, every 15 seconds
-# until two reports agree on the bytes shipped, so the drill's last segments
-# have shipped, for at most two minutes. An image without the command leaves
-# no report, and the record's catalog null; the run goes on either way.
+# "catalog"): `ingot catalog usage` in the ingot container, 15 seconds apart,
+# until two reports agree on every total, so the drill's last segments have
+# shipped; nine calls at most. Only an agreed report becomes usage.json. A
+# failed call, an image without the command, or reports that never agree
+# leave none, and the record's catalog null; the run goes on either way. Each
+# call has its own timeout rather than `limited`'s, whose overrun would turn a
+# later failure into step_timeout.
 step_catalog() {
-  local c report prev="" i
+  local c report total prev="" i
   step "catalog"
   mkdir -p "$RUN/catalog"
   c="$(cd "$SMELT" && docker compose ps -q ingot)" && [ -n "$c" ] ||
     { echo "run.sh: no ingot container; the record has no catalog" >&2; return 0; }
   for i in 1 2 3 4 5 6 7 8 9; do
-    report="$(docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
+    report="$(timeout --kill-after=10 120 docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
       { echo "run.sh: ingot catalog usage failed; the record has no catalog" >&2; return 0; }
-    printf '%s\n' "$report" >"$RUN/catalog/usage.json"
-    [ -z "$prev" ] || [ "$(jq .total.forge_bytes <<<"$report")" != "$(jq .total.forge_bytes <<<"$prev")" ] || return 0
-    prev="$report"
+    total="$(jq -ce .total <<<"$report" 2>/dev/null)" || total=""
+    if [ -n "$total" ] && [ "$total" = "$prev" ]; then
+      printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+      return 0
+    fi
+    prev="$total"
     [ "$i" = 9 ] || sleep "${FORGE_PERF_CATALOG_POLL:-15}"
   done
+  echo "run.sh: ingot's catalog reports never agreed; the record has no catalog" >&2
 }
 
 step_check() {
