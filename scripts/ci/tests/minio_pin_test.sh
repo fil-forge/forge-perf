@@ -45,5 +45,8 @@ pin 1 "$work/ours" "$work/replaced"
 grep -q "compare by hand" "$work/out" || fail "replace message"
 echo "ok: the same pin passes; a different, missing or replaced one fails"
 
-pin 0 "$(cd "$(dirname "$0")/../../.." && pwd -P)/go.mod" "$work/piri"
-echo "ok: this repository's go.mod pins v7.3.0"
+# Against itself: this repository's go.mod requires minio-go plainly, at a
+# version the check can read, whatever that version is.
+repo_mod="$(cd "$(dirname "$0")/../../.." && pwd -P)/go.mod"
+pin 0 "$repo_mod" "$repo_mod"
+echo "ok: this repository's go.mod requires minio-go plainly"

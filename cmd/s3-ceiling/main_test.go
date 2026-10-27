@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -290,7 +291,7 @@ func TestRunAgainstFakeS3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Objects == 0 || sum.Errors != 0 || sum.MinioGo != "v7.3.0" || len(sum.Phases) != 2 {
+	if sum.Objects == 0 || sum.Errors != 0 || sum.MinioGo != pinnedMinioGo(t) || len(sum.Phases) != 2 {
 		t.Errorf("summary = %+v", sum)
 	}
 	if sum.Phases[0].EndS != 3 || sum.Phases[1].StartS != 3 || sum.Phases[1].EndS != 5 {
@@ -347,6 +348,17 @@ func writeTemp(t *testing.T, s string) string {
 	name := filepath.Join(t.TempDir(), "log")
 	os.WriteFile(name, []byte(s), 0o644)
 	return name
+}
+
+// pinnedMinioGo is the minio-go version go.mod requires, which the build info
+// and so the summary must report.
+func pinnedMinioGo(t *testing.T) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^\s*(?:require\s+)?github\.com/minio/minio-go/v7 (v\S+)`).FindSubmatch(must(os.ReadFile("../../go.mod")))
+	if m == nil {
+		t.Fatal("go.mod does not require github.com/minio/minio-go/v7")
+	}
+	return string(m[1])
 }
 
 func must[T any](v T, err error) T {
