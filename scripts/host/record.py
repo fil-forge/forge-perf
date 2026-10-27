@@ -71,6 +71,7 @@ TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 # spans_by_service names each service that traces in the stack; any other
 # service.name, or none, counts as `other`, so no span text reaches the record.
 TRACE_SERVICES = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["spans_by_service"]["required"])
+CATALOG_FIELDS = list(SCHEMA["properties"]["catalog"]["oneOf"][1]["required"])
 # The collector's counters of spans it refused, failed to send or dropped,
 # with or without the _total suffix its Prometheus exporter adds.
 DROPPED_SPANS = re.compile(r"^otelcol_(receiver_refused|receiver_failed|processor_refused|processor_dropped"
@@ -335,6 +336,27 @@ def trace_block(runner, traces_dir):
     return block, flags
 
 
+def catalog_block(path):
+    """record `catalog` from the catalog step's report (`ingot catalog usage`): its
+    totals and how many buckets it covered, or None when there is no report or it
+    cannot be read. The report's per-bucket entries are counted, never copied."""
+    if path is None:
+        return None
+    try:
+        report = read_json(path)
+        if not isinstance(report["buckets"], list):
+            return None
+        block = {"buckets": len(report["buckets"])}
+        for field in (f for f in CATALOG_FIELDS if f != "buckets"):
+            value = report["total"][field]
+            if type(value) is not int or not 0 <= value < 2 ** 53:
+                return None
+            block[field] = value
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return block
+
+
 # --- the record ----------------------------------------------------------------
 
 def base_record(runner, env):
@@ -384,6 +406,7 @@ def base_record(runner, env):
                         "role": i["role"], "services": sorted(i["services"])} for i in images]},
         "instrument": {"fingerprint": "", "box_fingerprint": ""},
         "trace": None,
+        "catalog": None,
     }
 
 
@@ -438,10 +461,11 @@ def minimal(runner, env, traces_dir=None):
     return finish(record, reasons, set(runner["restarted_services"]), runner_flags(runner) | trace_flags)
 
 
-def build(runner, run_dir, latency, env, traces_dir=None):
+def build(runner, run_dir, latency, env, traces_dir=None, catalog=None):
     record = base_record(runner, env)
     reasons, restarted, flags = set(runner["reasons"]), set(runner["restarted_services"]), runner_flags(runner)
     record["trace"], trace_flags = trace_block(runner, traces_dir)
+    record["catalog"] = catalog_block(catalog)
     flags |= trace_flags
     record["latency"] = latency_block(latency, env)
     known = services()
@@ -629,6 +653,7 @@ def main(argv):
     parser.add_argument("--latency")
     parser.add_argument("--latency-env", default=str(LATENCY_ENV))
     parser.add_argument("--traces", help="the run's traces/ directory, read when runner.json has a trace")
+    parser.add_argument("--catalog", help="the catalog step's report, read when it exists")
     parser.add_argument("--denylist", required=True)
     parser.add_argument("--forbid", help="file of literal strings, one per line, that must not appear")
     parser.add_argument("--out", required=True)
@@ -649,7 +674,7 @@ def main(argv):
     if args.command == "build":
         try:
             latency = read_json(args.latency) if args.latency and Path(args.latency).exists() else None
-            record = build(runner, args.run_dir, latency, env, args.traces)
+            record = build(runner, args.run_dir, latency, env, args.traces, args.catalog)
             check_public(record, denylist, forbidden)
             write(record, args.out)
             return 0

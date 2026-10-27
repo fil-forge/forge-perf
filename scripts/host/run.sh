@@ -22,7 +22,7 @@
 # the record's experiment block, pins the branch image under its pull request
 # tag, and leaves pending.json and last-started.json alone (docs/runner.md,
 # "Experiments"). The steps are preflight, checkout, images,
-# boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
+# boot, setup, latency, drill, catalog and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
 #
@@ -46,7 +46,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=runlib.sh
 . "$here/runlib.sh"
 
-STEPS="preflight checkout images boot setup latency drill check"
+STEPS="preflight checkout images boot setup latency drill catalog check"
 from_pending="" pending_file=""
 refuse() {
   echo "run.sh: $*" >&2
@@ -282,6 +282,8 @@ fi
 # the drill's profile carries ingot's.
 SMELT_ENV=(env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE -u AWS_ENDPOINT_URL
   -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN)
+# smelt passes it to ingot (config/smelt.conf).
+export INGOT_CATALOG_PLANE_RETAIN="$CATALOG_RETAIN"
 
 # --- runner.json, current.json and failures -------------------------------------
 
@@ -888,6 +890,27 @@ step_drill() {
   esac
 }
 
+# step_catalog: ingot's catalog figures for the record (docs/record.md,
+# "catalog"): `ingot catalog usage` in the ingot container, every 15 seconds
+# until two reports agree on the bytes shipped, so the drill's last segments
+# have shipped, for at most two minutes. An image without the command leaves
+# no report, and the record's catalog null; the run goes on either way.
+step_catalog() {
+  local c report prev="" i
+  step "catalog"
+  mkdir -p "$RUN/catalog"
+  c="$(cd "$SMELT" && docker compose ps -q ingot)" && [ -n "$c" ] ||
+    { echo "run.sh: no ingot container; the record has no catalog" >&2; return 0; }
+  for i in 1 2 3 4 5 6 7 8 9; do
+    report="$(docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
+      { echo "run.sh: ingot catalog usage failed; the record has no catalog" >&2; return 0; }
+    printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+    [ -z "$prev" ] || [ "$(jq .total.forge_bytes <<<"$report")" != "$(jq .total.forge_bytes <<<"$prev")" ] || return 0
+    prev="$report"
+    [ "$i" = 9 ] || sleep "${FORGE_PERF_CATALOG_POLL:-15}"
+  done
+}
+
 step_check() {
   local status=0 modified
   step "check"
@@ -942,7 +965,7 @@ close_out() {
   rj --arg t "$(now)" '.time.run_finished_at = $t'
   smelt_run="$(find "$SMELT/generated/perf-runs/drill" -mindepth 1 -maxdepth 1 -type d -name "*-$run_id" 2>/dev/null)"
   set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --traces "$RUN/traces" \
-    --denylist "$DENYLIST" --out "$record"
+    --catalog "$RUN/catalog/usage.json" --denylist "$DENYLIST" --out "$record"
   [ -z "$smelt_run" ] || [ "$(wc -l <<<"$smelt_run")" -ne 1 ] || set -- "$@" --run-dir "$smelt_run"
   [ ! -s "$forbid" ] || set -- "$@" --forbid "$forbid"
   status=0

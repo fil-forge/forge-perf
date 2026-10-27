@@ -20,6 +20,8 @@ export D="$work/d" FIXTURES="$host/fixtures" TESTS="$host/tests" REAL_CURL
 mkdir -p "$work/bin" "$D"
 unset INVOCATION_ID FORGE_PERF_HOST_OPS FORGE_PERF_LOCK_HELD AWS_ENDPOINT_URL AWS_PROFILE
 export PYTHONDONTWRITEBYTECODE=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# The catalog step polls ingot without pausing; the stub answers the same report.
+export FORGE_PERF_CATALOG_POLL=0
 # No background gc or maintenance in the fixture repositories, which setup
 # fetches into; a detached gc still writing when the trap runs makes rm fail.
 export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false \
@@ -88,6 +90,10 @@ case "$*" in
     if [ -n "${NANO_WRONG:-}" ]; then echo 0; else cat "$D/nanocpus-${!#}"; fi ;;
   "inspect -f"*) echo 172.30.0.5 ;;
   "inspect --format"*) echo "/smelt-${!#}-1" ;;
+  # ingot's catalog report. CATALOG_FAIL: an image without the command.
+  "exec cid-ingot /usr/bin/ingot catalog usage")
+    [ -z "${CATALOG_FAIL:-}" ] || { echo "unknown command \"catalog\" for \"ingot\"" >&2; exit 2; }
+    cat "$FIXTURES/valid/catalog/usage.json" ;;
   "logs --timestamps"*)
     printf '%s\n' "2026-10-01T12:00:00Z started" "2026-10-01T12:00:01Z access_key_id: AKIAFAKEKEYID"
     [ -z "${LEAK:-}" ] || echo "2026-10-01T12:00:02Z s3 {fake-secret-value}" ;;
@@ -137,7 +143,7 @@ cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
-  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
+  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|INGOT_CATALOG_PLANE_RETAIN|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
     sort >"$D/up.env"
   [ ! -e "$D/otel" ] || touch "$D/otel-at-up"
   [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
@@ -379,6 +385,7 @@ want=$(($(sed 's/#.*//' "$repo/config/images.tracked" "$repo/config/images.lock"
 [ "$(grep -c "^docker pull --quiet" "$D/docker.log")" = "$want" ] || fail "expected $want pulls"
 grep -qx "PIRI_INDEXER=off" "$D/up.env" && grep -qx "SPRUE_INDEXER_DID=" "$D/up.env" || fail "indexing not off"
 grep -qx "SMELT_PIRI_S3_ACCESS_KEY_ID=AKIAFAKEKEYID" "$D/up.env" || fail "piri key not passed to compose"
+grep -qx "INGOT_CATALOG_PLANE_RETAIN=1000000" "$D/up.env" || fail "ingot's catalog retention not passed to compose"
 grep -qx "INGOT_IMAGE=ghcr.io/fil-forge/ingot@$(jq -r '.images["ghcr.io/fil-forge/ingot:main"]' "$work/set.json")" \
   "$D/up.env" || fail "INGOT_IMAGE not pinned"
 grep -q '^AWS_REGION=' "$D/up.env" && fail "smelt saw the host's AWS_REGION"
@@ -416,6 +423,11 @@ jq -e '.drill.settings.workers == 16 and .drill.results.sustained_windows == 6 a
   .latency.after.ok and .network.allowance_exceeded.bw_in == 1 and .time.drill_finished_at != null' "$rec" >/dev/null ||
   fail "record fields $(jq -c '[.drill.results, .latency.before, .network]' "$rec")"
 [ "$(tr '\n' ' ' <"$D/netem.log")" = "netem apply netem verify pre netem verify post " ] || fail "netem calls"
+jq -e --slurpfile u "$FIXTURES/valid/catalog/usage.json" \
+  '.catalog == ({buckets: ($u[0].buckets | length)} + $u[0].total)' "$rec" >/dev/null ||
+  fail "record catalog $(jq -c .catalog "$rec")"
+[ "$(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 2 ] ||
+  fail "the catalog step did not stop at two agreeing reports"
 id="$(runner .run_id)"
 [ "$(tr '\n' ' ' <"$D/drill.env")" = "CONFIG_NOTE=forge-perf/$id DISK_FACTOR=1.25 DURATION=1h LABEL=$id \
 STOP_INGEST_AT=100GB WORKERS=16 " ] || fail "drill env $(cat "$D/drill.env")"
@@ -821,9 +833,12 @@ grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "
 echo "ok: a stop mid-drill interrupts the drill, records drill_interrupted and wipes"
 
 setup
-run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 -- --set "$work/set.json" --workers 16
+run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 CATALOG_FAIL=1 -- --set "$work/set.json" --workers 16
 [ "$(cat "$D/netem.env")" = "1 40" ] || fail "netem.sh saw $(cat "$D/netem.env")"
 echo "ok: a local netem tolerance reaches netem.sh"
+[ "$(jq -c .catalog "$D/record.json")" = null ] && [ "$(outcome)" = "valid " ] ||
+  fail "an ingot without the catalog command: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
+echo "ok: an ingot without the catalog command leaves the record's catalog null and the run valid"
 
 # A traced run: the collector starts on forge-network after the network and
 # before the stack, smelt sees the endpoint, ratio and run ID, and after the

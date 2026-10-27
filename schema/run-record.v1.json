@@ -6,7 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_id", "series", "pairing_id", "experiment", "trigger", "box", "time", "outcome",
-               "drill", "latency", "network", "provenance", "instrument", "trace"],
+               "drill", "latency", "network", "provenance", "instrument", "trace", "catalog"],
   "properties": {
     "schema": {"const": "forge-perf.run/v1"},
     "run_id": {"$ref": "#/$defs/run_id"},
@@ -302,6 +302,21 @@
         "dropped_spans": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
         "file_bytes": {"$ref": "#/$defs/count"},
         "file_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+      }
+    }]},
+    "catalog": {"oneOf": [{"type": "null"}, {
+      "type": "object", "additionalProperties": false,
+      "required": ["buckets", "forge_bytes", "dead_on_arrival_bytes", "unmeasured_bytes", "local_bytes",
+                   "live_bytes", "live_blocks", "missing_blocks"],
+      "properties": {
+        "buckets": {"$ref": "#/$defs/count"},
+        "forge_bytes": {"$ref": "#/$defs/count"},
+        "dead_on_arrival_bytes": {"$ref": "#/$defs/count"},
+        "unmeasured_bytes": {"$ref": "#/$defs/count"},
+        "local_bytes": {"$ref": "#/$defs/count"},
+        "live_bytes": {"$ref": "#/$defs/count"},
+        "live_blocks": {"$ref": "#/$defs/count"},
+        "missing_blocks": {"$ref": "#/$defs/count"}
       }
     }]}
   },
