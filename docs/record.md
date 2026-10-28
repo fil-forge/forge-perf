@@ -152,7 +152,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `catalog.unmeasured_bytes` | `total.unmeasured_bytes`: shipped segments with no dead-on-arrival figure |
 | `catalog.local_bytes` | `total.local_bytes`: the catalog segment files on ingot's disk, shipped or not |
 | `catalog.live_bytes`, `catalog.live_blocks` | `total.live_bytes` and `total.live_blocks`: the CAR frames of the distinct blocks each bucket's root reaches, walked over the local segments |
-| `catalog.missing_blocks` | `total.missing_blocks`: catalog blocks a root reaches that no local segment holds. Above 0, `live_bytes` is a lower bound: a segment retired, which `CATALOG_RETAIN` in `config/smelt.conf` is set to prevent, or a smelt without the variable ignored it |
+| `catalog.missing_blocks` | `total.missing_blocks`: catalog blocks a root reaches that the walk could not read, from ingot's disk or, with the drill's key, from Forge. Above 0, `live_bytes` is a lower bound: the catalog step found no drill key in `DRILL_AWS_PROFILE` (`config/smelt.conf`), or the key could not read a bucket |
 
 The pass summary `rtt`, from one pass of `latency.json`:
 

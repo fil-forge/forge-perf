@@ -109,7 +109,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
-| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; the stack keeps every segment on disk (`CATALOG_RETAIN`), so the walk of each bucket's live catalog sees them all | none; the record's `catalog` is null |
+| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; ingot keeps its default retention, and the walk of each bucket's live catalog reads the segments it retired from Forge with the drill's key | none; the record's `catalog` is null |
 | Post-check | latency, restarts, addresses, image IDs | `invalid` |
 | Record, upload, wipe | build and check the record; upload raw, then record; wipe (§6) | minimal `no_data` record |
 

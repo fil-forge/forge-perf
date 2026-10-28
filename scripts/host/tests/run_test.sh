@@ -90,15 +90,22 @@ case "$*" in
     if [ -n "${NANO_WRONG:-}" ]; then echo 0; else cat "$D/nanocpus-${!#}"; fi ;;
   "inspect -f"*) echo 172.30.0.5 ;;
   "inspect --format"*) echo "/smelt-${!#}-1" ;;
-  # ingot's catalog report. CATALOG_FAIL: an image without the command.
-  "exec cid-ingot /usr/bin/ingot catalog usage")
+  # ingot's catalog report. CATALOG_FAIL: an image without the command. A
+  # call without the drill's key misses the retired blocks; with it, the key
+  # arrives in the environment. CATALOG_WALK_FAIL: the call with the key fails.
+  "exec cid-ingot /usr/bin/ingot catalog usage" | \
+    "exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY cid-ingot /usr/bin/ingot catalog usage")
     [ -z "${CATALOG_FAIL:-}" ] || { echo "unknown command \"catalog\" for \"ingot\"" >&2; exit 2; }
+    if [ "$2" = -e ]; then
+      echo "${AWS_ACCESS_KEY_ID-unset} ${AWS_SECRET_ACCESS_KEY-unset}" >>"$D/catalog-key"
+      [ -z "${CATALOG_WALK_FAIL:-}" ] || { echo "hilt is down" >&2; exit 2; }
+      cat "$FIXTURES/valid/catalog/usage.json"
     # CATALOG_DRIFT: segments still shipping, so no two reports agree.
-    if [ -n "${CATALOG_DRIFT:-}" ]; then
+    elif [ -n "${CATALOG_DRIFT:-}" ]; then
       echo x >>"$D/drift"
       jq --argjson n "$(wc -l <"$D/drift")" '.total.forge_bytes += $n' "$FIXTURES/valid/catalog/usage.json"
     else
-      cat "$FIXTURES/valid/catalog/usage.json"
+      jq '.total.missing_blocks += 5' "$FIXTURES/valid/catalog/usage.json"
     fi ;;
   "logs --timestamps"*)
     printf '%s\n' "2026-10-01T12:00:00Z started" "2026-10-01T12:00:01Z access_key_id: AKIAFAKEKEYID"
@@ -111,6 +118,9 @@ cat >"$work/bin/aws" <<'STUB'
 echo "aws $*" >>"$D/aws.log"
 case " $* " in
   *" list-objects-v2 "*) [ ! -e "$D/s3-down" ] || exit 255; if [ -e "$D/objects" ]; then echo 1; else echo 0; fi ;;
+  # The drill's key, which smelt's s3-key.sh wrote. NO_DRILL_KEY: it never did.
+  *" configure get --profile smelt-drill aws_access_key_id ") [ -z "${NO_DRILL_KEY:-}" ] || exit 1; echo AKIADRILLKEYID ;;
+  *" configure get --profile smelt-drill aws_secret_access_key ") [ -z "${NO_DRILL_KEY:-}" ] || exit 1; echo drill-secret-value ;;
   *" ssm get-parameter "*)
     [ ! -e "$D/ssm-down" ] || exit 255
     case "$*" in
@@ -149,7 +159,7 @@ cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
 if [ "${!#}" = up ]; then
-  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|INGOT_CATALOG_PLANE_RETAIN|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
+  env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
     sort >"$D/up.env"
   [ ! -e "$D/otel" ] || touch "$D/otel-at-up"
   [ "${UP_EXIT:-0}" != 0 ] || echo cid-ingot >"$D/containers"
@@ -391,7 +401,6 @@ want=$(($(sed 's/#.*//' "$repo/config/images.tracked" "$repo/config/images.lock"
 [ "$(grep -c "^docker pull --quiet" "$D/docker.log")" = "$want" ] || fail "expected $want pulls"
 grep -qx "PIRI_INDEXER=off" "$D/up.env" && grep -qx "SPRUE_INDEXER_DID=" "$D/up.env" || fail "indexing not off"
 grep -qx "SMELT_PIRI_S3_ACCESS_KEY_ID=AKIAFAKEKEYID" "$D/up.env" || fail "piri key not passed to compose"
-grep -qx "INGOT_CATALOG_PLANE_RETAIN=1000000" "$D/up.env" || fail "ingot's catalog retention not passed to compose"
 grep -qx "INGOT_IMAGE=ghcr.io/fil-forge/ingot@$(jq -r '.images["ghcr.io/fil-forge/ingot:main"]' "$work/set.json")" \
   "$D/up.env" || fail "INGOT_IMAGE not pinned"
 grep -q '^AWS_REGION=' "$D/up.env" && fail "smelt saw the host's AWS_REGION"
@@ -432,8 +441,11 @@ jq -e '.drill.settings.workers == 16 and .drill.results.sustained_windows == 6 a
 jq -e --slurpfile u "$FIXTURES/valid/catalog/usage.json" \
   '.catalog == ({buckets: ($u[0].buckets | length)} + $u[0].total)' "$rec" >/dev/null ||
   fail "record catalog $(jq -c .catalog "$rec")"
-[ "$(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 2 ] ||
+[ "$(grep -cx 'docker exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 2 ] ||
   fail "the catalog step did not stop at two agreeing reports"
+[ "$(cat "$D/catalog-key")" = "AKIADRILLKEYID drill-secret-value" ] ||
+  fail "the catalog walks with the drill's key: $(cat "$D/catalog-key"), want one, with the drill's pair"
+lacks "$D/docker.log" drill-secret-value
 id="$(runner .run_id)"
 [ "$(tr '\n' ' ' <"$D/drill.env")" = "CONFIG_NOTE=forge-perf/$id DISK_FACTOR=1.25 DURATION=1h LABEL=$id \
 STOP_INGEST_AT=100GB WORKERS=16 " ] || fail "drill env $(cat "$D/drill.env")"
@@ -846,10 +858,21 @@ echo "ok: a local netem tolerance reaches netem.sh"
   fail "an ingot without the catalog command: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
 echo "ok: an ingot without the catalog command leaves the record's catalog null and the run valid"
 
+for c in NO_DRILL_KEY CATALOG_WALK_FAIL; do
+  setup
+  run 0 "$c=1" -- --set "$work/set.json" --workers 16
+  jq -e --slurpfile u "$FIXTURES/valid/catalog/usage.json" '.catalog.missing_blocks == $u[0].total.missing_blocks + 5' \
+    "$D/record.json" >/dev/null && [ "$(outcome)" = "valid " ] ||
+    fail "$c: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome); want the keyless walk's"
+done
+[ ! -e "$D/catalog-key" ] || [ "$(cat "$D/catalog-key")" = "AKIADRILLKEYID drill-secret-value" ] ||
+  fail "a failed walk with the key retried: $(cat "$D/catalog-key")"
+echo "ok: without the drill's key, or when the walk with it fails, the record keeps the walk of ingot's disk"
+
 setup
 run 0 CATALOG_DRIFT=1 -- --set "$work/set.json" --workers 16
-[ "$(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 9 ] ||
-  fail "the catalog step made $(grep -c 'exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log") calls, want 9"
+[ "$(grep -c 'cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 9 ] && [ ! -e "$D/catalog-key" ] ||
+  fail "the catalog step made $(grep -c 'cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log") calls, want 9 without the key"
 [ "$(jq -c .catalog "$D/record.json")" = null ] && [ "$(outcome)" = "valid " ] ||
   fail "reports that never agree: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
 echo "ok: catalog reports that never agree leave the record's catalog null after nine calls"

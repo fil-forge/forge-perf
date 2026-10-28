@@ -282,8 +282,6 @@ fi
 # the drill's profile carries ingot's.
 SMELT_ENV=(env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_PROFILE -u AWS_ENDPOINT_URL
   -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN)
-# smelt passes it to ingot (config/smelt.conf).
-export INGOT_CATALOG_PLANE_RETAIN="$CATALOG_RETAIN"
 
 # --- runner.json, current.json and failures -------------------------------------
 
@@ -893,13 +891,18 @@ step_drill() {
 # step_catalog: ingot's catalog figures for the record (docs/record.md,
 # "catalog"): `ingot catalog usage` in the ingot container, 15 seconds apart,
 # until two reports agree on every total, so the drill's last segments have
-# shipped; nine calls at most. Only an agreed report becomes usage.json. A
-# failed call, an image without the command, or reports that never agree
-# leave none, and the record's catalog null; the run goes on either way. Each
-# call has its own timeout rather than `limited`'s, whose overrun would turn a
-# later failure into step_timeout.
+# shipped; nine calls at most. These calls carry no key, so they walk ingot's
+# disk alone and are quick. Then one call with the drill's key walks the
+# segments ingot retired too, from Forge, and its report becomes usage.json;
+# docker exec takes the pair from this shell's environment, so it never
+# reaches a command line. Without the key, or should that call fail, the
+# agreed report is kept, its missing_blocks marking live_bytes a lower bound.
+# A failed call before then, an image without the command, or reports that
+# never agree leave no report, and the record's catalog null; the run goes on
+# either way. Each call has its own timeout rather than `limited`'s, whose
+# overrun would turn a later failure into step_timeout.
 step_catalog() {
-  local c report total prev="" i
+  local c report total prev="" i id secret
   step "catalog"
   mkdir -p "$RUN/catalog"
   c="$(cd "$SMELT" && docker compose ps -q ingot)" && [ -n "$c" ] ||
@@ -908,14 +911,22 @@ step_catalog() {
     report="$(timeout --kill-after=10 120 docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
       { echo "run.sh: ingot catalog usage failed; the record has no catalog" >&2; return 0; }
     total="$(jq -ce .total <<<"$report" 2>/dev/null)" || total=""
-    if [ -n "$total" ] && [ "$total" = "$prev" ]; then
-      printf '%s\n' "$report" >"$RUN/catalog/usage.json"
-      return 0
-    fi
+    [ -z "$total" ] || [ "$total" != "$prev" ] || break
     prev="$total"
     [ "$i" = 9 ] || sleep "${FORGE_PERF_CATALOG_POLL:-15}"
+    report=""
   done
-  echo "run.sh: ingot's catalog reports never agreed; the record has no catalog" >&2
+  [ -n "$report" ] || { echo "run.sh: ingot's catalog reports never agreed; the record has no catalog" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+  id="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_access_key_id 2>/dev/null)" || id=""
+  secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || secret=""
+  [ -n "$id" ] && [ -n "$secret" ] ||
+    { echo "run.sh: no drill key in profile $DRILL_AWS_PROFILE; the catalog walk read ingot's disk alone" >&2; return 0; }
+  report="$(AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" timeout --kill-after=10 600 \
+    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" &&
+    jq -e .total >/dev/null 2>&1 <<<"$report" ||
+    { echo "run.sh: the catalog walk with the drill's key failed; the record keeps the walk of ingot's disk" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
 }
 
 step_check() {
