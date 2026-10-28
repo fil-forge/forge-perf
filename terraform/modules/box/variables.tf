@@ -1,5 +1,5 @@
 variable "box_name" {
-  description = "The box's ID: names its resources, its piri buckets, its results prefixes and its run IDs. `main` for the persistent box, `campaign` for the tier-3 one."
+  description = "The box's ID: names its resources, its piri buckets, its results prefixes and its run IDs. `main` for the persistent box, `campaign` for a campaign box."
   type        = string
 
   validation {
