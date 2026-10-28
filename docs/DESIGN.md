@@ -200,7 +200,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 | Group | Contents |
 |---|---|
 | identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`, `experiment`), `pairing_id`, for an experiment's run its request, service, pull request, commit and role (`main` or `branch`), trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
-| `box`, `outcome` | box facts; class, reasons, flags, drill exit code and failure codes |
+| `box`, `outcome` | box facts; class, reasons, flags, drill exit code, the step that stopped the run and failure codes |
 | `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore p5, median and per-window rates and restore's ranged GETs a second, grouped as `cache_served` and served from ingot's spool |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |

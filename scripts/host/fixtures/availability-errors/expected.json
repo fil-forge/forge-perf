@@ -65,6 +65,7 @@
    "few_windows"
   ],
   "drill_exit": 1,
+  "stopped_step": null,
   "failure_codes": [
    "availability_error"
   ]

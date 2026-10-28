@@ -136,6 +136,10 @@ STUB
 cat >"$work/bin/make" <<'STUB'
 #!/usr/bin/env bash
 echo "make $*" >>"$D/make.log"
+if [ "${!#}" = generate ] && [ "${GENERATE_EXIT:-0}" != 0 ]; then
+  echo "go: go.mod requires go >= 1.27.0 (running go 1.26.8; GOTOOLCHAIN=local)" >&2
+  exit "$GENERATE_EXIT"
+fi
 if [ "${!#}" = up ]; then
   env | grep -E '^(PIRI_INDEXER|SPRUE_INDEXER_[A-Z]+|SMELT_PIRI_S3_[A-Z_]+|INGOT_IMAGE|POSTGRES_IMAGE|AWS_[A-Z_]+|SMELT_WORKSPACE|OTEL_[A-Z_]+)=' |
     sort >"$D/up.env"
@@ -337,6 +341,7 @@ run() {
 
 runner() { jq -r "$1" "$work/box/state/runner.json"; }
 outcome() { jq -r '.outcome | "\(.class) \(.reasons | join(","))"' "${1:-$D/record.json}"; }
+stopped() { jq -r .outcome.stopped_step "${1:-$D/record.json}"; }
 has() { grep -qF -- "$2" "$1" || fail "$1 lacks: $2"; }
 lacks() { ! grep -qF -- "$2" "$1" 2>/dev/null || fail "$1 has: $2"; }
 
@@ -361,6 +366,7 @@ run 0 -- --set "$work/set.json" --workers 16
   fail "sprue services"
 [ "$(runner '[.images[] | select(.variable == "NETSHOOT_IMAGE") | .services[]] | join(",")')" = netem ] || fail "netshoot"
 [ "$(runner '.reasons | length')" = 0 ] || fail "reasons on a clean run"
+[ "$(runner .step)" = null ] && [ "$(stopped)" = null ] || fail "a clean run stopped in $(runner .step)"
 [ "$(runner '.provenance.harness.sha')" = "$sq_sha" ] || fail "harness sha"
 [[ "$(runner '.provenance.forge_perf.instrument_tree')" =~ ^[0-9a-f]{64}$ ]] || fail "instrument tree"
 [ "$(runner .time.stack_up_at)" != null ] || fail "no stack_up_at"
@@ -502,7 +508,8 @@ jq '.smelt = "2222222222222222222222222222222222222222"' "$work/set.json" >"$wor
 setup
 run 1 -- --set "$work/bad.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = smelt_unreachable ] || fail "reasons $(runner .reasons)"
-echo "ok: an unreachable SHA stops with its reason"
+[ "$(stopped)" = checkout ] || fail "stopped in $(stopped)"
+echo "ok: an unreachable SHA stops checkout with its reason"
 
 setup
 echo "# edited" >>"$work/checkout/config/latency.env"
@@ -510,6 +517,7 @@ run 1 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = instrument_modified ] || fail "reasons $(runner .reasons)"
 [ ! -d "$work/box/mirror" ] || fail "fetched after a failed preflight"
 [ "$(outcome)" = "no_data instrument_modified" ] || fail "record $(outcome)"
+[ "$(stopped)" = preflight ] || fail "stopped in $(stopped)"
 echo "ok: a hand edit in the checkout stops preflight, and the run is still recorded"
 
 setup
@@ -564,11 +572,20 @@ run 1 EXTRA_IMAGE_VAR=HOME -- --set "$work/set.json" --workers 16
 grep -q "images outside the pinned set" "$work/out" || fail "no unpinned message"
 echo "ok: an image outside the pinned set stops the run"
 
+# A smelt whose go line is newer than the box's Go: `make generate` fails at once.
+setup
+run 1 GENERATE_EXIT=2 -- --set "$work/set.json" --workers 16
+[ "$(outcome)" = "no_data runner_error" ] || fail "record $(outcome)"
+[ "$(runner .step)" = images ] && [ "$(stopped)" = images ] || fail "stopped in $(stopped)"
+grep -q "make -C .* generate exited 2" "$work/out" || fail "no generate message"
+echo "ok: a failed make generate stops images, and the record names the step"
+
 setup
 run 1 UP_EXIT=2 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = stack_boot_failed ] || fail "reasons $(runner .reasons)"
 [ "$(runner .time.stack_up_at)" = null ] || fail "stack_up_at set on a failed boot"
 [ "$(outcome)" = "no_data stack_boot_failed" ] || fail "record $(outcome)"
+[ "$(stopped)" = boot ] || fail "stopped in $(stopped)"
 grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "a failed boot was not wiped"
 lacks "$D/netem.log" "netem"
 setup
@@ -577,7 +594,8 @@ run 1 UP_EXIT=124 -- --set "$work/set.json" --workers 16
 setup
 run 1 SETUP_EXIT=1 -- --set "$work/set.json" --workers 16
 [ "$(runner '.reasons | join(",")')" = setup_failed ] || fail "reasons $(runner .reasons)"
-echo "ok: boot, timeout and setup failures carry their reasons"
+[ "$(stopped)" = setup ] || fail "stopped in $(stopped)"
+echo "ok: boot, timeout and setup failures carry their reasons and steps"
 
 # The poller's pending run: a trigger on a new ingot digest, published as
 # calibration while SERIES_LIVE=0.
@@ -816,6 +834,7 @@ rec="$(find "$work/box/outbox" -name '*.json')"
 [ -n "$rec" ] || fail "no record in the outbox"
 [ "$(outcome "$rec")" = "no_data drill_interrupted" ] || fail "record $(outcome "$rec")"
 [ "$(jq .outcome.drill_exit "$rec")" = 2 ] || fail "drill exit"
+[ "$(stopped "$rec")" = drill ] || fail "stopped in $(stopped "$rec")"
 lacks "$D/aws.log" "put-object"
 grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "not wiped after a stop"
 echo "ok: a stop mid-drill interrupts the drill, records drill_interrupted and wipes"

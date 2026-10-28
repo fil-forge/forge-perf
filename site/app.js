@@ -284,7 +284,7 @@ async function details(id) {
   const tl = traces(run);
   panel.append(
     kv("Summary", { class: outcome(run), override: run.override ? h("a", { href: run.override.issue }, run.override.issue) : null,
-      reasons: o.reasons.join(", ") || "none", restarted_services: (o.restarted_services || []).join(", ") || "none",
+      reasons: o.reasons.join(", ") || "none", stopped_in_step: o.stopped_step === null ? "none" : o.stopped_step, restarted_services: (o.restarted_services || []).join(", ") || "none",
       flags: o.flags.join(", ") || "none", series: rec.series, pairing: rec.pairing_id,
       trigger: `${rec.trigger.reason}${rec.trigger.changed?.length ? `: ${rec.trigger.changed.join(", ")}` : ""}`,
       started: utc(t.run_started_at), stack_up: t.stack_up_at && utc(t.stack_up_at),

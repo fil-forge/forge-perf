@@ -224,10 +224,12 @@ if "$host/recover.sh" >"$work/out" 2>&1; then :; else cat "$work/out"; fail "rec
 rec="$work/box/outbox/main-20261001t200000z.json"
 raw="$work/box/outbox/main-20261001t200000z.raw.tar.zst"
 [ -s "$rec" ] && [ -s "$raw" ] || fail "outbox lacks the record or tarball"
-python3 - "$rec" <<'PY' || fail "record is not no_data/drill_interrupted"
+python3 - "$rec" <<'PY' || fail "record is not no_data/drill_interrupted, stopped in boot"
 import json, sys
 o = json.load(open(sys.argv[1]))["outcome"]
 assert o["class"] == "no_data" and "drill_interrupted" in o["reasons"] and "record_build_failed" not in o["reasons"], o
+# The step the reboot interrupted, from the run's runner.json.
+assert o["stopped_step"] == "boot", o
 PY
 zstd -dc "$raw" | tar -tf - >"$work/list"
 has "$work/list" "run/drill.out"
