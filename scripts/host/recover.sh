@@ -114,6 +114,10 @@ read_credentials() (
   # The installation token the run minted, while /run still holds it.
   token="$FORGE_PERF_RUNTIME/secrets/harness-token"
   [ ! -r "$token" ] || cat "$token" >>"$1.all" || exit 1
+  # The drill's secret, from the .env smelt's perf-drill.sh writes on the
+  # NVMe: after a reboot the tmpfs profile run.sh reads it from is gone.
+  drill_env="$FORGE_PERF_WORK/smelt/generated/perf-runs/drill/provider/.env"
+  [ ! -r "$drill_env" ] || sed -n 's/^SQ_SECRET_KEY=//p' "$drill_env" >>"$1.all" || exit 1
   # Keep strings of 8 or more characters, so no blank line matches everything.
   awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' "$1.all" >"$1" || exit 1
   rm -f "$1.all" "$1.err"

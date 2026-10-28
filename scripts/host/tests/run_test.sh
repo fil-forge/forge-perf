@@ -96,7 +96,7 @@ case "$*" in
   # (CATALOG_WALK_FAIL), prints no report (CATALOG_WALK_JUNK), or logs the
   # secret (CATALOG_LEAK).
   "exec cid-ingot /usr/bin/ingot catalog usage" | \
-    "exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY cid-ingot timeout 590 /usr/bin/ingot catalog usage")
+    "exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY cid-ingot timeout -k 5 590 /usr/bin/ingot catalog usage")
     [ -z "${CATALOG_FAIL:-}" ] || { echo "unknown command \"catalog\" for \"ingot\"" >&2; exit 2; }
     if [ "$2" = -e ]; then
       echo "${AWS_ACCESS_KEY_ID-unset} ${AWS_SECRET_ACCESS_KEY-unset}" >>"$D/catalog-key"

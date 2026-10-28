@@ -192,7 +192,7 @@ publish.yml, every 15 min, one at a time, role forge-perf-ci-results
 
 The bucket is versioned; `raw/` expires after 180 days, `published/` after 90, and the results role cannot read `raw/`. Raw tarballs go up with `aws s3 cp` and a SHA-256 checksum, records with `aws s3api put-object --content-md5 --if-none-match '*'`, so no record is overwritten. A zero exit, or a 412 on a record, clears its outbox entry.
 
-`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential remains in the tree.
+`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential, or the drill's secret, remains in the tree.
 
 ### The record
 

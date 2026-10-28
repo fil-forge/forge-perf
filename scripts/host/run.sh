@@ -925,7 +925,7 @@ step_catalog() {
   [ -n "$id" ] && [ -n "$secret" ] ||
     { echo "run.sh: no drill key in profile $DRILL_AWS_PROFILE; the catalog walk read ingot's disk alone" >&2; return 0; }
   report="$(AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" timeout --kill-after=10 600 \
-    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" timeout 590 /usr/bin/ingot catalog usage \
+    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" timeout -k 5 590 /usr/bin/ingot catalog usage \
     2>>"$RUN/catalog/usage.err")" &&
     jq -e .total >/dev/null 2>&1 <<<"$report" ||
     { echo "run.sh: the catalog walk with the drill's key failed; the record keeps the walk of ingot's disk" >&2; return 0; }
