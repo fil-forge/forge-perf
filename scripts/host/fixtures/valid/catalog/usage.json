@@ -8,7 +8,8 @@
       "local_bytes": 9512408,
       "live_bytes": 812933,
       "live_blocks": 4127,
-      "missing_blocks": 0
+      "missing_blocks": 0,
+      "fetched_segments": 3
     },
     {
       "space": "FIXTURE-FREE-TEXT",
@@ -18,7 +19,8 @@
       "local_bytes": 9269351,
       "live_bytes": 801276,
       "live_blocks": 4066,
-      "missing_blocks": 0
+      "missing_blocks": 0,
+      "fetched_segments": 3
     }
   ],
   "total": {
@@ -28,6 +30,7 @@
     "local_bytes": 18781759,
     "live_bytes": 1614209,
     "live_blocks": 8193,
-    "missing_blocks": 0
+    "missing_blocks": 0,
+    "fetched_segments": 6
   }
 }

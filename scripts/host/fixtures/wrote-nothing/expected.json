@@ -67,6 +67,7 @@
    "cap_not_reached"
   ],
   "drill_exit": 1,
+  "stopped_step": null,
   "failure_codes": [
    "wrote_nothing"
   ]

@@ -109,7 +109,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
-| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; ingot keeps its default retention, and the walk of each bucket's live catalog reads the segments it retired from Forge with the drill's key | none; the record's `catalog` is null |
+| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; ingot keeps its default retention, and the walk of each bucket's live catalog reads the segments it retired from Forge with the drill's key | none. Without a settled report the record's `catalog` is null; without the walk with the key, it carries the walk of ingot's disk, whose `missing_blocks` marks `live_bytes` a lower bound |
 | Post-check | latency, restarts, addresses, image IDs | `invalid` |
 | Record, upload, wipe | build and check the record; upload raw, then record; wipe (§6) | minimal `no_data` record |
 
@@ -201,7 +201,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 | Group | Contents |
 |---|---|
 | identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`, `experiment`), `pairing_id`, for an experiment's run its request, service, pull request, commit and role (`main` or `branch`), trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
-| `box`, `outcome` | box facts; class, reasons, flags, drill exit code and failure codes |
+| `box`, `outcome` | box facts; class, reasons, flags, drill exit code, the step that stopped the run and failure codes |
 | `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore p5, median and per-window rates and restore's ranged GETs a second, grouped as `cache_served` and served from ingot's spool |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |

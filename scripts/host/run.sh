@@ -900,7 +900,9 @@ step_drill() {
 # A failed call before then, an image without the command, or reports that
 # never agree leave no report, and the record's catalog null; the run goes on
 # either way. Each call has its own timeout rather than `limited`'s, whose
-# overrun would turn a later failure into step_timeout.
+# overrun would turn a later failure into step_timeout. The keyed walk's runs
+# inside the container too, so a client killed at its limit leaves no walk
+# behind, and a stop request waits for the walk to end, ten minutes at most.
 step_catalog() {
   local c report total prev="" i id secret
   step "catalog"
@@ -923,7 +925,8 @@ step_catalog() {
   [ -n "$id" ] && [ -n "$secret" ] ||
     { echo "run.sh: no drill key in profile $DRILL_AWS_PROFILE; the catalog walk read ingot's disk alone" >&2; return 0; }
   report="$(AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" timeout --kill-after=10 600 \
-    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" &&
+    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" timeout 590 /usr/bin/ingot catalog usage \
+    2>>"$RUN/catalog/usage.err")" &&
     jq -e .total >/dev/null 2>&1 <<<"$report" ||
     { echo "run.sh: the catalog walk with the drill's key failed; the record keeps the walk of ingot's disk" >&2; return 0; }
   printf '%s\n' "$report" >"$RUN/catalog/usage.json"
@@ -951,6 +954,7 @@ step_check() {
 close_out() {
   local raw="$FORGE_PERF_OUTBOX/$run_id.raw.tar.zst" record="$FORGE_PERF_OUTBOX/$run_id.json" status=0 ok=0
   local forbid="$SECRETS/forbid" smelt_run id="${SMELT_PIRI_S3_ACCESS_KEY_ID:-}" secret="${SMELT_PIRI_S3_SECRET_ACCESS_KEY:-}"
+  local drill_secret
   trap 'echo "run.sh: stop requested; finishing the record and the wipe" >&2' TERM INT
   [ -z "$sampler" ] || kill "$sampler" 2>/dev/null
   if [ -n "$drill_pid" ]; then
@@ -962,12 +966,17 @@ close_out() {
   step "collect"
   mkdir -p "$FORGE_PERF_OUTBOX" "$SECRETS"
   [ ! -d "$RUN" ] || q host_read journalctl -u forge-perf-run --since "@$started_epoch" --no-pager >"$RUN/journal.txt"
-  # piri's pair and the harness credential, which no collected file may hold.
+  # piri's pair, the harness credential and the drill's secret, which no
+  # collected file may hold. collect.sh leaves out the drill's .env files, so
+  # its secret can only be there by a leak, such as through the catalog
+  # step's usage.err. Its key ID is left off: s3-key.sh prints it.
+  drill_secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || drill_secret=""
   (
     umask 077
     : >"$forbid"
     if [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ]; then
-      { printf '%s\n' "$id" "$secret"; cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
+      { printf '%s\n' "$id" "$secret"; [ -z "$drill_secret" ] || printf '%s\n' "$drill_secret"
+        cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
         awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' >"$forbid"
     fi
   )
@@ -1068,7 +1077,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
           run_finished_at: null},
-   settings: $settings,
+   step: "preflight", settings: $settings,
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
@@ -1093,7 +1102,11 @@ esac
 exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 
+# runner.json names the step in progress, so a record whose run a step stopped
+# says which step (outcome.stopped_step); null means every step ran.
 for s in $STEPS; do
+  rj --arg s "$s" '.step = $s'
   "step_$s"
   [ "$s" != "$until" ] || break
 done
+[ -n "$until" ] || rj '.step = null'

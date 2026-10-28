@@ -201,7 +201,8 @@ class Checks:
         if p5 is not None and median is not None and p5 > median:
             raise Rejected("p5_above_median")
         if out["class"] == "valid" and (out["drill_exit"] != 0 or out["reasons"] or results is None
-                                        or record["drill"]["requests"] is None):
+                                        or record["drill"]["requests"] is None
+                                        or out.get("stopped_step") is not None):
             raise Rejected("valid_inconsistent")
         # A CPU-capped run is a check run; as any other series it could light a gate.
         if "cpu_capped" in out["flags"] and record["series"] != "calibration":
@@ -322,6 +323,9 @@ def record_alerts(record, previous, status):
     alerted.append(cls)
     alerted.sort()
     parts = [f"reasons {', '.join(out['reasons'])}"]
+    # A record from before stopped_step has none.
+    if out.get("stopped_step"):
+        parts.append(f"stopped in step {out['stopped_step']}")
     if out["restarted_services"]:
         parts.append(f"restarted {', '.join(out['restarted_services'])}")
     if out["failure_codes"]:

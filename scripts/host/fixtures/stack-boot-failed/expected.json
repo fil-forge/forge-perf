@@ -63,6 +63,7 @@
   "restarted_services": [],
   "flags": [],
   "drill_exit": null,
+  "stopped_step": "boot",
   "failure_codes": []
  },
  "drill": {

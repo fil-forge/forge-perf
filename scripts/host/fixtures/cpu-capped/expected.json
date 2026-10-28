@@ -64,6 +64,7 @@
    "cpu_capped"
   ],
   "drill_exit": 0,
+  "stopped_step": null,
   "failure_codes": []
  },
  "drill": {

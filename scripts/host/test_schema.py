@@ -144,6 +144,7 @@ class FixtureRecords(unittest.TestCase):
                     self.assertNotEqual(outcome["reasons"], [])
                 if outcome["class"] == "valid":
                     self.assertEqual(outcome["drill_exit"], 0)
+                    self.assertIsNone(outcome["stopped_step"])
 
     def test_fingerprints_follow_the_documented_recipe(self):
         for fixture in FIXTURES:
@@ -243,6 +244,8 @@ class Rejections(unittest.TestCase):
             "failure code": lambda r: r["outcome"]["failure_codes"].append("made_up"),
             "service": lambda r: r["outcome"]["restarted_services"].append("grafana"),
             "reason": lambda r: r["outcome"]["reasons"].append("cap_not_reached"),
+            "stopped step": lambda r: r["outcome"].update(stopped_step="collect"),
+            "stopped step as text": lambda r: r["outcome"].update(stopped_step="make generate exited 2"),
             "trailing newline": lambda r: r["provenance"]["smelt"].update(sha=r["provenance"]["smelt"]["sha"] + "\n"),
             "boolean as tier": lambda r: r["box"].update(tier=True),
             "float settings": lambda r: r["drill"]["settings"].update(workers=4.5),

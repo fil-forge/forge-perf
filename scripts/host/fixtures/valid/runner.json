@@ -54,6 +54,7 @@
   "drill_finished_at": "2026-10-01T12:07:10Z",
   "run_finished_at": "2026-10-01T12:09:30Z"
  },
+ "step": null,
  "settings": {
   "profile": "import",
   "manifest": "perf-piri-1-postgres-s3",

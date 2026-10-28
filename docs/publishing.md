@@ -42,7 +42,7 @@ Anyone can read every record with `git clone -b results https://github.com/fil-f
 | `future_run_id` | a run ID more than 10 minutes ahead of the time S3 stored the record, or of the workflow's clock when that is earlier. The upload time does not change, so the rejection holds on every run |
 | `finished_before_started` | `time.run_finished_at` before `time.run_started_at` |
 | `p5_above_median` | an ingest p5 above the ingest median, when both are numbers |
-| `valid_inconsistent` | class `valid` with a drill exit other than 0, any reason, or null results or requests |
+| `valid_inconsistent` | class `valid` with a drill exit other than 0, any reason, a stopped step, or null results or requests |
 | `capped_not_calibration` | the flag `cpu_capped` on a record whose series is not `calibration`, since a capped run must never light a gate |
 | `experiment_inconsistent` | a record whose series `experiment`, `experiment` block, trigger `experiment` and `exp-` pairing do not all agree, or whose pairing is not `exp-<experiment.request_id>`. An experiment's run must never land in a live series, and no other run may borrow an experiment's pairing |
 | `fingerprint` | `instrument.fingerprint` or `instrument.box_fingerprint` that does not recompute by record.md's recipe |
@@ -56,7 +56,7 @@ The schema check uses `scripts/host/schemacheck.py`, the checker the box and CI 
 
 ## Alerts
 
-The workflow posts to `#filone-alerts` with `SLACK_BOT_TOKEN`. The text comes from public record fields only: box, run ID, class, reasons, restarted services, failure codes, the components in `trigger.changed` with GitHub compare links against the box's previous record (the harness SHA as plain text), and the page link. All lines from one workflow run go in one message.
+The workflow posts to `#filone-alerts` with `SLACK_BOT_TOKEN`. The text comes from public record fields only: box, run ID, class, reasons, the step that stopped the run (`outcome.stopped_step`, when the record has one), restarted services, failure codes, the components in `trigger.changed` with GitHub compare links against the box's previous record (the harness SHA as plain text), and the page link. All lines from one workflow run go in one message.
 
 **Records.** New records are taken per box in run ID order. `calibration` and `experiment` runs never alert and leave the alert state alone. The compare links start from the box's latest earlier record outside series `experiment`, since an experiment's branch run tested an image main never had.
 

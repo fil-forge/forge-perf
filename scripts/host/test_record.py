@@ -520,6 +520,28 @@ class Classification(unittest.TestCase):
                 self.assertEqual((rec["series"], rec["outcome"]["flags"]), ("per-trigger", ["few_windows"]))
 
 
+class StoppedStep(unittest.TestCase):
+    def test_the_steps_are_run_sh_steps_in_order(self):
+        line = next(l for l in (HERE / "run.sh").read_text(encoding="utf-8").splitlines() if l.startswith("STEPS="))
+        self.assertEqual(record.STEPS, line.split("=", 1)[1].strip('"').split())
+
+    def test_the_minimal_record_keeps_the_stopped_step(self):
+        case = Case(self, "stack-boot-failed")
+        result = case.cli(command="minimal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(load(case.out)["outcome"]["stopped_step"], "boot")
+
+    def test_a_missing_or_unknown_step_is_null(self):
+        for name, change in (("absent", lambda d: d.pop("step")), ("unknown", lambda d: d.update(step="collect")),
+                             ("not a string", lambda d: d.update(step=["boot"]))):
+            with self.subTest(step=name):
+                case = Case(self, "stack-boot-failed")
+                case.edit("runner.json", change)
+                result = case.cli()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(load(case.out)["outcome"]["stopped_step"])
+
+
 class Experiments(unittest.TestCase):
     BLOCK = {"request_id": "ingot-pr123-0123456789ab-17000000001", "service": "ingot",
              "repository": "fil-forge/ingot", "pr": 123, "commit": "0123456789abcdef0123456789abcdef01234567",
@@ -716,7 +738,10 @@ class Catalog(unittest.TestCase):
         case = Case(self, "valid")
         report = load(case.catalog)
         got = case.build()["catalog"]
-        self.assertEqual(got, {"buckets": len(report["buckets"]), **report["total"]})
+        # A total the schema does not name, such as fetched_segments, is not copied.
+        self.assertIn("fetched_segments", report["total"])
+        totals = {k: v for k, v in report["total"].items() if k != "fetched_segments"}
+        self.assertEqual(got, {"buckets": len(report["buckets"]), **totals})
         # The fingerprints leave the catalog out.
         (case.catalog).unlink()
         without = case.build()

@@ -50,6 +50,8 @@ GROUPS_CONF = ROOT / "config" / "groups.conf"
 SCHEMA = schemacheck.load(open(SCHEMA_PATH, encoding="utf-8"))
 REASONS = SCHEMA["properties"]["outcome"]["properties"]["reasons"]["items"]["enum"]
 FLAGS = SCHEMA["properties"]["outcome"]["properties"]["flags"]["items"]["enum"]
+# run.sh's steps, in order; a test holds them equal to its STEPS.
+STEPS = [s for s in SCHEMA["properties"]["outcome"]["properties"]["stopped_step"]["enum"] if s is not None]
 CLASS_OF = {}  # reason -> class, docs/record.md "Reasons"
 for _cls, _first, _last in (("no_data", "runner_error", "record_build_failed"),
                             ("failed", "integrity_failure", "drill_failure"),
@@ -359,6 +361,13 @@ def catalog_block(path):
 
 # --- the record ----------------------------------------------------------------
 
+def stopped_step(runner):
+    """The step the run stopped in: runner.json's step in progress, which run.sh
+    clears once every step has run. A runner from before the field has none."""
+    step = runner.get("step")
+    return step if step in STEPS else None
+
+
 def base_record(runner, env):
     """Every field runner.json alone decides, with the drill and netem absent."""
     box = runner["box"]
@@ -387,7 +396,7 @@ def base_record(runner, env):
         "time": {k: runner["time"][k] for k in ("run_started_at", "stack_up_at", "drill_started_at",
                                                  "drill_finished_at", "run_finished_at")},
         "outcome": {"class": "no_data", "reasons": [], "restarted_services": [], "flags": [], "drill_exit": None,
-                    "failure_codes": []},
+                    "stopped_step": stopped_step(runner), "failure_codes": []},
         "drill": {"settings": None if runner["settings"] is None else {k: runner["settings"][k] for k in SETTINGS},
                   "results": None, "requests": None},
         "latency": latency_block(None, env),
