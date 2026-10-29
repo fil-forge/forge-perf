@@ -69,9 +69,15 @@ def provenance(rec):
     }
 
 
+READS = ("read_back_p5_bytes_per_s", "read_back_median_bytes_per_s", "restore_p5_bytes_per_s",
+         "restore_median_bytes_per_s")
+
+
 def run_entry(rec):
     settings = (rec.get("drill") or {}).get("settings") or {}
     results = (rec.get("drill") or {}).get("results") or {}
+    # A record from before the read p5 lacks those keys.
+    reads = results.get("cache_served") or {}
     return {
         "run_id": rec["run_id"],
         "run_started_at": rec["time"]["run_started_at"],
@@ -82,6 +88,7 @@ def run_entry(rec):
         "stop_ingest_at_bytes": settings.get("stop_ingest_at_bytes"),
         "ingest_p5_bytes_per_s": results.get("ingest_p5_bytes_per_s"),
         "ingest_median_bytes_per_s": results.get("ingest_median_bytes_per_s"),
+        **{k: reads.get(k) for k in READS},
         "provenance": provenance(rec),
     }
 
@@ -166,6 +173,11 @@ def stats(values):
     }
 
 
+def read_stats(values):
+    """A read stream's stats, or None when a run lacks the value."""
+    return None if not values or any(v is None for v in values) else stats(values)
+
+
 def summarize_noise(recs, series):
     runs = [run_entry(r) for r in recs]
     for r in runs:
@@ -186,6 +198,10 @@ def summarize_noise(recs, series):
         "max_cv": NOISE_MAX_CV,
         "p5": p5,
         "median": stats([r["ingest_median_bytes_per_s"] for r in runs]),
+        # The read streams' spread. pass stays on ingest p5, so a noisy restore
+        # never voids a band that ingest passed.
+        **{stream: {k: read_stats([r[f"{stream}_{k}_bytes_per_s"] for r in runs]) for k in ("p5", "median")}
+           for stream in ("read_back", "restore")},
         "pass": p5["cv"] is not None and p5["cv"] <= NOISE_MAX_CV,
         "runs": runs,
     }
@@ -292,7 +308,7 @@ def main(argv=None):
             write(doc, out / "workers" / f"{run_date(recs)}-{doc['instance_type']}.json")
         elif a.cmd == "noise":
             doc = summarize_noise(load(a.runs), a.series)
-            write(doc, out / "noise" / f"{doc['box']}-{a.series}.json")
+            write(doc, out / "noise" / f"{doc['box']}-{doc['instance_type']}-{a.series}.json")
         else:
             parsed = [parse_check(c) for c in a.check]
             if len({name for name, _ in parsed}) != len(parsed):
