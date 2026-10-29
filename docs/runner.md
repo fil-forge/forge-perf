@@ -486,14 +486,31 @@ Status `running` goes up at the start and after each run but the last, listing t
  "pairing_id": "exp-ingot-pr123-0123456789ab-17000000001",
  "runs": [{"role": "main", "run_id": "main-20261001t122001z", "class": "valid", "flags": ["traced"],
            "size_bytes": 500000000000, "p5_bytes_per_s": 780000000, "median_bytes_per_s": 1000000000,
+           "read_back_p5_bytes_per_s": 960000000, "read_back_median_bytes_per_s": 990000000,
+           "restore_p5_bytes_per_s": 410000000, "restore_median_bytes_per_s": 620000000,
+           "restore_ranged_gets_median_per_s": 148.0,
            "traced": true, "started_at": "2026-10-01T12:20:01Z", "finished_at": "2026-10-01T12:31:40Z"}, "…"],
  "comparison": {"median_delta_pct": 2.1, "p5_delta_pct": -4.3, "noise_median_pct": 3.5, "noise_p5_pct": 11.0,
-                "verdict": "within noise"}}
+                "verdict": "within noise",
+                "read_back": {"median_delta_pct": 1.8, "p5_delta_pct": -2.0, "noise_median_pct": 3.5,
+                              "noise_p5_pct": 11.0, "verdict": "within noise"},
+                "restore": {"median_delta_pct": 9.4, "p5_delta_pct": 3.1, "noise_median_pct": 34.0,
+                            "noise_p5_pct": null, "verdict": "within noise"}}}
 ```
 
-`state` is `queued`, `running`, `done`, `failed` or `refused`. `position` is set only on `queued`, `reason` only on `refused` and `failed`, and `comparison` is present only on `done`. `runs` lists the runs so far in order; a run without a record shows class `no_data` and nulls.
+`state` is `queued`, `running`, `done`, `failed` or `refused`. `position` is set only on `queued`, `reason` only on `refused` and `failed`, and `comparison` is present only on `done`. `runs` lists the runs so far in order, with each run's ingest, read-back and restore rates from its record; a run without a record shows class `no_data` and nulls. The top-level comparison keys are ingest's, so a status written before read streams were compared still parses; `read_back` and `restore` sit beside them with the same keys, and the workflow accepts a status without them.
 
-The comparison takes the median of the branch runs' medians against the median of the main runs' medians, and the same for p5, as percentages to two places. The noise figures are twice the coefficients of variation of the committed per-trigger noise band for this box and instance type (`calibration/noise/*.json` with `series: per-trigger`, `pass: true`), in percent to one place. With no such band, as on tier 2 today, they are 3.5% for the median and 11% for p5: the spread of eight valid 500 GB per-trigger runs on the tier 2 box on 28 and 29 September 2026, which ran different sets and so bound the noise from above. The verdict follows the median, the steadier of the two: `within noise` when the median difference is within the median noise, otherwise `faster` or `slower`.
+Each stream is compared the same way: the median of the branch runs' medians against the median of the main runs' medians, and the same for p5, as percentages to two places. Ingest's noise figures are twice the coefficients of variation of the committed per-trigger noise band for this box and instance type (`calibration/noise/*.json` with `series: per-trigger`, `pass: true`), in percent to one place. Each verdict follows that stream's median: `within noise` when the median difference is within the median noise, otherwise `faster` or `slower`.
+
+Without a committed band for a stream, its noise is a fallback:
+
+| Stream | Median | p5 |
+|---|---|---|
+| Ingest | ±3.5% | ±11% |
+| Read-back | ±3.5% | ±11% |
+| Restore | ±34% | none |
+
+Ingest's figures are the spread of eight valid 500 GB per-trigger runs on the tier 2 box on 28 and 29 September 2026, which ran different sets and so bound the noise from above. Read-back takes them because its median tracks the ingest median within about 2% in every tier 3 run. Restore's ±34% is twice the 17.2% coefficient of variation of the 19 valid tier 3 runs; those ran different sets too, so it is an upper bound, and restore registers only changes larger than a third. No run had recorded a restore p5 when the fallback was set, so restore has no p5 band and the comment shows "–" there. A read stream whose runs lack a positive median, as before the harness recorded them, is null and gets no verdict; a p5 delta is null when a run lacks that p5.
 
 ## Local run
 

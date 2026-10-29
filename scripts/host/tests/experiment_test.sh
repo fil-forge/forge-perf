@@ -116,8 +116,11 @@ experiment 0
 [ "$(jq -r '.experiment | "\(.request_id) \(.service) \(.repository) \(.pr) \(.commit)"' "$D/runs.log" | sort -u)" = \
   "$ID ingot fil-forge/ingot 123 $COMMIT" ] || fail "experiment block"
 [ "$(paste -sd' ' - <"$D/states")" = "running running done" ] || fail "states $(cat "$D/states")"
+# Both runs read at the valid fixture's rates, so the read streams hold level.
 [ "$(final '.comparison == {median_delta_pct: 10, p5_delta_pct: 12.5, noise_median_pct: 3.5, noise_p5_pct: 11,
-  verdict: "faster"}')" = true ] || fail "comparison $(final .comparison)"
+  verdict: "faster", read_back: {median_delta_pct: 0, p5_delta_pct: 0, noise_median_pct: 3.5, noise_p5_pct: 11,
+  verdict: "within noise"}, restore: {median_delta_pct: 0, p5_delta_pct: 0, noise_median_pct: 34, noise_p5_pct: null,
+  verdict: "within noise"}}')" = true ] || fail "comparison $(final .comparison)"
 [ "$(final '[.runs[] | "\(.role):\(.run_id)"] | join(" ")')" = "main:main-20261001t120001z branch:main-20261001t120002z" ] ||
   fail "status runs $(final .runs)"
 closed

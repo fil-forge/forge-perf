@@ -48,9 +48,20 @@ ID = re.compile(r"^(?P<service>[a-z0-9][a-z0-9-]{0,39})-pr(?P<pr>[1-9][0-9]{0,6}
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 SHA1 = re.compile(r"^[0-9a-f]{40}\Z")
 UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z\Z")
-# Noise used when no tier noise band is committed for the box's type: the
-# spread of valid 500 GB per-trigger runs on the tier 2 box, 28 to 29 Sep 2026.
-DEFAULT_NOISE = {"median": 3.5, "p5": 11.0}
+# Noise per stream when no tier noise band is committed for the box's type.
+# Ingest: the spread of valid 500 GB per-trigger runs on the tier 2 box, 28 to
+# 29 Sep 2026. Read-back takes ingest's, since its median tracks the ingest
+# median within about 2% in every tier 3 run. Restore: twice the 17.2%
+# coefficient of variation of the 19 valid tier 3 runs, which ran different
+# sets, so an upper bound; no run had recorded a restore p5 to bound its noise.
+DEFAULT_NOISE = {"ingest": {"median": 3.5, "p5": 11.0}, "read_back": {"median": 3.5, "p5": 11.0},
+                 "restore": {"median": 34.0, "p5": None}}
+# Each stream's p5 and median fields in a run entry.
+STREAMS = {"ingest": ("p5_bytes_per_s", "median_bytes_per_s"),
+           "read_back": ("read_back_p5_bytes_per_s", "read_back_median_bytes_per_s"),
+           "restore": ("restore_p5_bytes_per_s", "restore_median_bytes_per_s")}
+READS = ("read_back_p5_bytes_per_s", "read_back_median_bytes_per_s", "restore_p5_bytes_per_s",
+         "restore_median_bytes_per_s", "restore_ranged_gets_median_per_s")
 COUNTED = ("valid", "availability_warning")
 ORDER = {1: ["main", "branch"], 2: ["main", "branch", "branch", "main"]}
 
@@ -154,41 +165,66 @@ def plan(request, main_set, at):
 def run_summary(role, run_id, record):
     if record is None:
         return {"role": role, "run_id": run_id, "class": "no_data", "flags": [], "size_bytes": None,
-                "p5_bytes_per_s": None, "median_bytes_per_s": None, "traced": None,
+                "p5_bytes_per_s": None, "median_bytes_per_s": None, **dict.fromkeys(READS), "traced": None,
                 "started_at": None, "finished_at": None}
     results = record["drill"]["results"] or {}
+    # A record from before the read p5 lacks those keys.
+    reads = results.get("cache_served") or {}
     return {"role": role, "run_id": run_id, "class": record["outcome"]["class"],
             "flags": record["outcome"]["flags"],
             "size_bytes": (record["drill"]["settings"] or {}).get("stop_ingest_at_bytes"),
             "p5_bytes_per_s": results.get("ingest_p5_bytes_per_s"),
             "median_bytes_per_s": results.get("ingest_median_bytes_per_s"),
+            **{k: reads.get(k) for k in READS},
             "traced": record.get("trace") is not None,
             "started_at": record["time"]["run_started_at"], "finished_at": record["time"]["run_finished_at"]}
 
 
 def noise_band(noise_dir, box, instance_type):
-    """{median, p5} in percent: twice the coefficients of variation of the box's
-    committed per-trigger noise band on its instance type, or DEFAULT_NOISE."""
+    """{stream: {median, p5}} in percent. Ingest takes twice the coefficients of
+    variation of the box's committed per-trigger noise band on its instance
+    type; every stream without one takes DEFAULT_NOISE."""
+    out = {k: dict(v) for k, v in DEFAULT_NOISE.items()}
     if noise_dir and box and instance_type:
         for path in sorted(Path(noise_dir).glob("*.json")):
             try:
                 band = json.loads(path.read_text(encoding="utf-8"))
                 if (band.get("kind"), band.get("series"), band.get("box"), band.get("instance_type"),
                         band.get("pass")) == ("noise", "per-trigger", box, instance_type, True):
-                    return {k: round(2 * 100 * band[k]["cv"], 1) for k in ("median", "p5")}
+                    out["ingest"] = {k: round(2 * 100 * band[k]["cv"], 1) for k in ("median", "p5")}
+                    return out
             except (ValueError, KeyError, TypeError, AttributeError):
                 continue
-    return dict(DEFAULT_NOISE)
+    return out
 
 
 def comparison(runs, noise):
-    def med(role, key):
-        return statistics.median(r[key] for r in runs if r["role"] == role)
-    delta = {k: round((med("branch", f"{k}_bytes_per_s") / med("main", f"{k}_bytes_per_s") - 1) * 100, 2)
-             for k in ("median", "p5")}
-    verdict = "within noise" if abs(delta["median"]) <= noise["median"] else \
-        "faster" if delta["median"] > 0 else "slower"
-    return {"median_delta_pct": delta["median"], "p5_delta_pct": delta["p5"],
+    """The ingest comparison at the top level, as before read streams were
+    compared, with read_back and restore objects of the same shape beside it."""
+    out = stream_comparison(runs, STREAMS["ingest"], noise["ingest"])
+    for stream in ("read_back", "restore"):
+        out[stream] = stream_comparison(runs, STREAMS[stream], noise[stream])
+    return out
+
+
+def stream_comparison(runs, keys, noise):
+    """One stream's deltas and verdict, or None when a run has no positive
+    median for it. The p5 delta is None when a run has no positive p5."""
+    p5_key, median_key = keys
+
+    def positive(key):
+        return all(isinstance(r[key], (int, float)) and not isinstance(r[key], bool) and r[key] > 0 for r in runs)
+
+    def delta(key):
+        def med(role):
+            return statistics.median(r[key] for r in runs if r["role"] == role)
+        return round((med("branch") / med("main") - 1) * 100, 2)
+
+    if not positive(median_key):
+        return None
+    median = delta(median_key)
+    verdict = "within noise" if abs(median) <= noise["median"] else "faster" if median > 0 else "slower"
+    return {"median_delta_pct": median, "p5_delta_pct": delta(p5_key) if positive(p5_key) else None,
             "noise_median_pct": noise["median"], "noise_p5_pct": noise["p5"], "verdict": verdict}
 
 
