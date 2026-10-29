@@ -86,9 +86,11 @@ export function latestCounting(runs) {
   return runs.filter(counts).pop() || null;
 }
 
+// One top for the three thermometers: the gates and the mercury run's p5 and
+// median of every stream.
 export function scaleTop(gates, merc) {
   const values = gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s);
-  if (merc) values.push(merc.run.p5_bytes_per_s, merc.run.median_bytes_per_s ?? 0);
+  if (merc) values.push(...STREAMS.flatMap((s) => [merc.run[s.p5] ?? 0, merc.run[s.median] ?? 0]));
   return values.length ? 1.1 * Math.max(...values) : FALLBACK_TOP;
 }
 

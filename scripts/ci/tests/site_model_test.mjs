@@ -187,6 +187,20 @@ test("with every gate unmeasured, the scale covers the mercury's median", () => 
   assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.10e9) < 1);
 });
 
+const readScaleCases = [
+  { name: "read-back p5", fields: { read_back_p5_bytes_per_s: 0.5e9 }, top: 0.5e9 },
+  { name: "read-back median", fields: { read_back_median_bytes_per_s: 0.6e9 }, top: 0.6e9 },
+  { name: "restore p5", fields: { restore_p5_bytes_per_s: 0.7e9 }, top: 0.7e9 },
+  { name: "restore median", fields: { restore_median_bytes_per_s: 0.8e9 }, top: 0.8e9 },
+  { name: "nothing above ingest, read p5 null", fields: { read_back_p5_bytes_per_s: null, restore_median_bytes_per_s: 0.1e9 }, top: 0.35e9 },
+];
+for (const c of readScaleCases) {
+  test(`the shared scale covers the mercury run's ${c.name}`, () => {
+    const d = index([run(c.fields)]);
+    assert.ok(Math.abs(M.scaleTop(d.gates, M.mercury(d.runs, NOW)) - 1.1 * c.top) < 1);
+  });
+}
+
 test("flags that leave the class alone are named beside the outcome", () => {
   const r = run({ flags: ["cap_not_reached", "raw_missing"] });
   assert.equal(M.flagText(r), "stopped at its time limit before its size");
