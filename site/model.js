@@ -101,6 +101,20 @@ export const STREAMS = [
   { id: "restore", label: "Restore", p5: "restore_p5_bytes_per_s", median: "restore_median_bytes_per_s" },
 ];
 
+// The history chart's rows for one stream: the runs on its p5 line and its
+// dashed median line (valid and availability-warning runs with that value)
+// and the runs that get a dot at their p5. A run from before the harness
+// recorded read p5 joins a read stream's median line and gets no dot.
+export function streamRows(rows, id) {
+  const s = STREAMS.find((x) => x.id === id);
+  const joins = (r) => ["valid", "availability_warning"].includes(r.klass);
+  return {
+    p5Line: rows.filter((r) => joins(r) && r[s.p5] != null),
+    medianLine: rows.filter((r) => joins(r) && r[s.median] != null),
+    dots: rows.filter((r) => r[s.p5] != null && !["failed", "no_data"].includes(r.klass)),
+  };
+}
+
 // A read stream's headline line, or null when the run has no median for it.
 // A run from before the harness recorded read p5 shows the median alone.
 export function readLine(run, id) {

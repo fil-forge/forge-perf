@@ -231,7 +231,7 @@ Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is
 A static site in `site/`, with Observable Plot and d3 vendored:
 
 1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Two more thermometers on the same scale show that run's read-back and restore p5 and median, with no gates; read-back also marks the run's ingest median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` and `experiment` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason. Under the ingest numbers the headline gives the same run's read-back and restore p5 and median, and restore's ranged GETs per second.
-2. History, one series at a time: p5 line, dashed median, gate lines, markers for instrument and box changes.
+2. History, one series and one stream (ingest, read-back or restore) at a time: p5 line, dashed median, markers for instrument and box changes, and on ingest the gate lines.
 3. The runs table, with ingest, read-back and restore rates, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text. An experiment's run names its pull request, the set it ran and the other runs of its pairing.
 4. How it is measured: the method, the workload (the drill's import profile, ~128 MiB objects) and the gaps from §2.
 

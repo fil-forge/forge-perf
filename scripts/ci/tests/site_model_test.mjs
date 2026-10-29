@@ -187,6 +187,21 @@ test("with every gate unmeasured, the scale covers the mercury's median", () => 
   assert.ok(Math.abs(M.scaleTop(d.gates, merc) - 1.1 * 0.10e9) < 1);
 });
 
+test("the history of a read stream joins runs without read p5 on its median line only", () => {
+  const before = run({ klass: "valid", restore_median_bytes_per_s: 0.2e9 });
+  const after = run({ klass: "valid", restore_p5_bytes_per_s: 0.15e9, restore_median_bytes_per_s: 0.2e9 });
+  const invalid = run({ klass: "invalid", restore_p5_bytes_per_s: 0.1e9, restore_median_bytes_per_s: 0.2e9 });
+  const failed = run({ klass: "failed", restore_p5_bytes_per_s: 0.1e9, restore_median_bytes_per_s: 0.2e9 });
+  const got = M.streamRows([before, after, invalid, failed], "restore");
+  assert.deepEqual(Object.fromEntries(Object.entries(got).map(([k, rows]) => [k, rows.map((r) => r.run_id)])),
+    { p5Line: [after.run_id], medianLine: [before.run_id, after.run_id], dots: [after.run_id, invalid.run_id] });
+});
+
+test("the history of ingest reads the ingest fields", () => {
+  const r = run({ klass: "valid", read_back_p5_bytes_per_s: null });
+  assert.deepEqual(Object.values(M.streamRows([r], "ingest")).map((rows) => rows.length), [1, 1, 1]);
+});
+
 const readScaleCases = [
   { name: "read-back p5", fields: { read_back_p5_bytes_per_s: 0.5e9 }, top: 0.5e9 },
   { name: "read-back median", fields: { read_back_median_bytes_per_s: 0.6e9 }, top: 0.6e9 },

@@ -5,7 +5,7 @@ import * as M from "./model.js";
 const REPO = "https://github.com/fil-forge/forge-perf";
 const SMELT = "https://github.com/fil-forge/smelt";
 const $ = (sel) => document.querySelector(sel);
-const state = { data: null, series: "per-trigger", shown: 50, now: Date.now() };
+const state = { data: null, series: "per-trigger", stream: "ingest", shown: 50, now: Date.now() };
 
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
@@ -188,29 +188,32 @@ function drawHistory() {
   const host = $("#chart");
   host.replaceChildren();
   const series = M.SERIES.find((s) => s.id === state.series);
+  const stream = M.STREAMS.find((s) => s.id === state.stream), ingest = stream.id === "ingest";
+  const p5 = (r) => r[stream.p5] / 1e9, median = (r) => r[stream.median] / 1e9;
   const rows = M.history(state.data.runs, series.id).map((r) => ({ ...r, x: new Date(r.run_started_at) }));
   if (!rows.length) { host.append(h("p", { class: "empty" }, `No ${series.label.toLowerCase()} runs yet.`)); return; }
   const color = css(`--series-${series.slot}`), muted = css("--text-muted"), second = css("--text-secondary");
   const surface = css("--surface-1"), grid = css("--chart-grid");
-  const joined = rows.filter((r) => ["valid", "availability_warning"].includes(r.klass) && r.p5_bytes_per_s != null);
-  const plotted = rows.filter((r) => r.p5_bytes_per_s != null && !["failed", "no_data"].includes(r.klass));
+  const { p5Line, medianLine, dots: plotted } = M.streamRows(rows, stream.id);
   const strip = rows.filter((r) => ["failed", "no_data"].includes(r.klass));
   const measured = state.data.gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s / 1e9);
   // With nothing plotted, a readable range: up to the lowest measured gate, or 1 GB/s.
-  const max = plotted.length ? Math.max(...plotted.map((r) => r.p5_bytes_per_s / 1e9), ...plotted.map((r) => (r.median_bytes_per_s ?? 0) / 1e9), 1e-3)
+  const max = plotted.length || medianLine.length
+    ? Math.max(...plotted.map(p5), ...medianLine.map(median), ...plotted.map((r) => (r[stream.median] ?? 0) / 1e9), 1e-3)
     : (measured.length ? Math.min(...measured) : 1) / 1.15;
+  // Gates are ingest ceilings, so only the ingest view draws them.
   const shown = [], above = [];
-  for (const g of state.data.gates.filter((g) => g.current)) {
+  for (const g of ingest ? state.data.gates.filter((g) => g.current) : []) {
     (g.current.ceiling_bytes_per_s / 1e9 <= 1.3 * max ? shown : above).push(g);
   }
   const width = host.clientWidth || 640;
-  const tip = (r) => [r.run_id, utc(r.run_started_at), `p5 ${M.gbps(r.p5_bytes_per_s)} GB/s`,
-    `median ${M.gbps(r.median_bytes_per_s)} GB/s`, `${r.sustained_windows ?? 0} windows`, M.outcomeText(r), "Click to open details"].join("\n");
+  const tip = (r) => [r.run_id, utc(r.run_started_at), `${stream.label} p5 ${M.gbps(r[stream.p5])} GB/s`,
+    `median ${M.gbps(r[stream.median])} GB/s`, `${r.sustained_windows ?? 0} windows`, M.outcomeText(r), "Click to open details"].join("\n");
   const changes = rows.filter((r) => M.instrumentMarker(r));
   const boxes = rows.filter((r) => r.box_change);
   const x = { type: "utc", domain: [rows[0].x, rows[rows.length - 1].x], nice: rows.length > 1, label: null };
   if (rows.length === 1) x.domain = [new Date(+rows[0].x - 43200e3), new Date(+rows[0].x + 43200e3)];
-  const last = joined[joined.length - 1];
+  const lastP5 = p5Line[p5Line.length - 1], lastMedian = medianLine[medianLine.length - 1];
   const chart = Plot.plot({
     width, height: width < 480 ? 240 : 320, marginRight: 70, marginTop: 24, marginBottom: strip.length ? 52 : 30, x,
     y: { domain: [0, max * 1.15], grid: true, label: "GB/s", ticks: 5 },
@@ -224,23 +227,23 @@ function drawHistory() {
       Plot.text(spaced(changes, x.domain, width), { x: "x", frameAnchor: "top", dy: -12, text: () => "instrument", fill: muted }),
       Plot.ruleX(boxes, { x: "x", stroke: second, strokeWidth: 2 }),
       Plot.text(boxes, { x: "x", frameAnchor: "top", dy: -12, dx: 4, textAnchor: "start", text: "box_change", fill: second }),
-      Plot.line(joined, { x: "x", z: (r) => r.box.instance_type, y: (r) => r.median_bytes_per_s / 1e9, stroke: color, strokeWidth: 2, strokeDasharray: "5,4" }),
-      Plot.line(joined, { x: "x", z: (r) => r.box.instance_type, y: (r) => r.p5_bytes_per_s / 1e9, stroke: color, strokeWidth: 2 }),
+      Plot.line(medianLine, { x: "x", z: (r) => r.box.instance_type, y: median, stroke: color, strokeWidth: 2, strokeDasharray: "5,4" }),
+      Plot.line(p5Line, { x: "x", z: (r) => r.box.instance_type, y: p5, stroke: color, strokeWidth: 2 }),
       Plot.dot(plotted, {
-        x: "x", y: (r) => r.p5_bytes_per_s / 1e9, r: 4.5,
+        x: "x", y: p5, r: 4.5,
         symbol: (r) => (r.klass === "availability_warning" ? "triangle" : "circle"),
         fill: (r) => (r.klass === "invalid" ? "none" : color), stroke: (r) => (r.klass === "invalid" ? muted : r.incoming ? surface : color),
         strokeWidth: (r) => (r.incoming ? 2 : 1.5),
       }),
       Plot.dot(strip, { x: "x", frameAnchor: "bottom", dy: 42, symbol: "times", r: 4,
         stroke: (r) => (r.klass === "failed" ? css("--status-critical") : muted), strokeWidth: 2 }),
-      last && Plot.text([last], { x: "x", y: (r) => r.p5_bytes_per_s / 1e9, text: () => "p5", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
-      last && Plot.text([last], { x: "x", y: (r) => r.median_bytes_per_s / 1e9, text: () => "Median", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
-      Plot.tip(rows.filter((r) => r.p5_bytes_per_s != null || strip.includes(r)), Plot.pointerX({
-        x: "x", y: (r) => (strip.includes(r) ? 0 : r.p5_bytes_per_s / 1e9), title: tip, fill: surface, stroke: grid })),
+      lastP5 && Plot.text([lastP5], { x: "x", y: p5, text: () => "p5", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
+      lastMedian && Plot.text([lastMedian], { x: "x", y: median, text: () => "Median", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
+      Plot.tip(rows.filter((r) => r[stream.p5] != null || r[stream.median] != null || strip.includes(r)), Plot.pointerX({
+        x: "x", y: (r) => (strip.includes(r) ? 0 : r[stream.p5] != null ? p5(r) : median(r)), title: tip, fill: surface, stroke: grid })),
     ].filter(Boolean),
   });
-  chart.setAttribute("aria-label", `${series.label} history: p5 and median ingest rate per run. The runs table below lists the same runs.`);
+  chart.setAttribute("aria-label", `${series.label} history: p5 and median ${stream.label.toLowerCase()} rate per run. The runs table below lists the same runs.`);
   chart.addEventListener("click", () => { if (chart.value) location.hash = `run=${chart.value.run_id}`; });
   host.append(chart);
   if (strip.length) host.append(h("p", { class: "note" }, "✕ below the time axis: failed and no-data runs, whose rates are absent or untrustworthy."));
@@ -433,6 +436,12 @@ async function main() {
   for (const s of M.SERIES) {
     tabs.append(h("button", { type: "button", value: s.id, "aria-pressed": s.id === state.series,
       onclick: () => { state.series = s.id; for (const b of tabs.children) b.setAttribute("aria-pressed", String(b.value === s.id)); drawHistory(); } }, s.label));
+  }
+  // The stream holds for the page session; the URL hash stays with run details.
+  const streams = $("#stream");
+  for (const s of M.STREAMS) {
+    streams.append(h("button", { type: "button", value: s.id, "aria-pressed": s.id === state.stream,
+      onclick: () => { state.stream = s.id; for (const b of streams.children) b.setAttribute("aria-pressed", String(b.value === s.id)); drawHistory(); } }, s.label));
   }
   try {
     const res = await fetch("data/index.json", { cache: "no-cache" });
