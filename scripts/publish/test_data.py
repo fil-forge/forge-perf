@@ -118,7 +118,7 @@ class Preview(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             names = preview.build(tmp, now)
             self.assertEqual(names, ["box-change", "calibration-only", "experiment", "gate-lit", "instrument-change",
-                                     "no-runs", "one-run", "outcomes"])
+                                     "modes", "no-runs", "one-run", "outcomes"])
             index = {n: json.loads((Path(tmp) / n / "data/index.json").read_text(encoding="utf-8")) for n in names}
             for name in names:
                 errors = check_data.gate_errors(index[name]["gates"])
@@ -136,6 +136,12 @@ class Preview(unittest.TestCase):
             self.assertEqual([(r["class"], "traced" in r["flags"]) for r in index["one-run"]["runs"]], [("valid", True)])
             self.assertEqual([r["experiment"]["role"] for r in index["experiment"]["runs"] if r["experiment"]],
                              ["main", "branch", "branch", "main"])
+            # Restore's share of the two medians, well either side of site/model.js's threshold.
+            shares = [r["restore_median_bytes_per_s"] / (r["median_bytes_per_s"] + r["restore_median_bytes_per_s"])
+                      for r in index["modes"]["runs"]]
+            self.assertEqual([s for s in shares if 0.2 <= s <= 0.35], [])
+            self.assertTrue(any(s > 0.35 for s in shares) and any(s < 0.2 for s in shares))
+            self.assertGreater(shares[-1], 0.35)
             outcomes = index["outcomes"]["runs"]
             broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
             self.assertEqual(len(broken), 1)

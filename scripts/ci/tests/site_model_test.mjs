@@ -2,6 +2,7 @@
 // light gates, the ceiling in force, the scale, the heartbeat line and the
 // history markers. Run by scripts/ci/check-site.sh: node --test <this file>.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import * as M from "../../../site/model.js";
 
@@ -180,6 +181,31 @@ for (const c of readLineCases) {
     assert.equal(M.readLine(run(c.run), c.id), c.want);
   });
 }
+
+const modeCases = [
+  { name: "restore at a large share", run: { median_bytes_per_s: 2.9e9, restore_median_bytes_per_s: 1.8e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 38%" },
+  { name: "restore at a small share", run: { median_bytes_per_s: 4.0e9, restore_median_bytes_per_s: 0.8e9 },
+    label: "ingest-heavy", text: "ingest-heavy, restore share 17%" },
+  { name: "restore at exactly the threshold", run: { median_bytes_per_s: 0.72e9, restore_median_bytes_per_s: 0.28e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  { name: "no restore median", run: {}, label: null, text: null },
+  { name: "no ingest median", run: { median_bytes_per_s: null, restore_median_bytes_per_s: 0.1e9 }, label: null, text: null },
+  { name: "both medians zero", run: { median_bytes_per_s: 0, restore_median_bytes_per_s: 0 }, label: null, text: null },
+];
+for (const c of modeCases) {
+  test(`the mode of a run with ${c.name}`, () => {
+    assert.equal(M.modeLabel(run(c.run)), c.label);
+    assert.equal(M.modeText(run(c.run)), c.text);
+  });
+}
+
+test("the method section gives the restore-heavy threshold the model uses", async () => {
+  const html = await readFile(new URL("../../../site/index.html", import.meta.url), "utf8");
+  const para = html.match(/<p id="mode">.*?<\/p>/s);
+  assert.ok(para, "site/index.html has no #mode paragraph");
+  assert.match(para[0], new RegExp(`at least ${Math.round(M.RESTORE_HEAVY_SHARE * 100)}% of the ingest and restore medians`));
+});
 
 test("with every gate unmeasured, the scale covers the mercury's median", () => {
   const d = index([run({ p5_bytes_per_s: 0.04e9, median_bytes_per_s: 0.10e9 })]);

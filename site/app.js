@@ -96,9 +96,10 @@ function thermometer({ gates, lit, merc, top }) {
 function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
   const box = h("div", { class: "headline" });
   if (merc) {
-    const r = merc.run, tl = traces(r);
+    const r = merc.run, tl = traces(r), mode = M.modeLabel(r);
     box.append(
-      h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`),
+      h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`,
+        mode && h("a", { href: "#mode", class: "badge", title: M.modeText(r) }, mode)),
       h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${M.perSecond(r.writes_median_per_s)} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
       ...["read_back", "restore"].map((id) => M.readLine(r, id)).filter(Boolean).map((line) => h("p", {}, line)),
@@ -158,7 +159,11 @@ function drawHistory() {
     (g.current.ceiling_bytes_per_s / 1e9 <= 1.3 * max ? shown : above).push(g);
   }
   const width = host.clientWidth || 640;
-  const tip = (r) => [r.run_id, utc(r.run_started_at), `p5 ${M.gbps(r.p5_bytes_per_s)} GB/s`,
+  const p5Line = (r) => {
+    const mode = M.modeLabel(r);
+    return `p5 ${M.gbps(r.p5_bytes_per_s)} GB/s${mode ? ` · ${mode}` : ""}`;
+  };
+  const tip = (r) => [r.run_id, utc(r.run_started_at), p5Line(r),
     `median ${M.gbps(r.median_bytes_per_s)} GB/s`, `${r.sustained_windows ?? 0} windows`, M.outcomeText(r), "Click to open details"].join("\n");
   const changes = rows.filter((r) => M.instrumentMarker(r));
   const boxes = rows.filter((r) => r.box_change);
@@ -229,14 +234,16 @@ function experimentCell(note) {
 
 function table() {
   const runs = [...state.data.runs].reverse();
-  const head = ["Started (UTC)", "Series", "Box", "Outcome", "p5 GB/s", "Median GB/s", "Writes/s",
+  const head = ["Started (UTC)", "Series", "Box", "Outcome", "p5 GB/s", "Mode", "Median GB/s", "Writes/s",
     "Read-back p5 GB/s", "Read-back median GB/s", "Restore p5 GB/s", "Restore median GB/s", "Ranged GETs/s",
     "Windows", "RTT ms", "Changes"];
   const body = h("tbody");
   for (const r of runs.slice(0, state.shown)) {
+    const mode = M.modeLabel(r);
     const cells = [
       h("a", { href: `#run=${r.run_id}` }, utc(r.run_started_at).replace(" UTC", "")), r.series,
-      `${r.box.id} · ${r.box.instance_type}`, outcome(r), M.gbps(r.p5_bytes_per_s), M.gbps(r.median_bytes_per_s),
+      `${r.box.id} · ${r.box.instance_type}`, outcome(r), M.gbps(r.p5_bytes_per_s),
+      mode ? h("span", { class: "nowrap" }, mode) : "–", M.gbps(r.median_bytes_per_s),
       M.perSecond(r.writes_median_per_s), M.gbps(r.read_back_p5_bytes_per_s), M.gbps(r.read_back_median_bytes_per_s),
       M.gbps(r.restore_p5_bytes_per_s), M.gbps(r.restore_median_bytes_per_s), M.perSecond(r.restore_ranged_gets_median_per_s),
       r.sustained_windows ?? "–", r.rtt_median_ms ?? "–",
@@ -292,7 +299,7 @@ async function details(id) {
       finished: utc(t.run_finished_at), duration: `${dur} min`, ...(tl ? { traces: tl } : {}),
       previous_run: prevRow ? h("a", { href: `#run=${prevRow.run_id}` }, prevRow.run_id) : "none" }),
     ...experimentSection(run),
-    kv("Rates", { ingest_p5: rate(res.ingest_p5_bytes_per_s), ingest_median: rate(res.ingest_median_bytes_per_s),
+    kv("Rates", { ingest_p5: rate(res.ingest_p5_bytes_per_s), mode: M.modeText(run), ingest_median: rate(res.ingest_median_bytes_per_s),
       writes_per_s: res.writes_median_per_s == null ? null : M.perSecond(res.writes_median_per_s),
       "read-back_p5": rate(reads.read_back_p5_bytes_per_s), "read-back_median": rate(reads.read_back_median_bytes_per_s),
       restore_p5: rate(reads.restore_p5_bytes_per_s), restore_median: rate(reads.restore_median_bytes_per_s),
