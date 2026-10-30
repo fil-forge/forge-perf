@@ -99,7 +99,7 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
     const r = merc.run, tl = traces(r), mode = M.modeLabel(r);
     box.append(
       h("p", { class: "big" }, `${M.gbps(r.p5_bytes_per_s)} GB/s held by 95% of windows`,
-        mode && h("a", { href: "#mode", class: "badge", title: M.modeText(r) }, mode)),
+        mode && " ", mode && h("a", { href: "#mode", class: "badge", title: M.modeText(r) }, `${mode} mode`)),
       h("p", {}, `Median ${M.gbps(r.median_bytes_per_s)} GB/s · ${M.perSecond(r.writes_median_per_s)} writes/s`
         + (r.flags.includes("few_windows") ? ` · p5 over ${r.sustained_windows} windows` : "")),
       ...["read_back", "restore"].map((id) => M.readLine(r, id)).filter(Boolean).map((line) => h("p", {}, line)),

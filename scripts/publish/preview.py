@@ -76,13 +76,13 @@ def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=No
         res.update(ingest_p5_bytes_per_s=p5, ingest_median_bytes_per_s=round(p5 * 1.18),
                    writes_median_per_s=round(p5 * 1.18 / 134217728, 2))
         # Read-back tracks the ingest median; restore's median is `restore` times p5, by
-        # default about half the ingest median. A run from before the harness recorded
-        # read p5 (read_p5=False) has the medians alone.
+        # default about half the ingest median, and its p5 sits below that median. A run
+        # from before the harness recorded read p5 (read_p5=False) has the medians alone.
         restore_median = round(p5 * restore)
         res["cache_served"] = {
             "read_back_p5_bytes_per_s": round(p5 * 1.1) if read_p5 else None,
             "read_back_median_bytes_per_s": round(p5 * 1.16),
-            "restore_p5_bytes_per_s": round(p5 * 0.5) if read_p5 else None,
+            "restore_p5_bytes_per_s": round(restore_median * 0.8) if read_p5 else None,
             "restore_median_bytes_per_s": restore_median,
             "restore_ranged_gets_median_per_s": round(restore_median / 4194304, 1) if read_p5 else None}
         if windows is not None:

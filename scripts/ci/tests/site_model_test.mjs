@@ -189,6 +189,11 @@ const modeCases = [
     label: "ingest-heavy", text: "ingest-heavy, restore share 17%" },
   { name: "restore at exactly the threshold", run: { median_bytes_per_s: 0.72e9, restore_median_bytes_per_s: 0.28e9 },
     label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  // The label follows the whole percent the page shows, so the two never disagree.
+  { name: "restore just under the threshold, shown as it", run: { median_bytes_per_s: 0.7205e9, restore_median_bytes_per_s: 0.2795e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  { name: "restore a whole percent under the threshold", run: { median_bytes_per_s: 0.7251e9, restore_median_bytes_per_s: 0.2749e9 },
+    label: "ingest-heavy", text: "ingest-heavy, restore share 27%" },
   { name: "no restore median", run: {}, label: null, text: null },
   { name: "no ingest median", run: { median_bytes_per_s: null, restore_median_bytes_per_s: 0.1e9 }, label: null, text: null },
   { name: "both medians zero", run: { median_bytes_per_s: 0, restore_median_bytes_per_s: 0 }, label: null, text: null },
@@ -200,11 +205,13 @@ for (const c of modeCases) {
   });
 }
 
-test("the method section gives the restore-heavy threshold the model uses", async () => {
-  const html = await readFile(new URL("../../../site/index.html", import.meta.url), "utf8");
-  const para = html.match(/<p id="mode">.*?<\/p>/s);
+test("the method section and docs/publishing.md give the restore-heavy threshold the model uses", async () => {
+  const read = (path) => readFile(new URL(`../../../${path}`, import.meta.url), "utf8");
+  const para = (await read("site/index.html")).match(/<p id="mode">.*?<\/p>/s);
   assert.ok(para, "site/index.html has no #mode paragraph");
-  assert.match(para[0], new RegExp(`at least ${Math.round(M.RESTORE_HEAVY_SHARE * 100)}% of the ingest and restore medians`));
+  assert.ok(para[0].includes(`at least ${M.RESTORE_HEAVY_PERCENT}% of the ingest and restore medians`), para[0]);
+  assert.ok((await read("docs/publishing.md")).includes(`\`RESTORE_HEAVY_PERCENT\` (${M.RESTORE_HEAVY_PERCENT}%)`),
+    "docs/publishing.md does not give RESTORE_HEAVY_PERCENT's value");
 });
 
 test("with every gate unmeasured, the scale covers the mercury's median", () => {

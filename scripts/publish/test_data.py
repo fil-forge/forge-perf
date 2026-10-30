@@ -6,6 +6,7 @@
 import copy
 import importlib.util
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -136,12 +137,15 @@ class Preview(unittest.TestCase):
             self.assertEqual([(r["class"], "traced" in r["flags"]) for r in index["one-run"]["runs"]], [("valid", True)])
             self.assertEqual([r["experiment"]["role"] for r in index["experiment"]["runs"] if r["experiment"]],
                              ["main", "branch", "branch", "main"])
-            # Restore's share of the two medians, well either side of site/model.js's threshold.
-            shares = [r["restore_median_bytes_per_s"] / (r["median_bytes_per_s"] + r["restore_median_bytes_per_s"])
-                      for r in index["modes"]["runs"]]
-            self.assertEqual([s for s in shares if 0.2 <= s <= 0.35], [])
-            self.assertTrue(any(s > 0.35 for s in shares) and any(s < 0.2 for s in shares))
-            self.assertGreater(shares[-1], 0.35)
+            # Restore's percent of the two medians, well either side of site/model.js's
+            # threshold, with the latest run restore-heavy.
+            threshold = int(re.search(r"^export const RESTORE_HEAVY_PERCENT = (\d+);$",
+                                      (ROOT / "site/model.js").read_text(encoding="utf-8"), re.M).group(1))
+            percents = [100 * r["restore_median_bytes_per_s"] / (r["median_bytes_per_s"] + r["restore_median_bytes_per_s"])
+                        for r in index["modes"]["runs"]]
+            self.assertEqual([p for p in percents if abs(p - threshold) < 5], [])
+            self.assertTrue(any(p > threshold for p in percents) and any(p < threshold for p in percents))
+            self.assertGreater(percents[-1], threshold)
             outcomes = index["outcomes"]["runs"]
             broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
             self.assertEqual(len(broken), 1)
