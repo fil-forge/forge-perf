@@ -149,7 +149,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `trace.file_bytes`, `trace.file_sha256` | the size and SHA-256 of the whole of `traces.jsonl` as the run left it. The copy in the raw tarball matches them unless the collect step's credential scrub removed a line from it |
 | `catalog` | null when there is no report (an ingot image without `ingot catalog usage`, a failed keyless call, reports that never agreed, or a run that stopped before the catalog step agreed on one); when `buckets` is not a list; or when a total is missing or not a whole number from zero up to 2^53 − 1. Null in the minimal record |
 | `catalog.buckets` | the number of entries in the report's `buckets`: every bucket with shipped catalog segments or a catalog log on ingot's disk |
-| `catalog.forge_bytes` | `total.forge_bytes`: the CARs of every shipped catalog segment, retired ones included, from ingot's segment rows |
+| `catalog.forge_bytes` | `total.forge_bytes`: the CARs of every shipped catalog segment, retired ones included, from ingot's segment rows. Their index blobs, also on Forge, are not counted |
 | `catalog.dead_on_arrival_bytes` | `total.dead_on_arrival_bytes`: the bytes of those segments' blocks already dead when their segment shipped, which ingot measures at ship time |
 | `catalog.unmeasured_bytes` | `total.unmeasured_bytes`: shipped segments with no dead-on-arrival figure |
 | `catalog.local_bytes` | `total.local_bytes`: the catalog segment files still on ingot's disk, shipped or not; ingot's default retention keeps a few per bucket |
