@@ -139,8 +139,10 @@ class Preview(unittest.TestCase):
                              ["main", "branch", "branch", "main"])
             # Restore's percent of the two medians, well either side of site/model.js's
             # threshold, with the latest run restore-heavy.
-            threshold = int(re.search(r"^export const RESTORE_HEAVY_PERCENT = (\d+);$",
-                                      (ROOT / "site/model.js").read_text(encoding="utf-8"), re.M).group(1))
+            m = re.search(r"^export const RESTORE_HEAVY_PERCENT = (\d+);$",
+                          (ROOT / "site/model.js").read_text(encoding="utf-8"), re.M)
+            self.assertIsNotNone(m, "site/model.js has no `export const RESTORE_HEAVY_PERCENT = <n>;` line")
+            threshold = int(m.group(1))
             percents = [100 * r["restore_median_bytes_per_s"] / (r["median_bytes_per_s"] + r["restore_median_bytes_per_s"])
                         for r in index["modes"]["runs"]]
             self.assertEqual([p for p in percents if abs(p - threshold) < 5], [])
