@@ -2,6 +2,7 @@
 // light gates, the ceiling in force, the scale, the heartbeat line and the
 // history markers. Run by scripts/ci/check-site.sh: node --test <this file>.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import * as M from "../../../site/model.js";
 
@@ -180,6 +181,40 @@ for (const c of readLineCases) {
     assert.equal(M.readLine(run(c.run), c.id), c.want);
   });
 }
+
+const modeCases = [
+  { name: "restore at a large share", run: { median_bytes_per_s: 2.9e9, restore_median_bytes_per_s: 1.8e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 38%" },
+  { name: "restore at a small share", run: { median_bytes_per_s: 4.0e9, restore_median_bytes_per_s: 0.8e9 },
+    label: "ingest-heavy", text: "ingest-heavy, restore share 17%" },
+  { name: "restore at exactly the threshold", run: { median_bytes_per_s: 0.72e9, restore_median_bytes_per_s: 0.28e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  // The label follows the whole percent the page shows, so the two never disagree.
+  { name: "restore just under 28%, shown as 28%", run: { median_bytes_per_s: 0.7205e9, restore_median_bytes_per_s: 0.2795e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  { name: "restore at exactly 27.5%, which rounds up", run: { median_bytes_per_s: 0.725e9, restore_median_bytes_per_s: 0.275e9 },
+    label: "restore-heavy", text: "restore-heavy, restore share 28%" },
+  { name: "restore just under 27.5%, shown as 27%", run: { median_bytes_per_s: 0.7251e9, restore_median_bytes_per_s: 0.2749e9 },
+    label: "ingest-heavy", text: "ingest-heavy, restore share 27%" },
+  { name: "no restore median", run: {}, label: null, text: null },
+  { name: "no ingest median", run: { median_bytes_per_s: null, restore_median_bytes_per_s: 0.1e9 }, label: null, text: null },
+  { name: "both medians zero", run: { median_bytes_per_s: 0, restore_median_bytes_per_s: 0 }, label: null, text: null },
+];
+for (const c of modeCases) {
+  test(`the mode of a run with ${c.name}`, () => {
+    assert.equal(M.modeLabel(run(c.run)), c.label);
+    assert.equal(M.modeText(run(c.run)), c.text);
+  });
+}
+
+test("the method section and docs/publishing.md give the restore-heavy threshold the model uses", async () => {
+  const read = (path) => readFile(new URL(`../../../${path}`, import.meta.url), "utf8");
+  const para = (await read("site/index.html")).match(/<p id="mode">.*?<\/p>/s);
+  assert.ok(para, "site/index.html has no #mode paragraph");
+  assert.ok(para[0].includes(`as a whole percent of the ingest and restore medians together, is at least ${M.RESTORE_HEAVY_PERCENT}%,`), para[0]);
+  assert.ok((await read("docs/publishing.md")).includes(`\`RESTORE_HEAVY_PERCENT\` (${M.RESTORE_HEAVY_PERCENT}%)`),
+    "docs/publishing.md does not give RESTORE_HEAVY_PERCENT's value");
+});
 
 test("with every gate unmeasured, the scale covers the mercury's median", () => {
   const d = index([run({ p5_bytes_per_s: 0.04e9, median_bytes_per_s: 0.10e9 })]);

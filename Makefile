@@ -22,10 +22,8 @@ check:
 	  bash "$$script"; \
 	done
 
-# Builds the page against fixture scenarios (no runs, calibration only, a lit
-# gate, every outcome class, an instrument change, a box change, an
-# experiment) and serves
-# them at http://127.0.0.1:8000/. PORT=<n> picks another port.
+# Builds the page against the fixture scenarios in scripts/publish/preview.py
+# and serves them at http://127.0.0.1:8000/. PORT=<n> picks another port.
 PORT ?= 8000
 
 .PHONY: site-preview

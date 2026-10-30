@@ -47,7 +47,8 @@ def fixture(cls):
 
 
 def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=None, smelt=None,
-           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False, traced=False, read_p5=True):
+           postgres=None, kernel=None, windows=None, changed=("ingot",), broken=False, traced=False, read_p5=True,
+           restore=0.62):
     r = copy.deepcopy(fixture(cls))
     if traced:
         # The traced fixture's trace block and flag, so the page shows a trace link.
@@ -74,13 +75,14 @@ def record(start, cls="valid", series="per-trigger", p5=None, tier=1, pairing=No
     if res and p5 is not None:
         res.update(ingest_p5_bytes_per_s=p5, ingest_median_bytes_per_s=round(p5 * 1.18),
                    writes_median_per_s=round(p5 * 1.18 / 134217728, 2))
-        # Read-back tracks the ingest median; restore runs at about half of it. A run from
-        # before the harness recorded read p5 (read_p5=False) has the medians alone.
-        restore_median = round(p5 * 0.62)
+        # Read-back tracks the ingest median; restore's median is `restore` times p5, by
+        # default about half the ingest median, and its p5 sits below that median. A run
+        # from before the harness recorded read p5 (read_p5=False) has the medians alone.
+        restore_median = round(p5 * restore)
         res["cache_served"] = {
             "read_back_p5_bytes_per_s": round(p5 * 1.1) if read_p5 else None,
             "read_back_median_bytes_per_s": round(p5 * 1.16),
-            "restore_p5_bytes_per_s": round(p5 * 0.5) if read_p5 else None,
+            "restore_p5_bytes_per_s": round(restore_median * 0.8) if read_p5 else None,
             "restore_median_bytes_per_s": restore_median,
             "restore_ranged_gets_median_per_s": round(restore_median / 4194304, 1) if read_p5 else None}
         if windows is not None:
@@ -172,6 +174,14 @@ def scenarios(now):
         runs.append(r)
     out["experiment"] = ("A two-pair experiment beside per-trigger runs", runs,
                          [gate(1, 0.36e9, hours(200)), gate(2), gate(3)], [], idle)
+
+    # One instrument whose runs land in either mode: restore-heavy runs give restore
+    # a large share and ingest less, ingest-heavy runs the reverse. The last is restore-heavy.
+    heavy = [False, False, True, False, False, False, True, True, False, True]
+    runs = [record(hours(100 - 10 * i), p5=(0.24e9 if h else 0.33e9) + 0.003e9 * (i % 3), windows=22,
+                   restore=0.75 if h else 0.2) for i, h in enumerate(heavy)]
+    out["modes"] = ("Runs of one instrument in both modes, the latest restore-heavy", runs,
+                    [gate(1, 0.36e9, hours(200)), gate(2), gate(3)], [], idle)
     return out
 
 

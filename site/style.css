@@ -97,8 +97,9 @@ th { color: var(--text-secondary); font-weight: 600; }
 #runs .scroll { overflow-x: auto; }
 #runs tbody tr { cursor: pointer; }
 #runs tbody tr:hover { background: var(--surface-2); }
-#runs td:nth-child(n+5):nth-child(-n+14) { font-variant-numeric: tabular-nums; }
+#runs td:nth-child(n+5):nth-child(-n+15) { font-variant-numeric: tabular-nums; }
 #runs button { margin-top: 12px; font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--chart-chrome); background: var(--surface-1); color: var(--text-primary); cursor: pointer; }
+.nowrap { white-space: nowrap; }
 .outcome .icon { display: inline-block; width: 1em; text-align: center; }
 .outcome.valid .icon { color: var(--status-good); }
 .outcome.availability_warning .icon { color: var(--status-warning); }
@@ -118,7 +119,10 @@ th { color: var(--text-secondary); font-weight: 600; }
 .details .kv th { width: 14em; font-weight: 500; }
 .details .components td:nth-child(1), .details .components td:nth-child(5) { overflow-wrap: anywhere; }
 .details .components td:nth-child(3), .details .components td:nth-child(4) { max-width: 22em; }
-.details .badge { margin-left: 8px; font-size: 0.75rem; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text-primary); }
+.badge { margin-left: 8px; font-size: 0.75rem; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); color: var(--text-primary); }
+.headline .badge { margin-left: 6px; font-size: 0.85rem; font-weight: 600; padding: 2px 8px; vertical-align: middle; white-space: nowrap;
+  text-decoration: underline dotted; text-underline-offset: 3px; }
+.headline a.badge:hover { text-decoration-style: solid; }
 @media (max-width: 640px) {
   .details .kv th { width: auto; }
   .details .components thead { display: none; }
