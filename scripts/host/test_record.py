@@ -63,16 +63,21 @@ class Case:
         """The case's traces/ directory, as run.sh passes $RUN/traces whether or not it exists."""
         return self.case / "traces"
 
+    @property
+    def catalog(self):
+        """The catalog step's report, as run.sh passes it whether or not it exists."""
+        return self.case / "catalog" / "usage.json"
+
     def build(self):
         latency = self.case / "netem" / "latency.json"
         return record.build(load(self.case / "runner.json"), self.case / "run",
                             load(latency) if latency.exists() else None, record.read_env(self.latency_env),
-                            self.traces)
+                            self.traces, self.catalog)
 
     def cli(self, *extra, command="build"):
         args = [sys.executable, str(HERE / "record.py"), command, "--runner", str(self.case / "runner.json"),
                 "--run-dir", str(self.case / "run"), "--latency", str(self.case / "netem" / "latency.json"),
-                "--latency-env", str(self.latency_env), "--traces", str(self.traces),
+                "--latency-env", str(self.latency_env), "--traces", str(self.traces), "--catalog", str(self.catalog),
                 "--denylist", str(self.denylist), "--out", str(self.out), *extra]
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -726,6 +731,49 @@ class Tracing(unittest.TestCase):
         text = case.out.read_text(encoding="utf-8")
         self.assertNotIn(MARKER, text)
         self.assertNotIn("0af7651916cd43dd8448eb211c80319c", text)
+
+
+class Catalog(unittest.TestCase):
+    def test_the_catalog_takes_the_totals_and_counts_the_buckets(self):
+        case = Case(self, "valid")
+        report = load(case.catalog)
+        got = case.build()["catalog"]
+        # A total the schema does not name, such as fetched_segments, is not copied.
+        self.assertIn("fetched_segments", report["total"])
+        totals = {k: v for k, v in report["total"].items() if k != "fetched_segments"}
+        self.assertEqual(got, {"buckets": len(report["buckets"]), **totals})
+        # The fingerprints leave the catalog out.
+        (case.catalog).unlink()
+        without = case.build()
+        self.assertIsNone(without["catalog"])
+        self.assertEqual(without["instrument"], case.expected["instrument"])
+
+    def test_a_report_the_builder_cannot_trust_gives_null(self):
+        bad = {
+            "a negative total": lambda d: d["total"].update(live_bytes=-1),
+            "a fractional total": lambda d: d["total"].update(live_bytes=1.5),
+            "a boolean total": lambda d: d["total"].update(missing_blocks=False),
+            "a string total": lambda d: d["total"].update(forge_bytes="18679241"),
+            "a missing total": lambda d: d["total"].pop("local_bytes"),
+            "no total": lambda d: d.pop("total"),
+            "buckets not a list": lambda d: d.update(buckets={"a": 1}),
+        }
+        for name, change in bad.items():
+            with self.subTest(case=name):
+                case = Case(self, "valid")
+                case.edit("catalog/usage.json", change)
+                self.assertIsNone(case.build()["catalog"])
+                self.assertEqual(case.cli().returncode, 0)
+                self.assertIsNone(load(case.out)["catalog"])
+        case = Case(self, "valid")
+        case.catalog.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(case.build()["catalog"])
+
+    def test_the_minimal_record_has_no_catalog(self):
+        case = Case(self, "valid")
+        result = case.cli(command="minimal")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(load(case.out)["catalog"])
 
 
 class NetemLines(unittest.TestCase):

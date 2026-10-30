@@ -256,6 +256,22 @@ has "$D/aws.log" "--key published/main/main-20261001t200000z.json"
 has "$D/aws.log" "--if-none-match *"
 echo "ok: the flush uploads raw before record and treats a 412 as done"
 
+# After a reboot the drill's secret comes from its provider .env, which the
+# tarball leaves out; the same secret anywhere else refuses the tarball.
+setup
+cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
+mkdir -p "$work/box/nvme/work/smelt/generated/perf-runs/drill/provider" "$work/box/nvme/work/run/catalog"
+echo "SQ_SECRET_KEY=drill-secret-in-env" >"$work/box/nvme/work/smelt/generated/perf-runs/drill/provider/.env"
+echo "signing with drill-secret-in-env" >"$work/box/nvme/work/run/catalog/usage.err"
+echo '{"run_id": "main-20261001t200000z", "phase": "drill"}' >"$work/box/state/current.json"
+touch "$D/s3-down"
+"$host/recover.sh" >"$work/out" 2>&1 || { cat "$work/out"; fail "recover (drill secret) failed"; }
+rec="$work/box/outbox/main-20261001t200000z.json"
+[ -s "$rec" ] && [ ! -e "$work/box/outbox/main-20261001t200000z.raw.tar.zst" ] ||
+  fail "recovery kept a tarball that holds the drill's secret"
+jq -e '.outcome.flags | index("raw_missing")' "$rec" >/dev/null || fail "record lacks raw_missing"
+echo "ok: recovery refuses a tarball that holds the drill's secret, read from its provider .env"
+
 setup
 cp "$host/fixtures/stack-boot-failed/runner.json" "$work/box/nvme/work/run/runner.json"
 echo '{"run_id": "main-20261001t200000z", "phase": "uploaded"}' >"$work/box/state/current.json"
@@ -523,7 +539,9 @@ recover_ok "a traced run"
   fail "the collector was not stopped first: $(grep 'stop -t' "$D/log")"
 zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -xOf - ./run/traces/collector.log >"$work/log"
 has "$work/log" "collector log c5"
-zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/traces.jsonl ||
+# grep reads to the end: exiting at the match can end tar with SIGPIPE, and
+# under pipefail that fails the check.
+zstd -dc "$work/box/outbox/main-20261001t200000z.raw.tar.zst" | tar -tf - | grep -xF ./run/traces/traces.jsonl >/dev/null ||
   fail "traces.jsonl not in the tarball"
 count "$D/containers" 0
 echo "ok: recovery stops a traced run's collector first, keeps its log and traces, and wipes it"
