@@ -159,7 +159,8 @@ grafana="$(docker ps -aq --filter name=^forge-perf-grafana)"
 # shellcheck disable=SC2086 # container IDs
 [ -z "$grafana" ] || docker rm -f $grafana >/dev/null || echo "recover: the wipe removes the Grafana collector" >&2
 rm -f "$FORGE_PERF_RUNTIME/secrets/grafana-token"
-# The collector writes traces.jsonl until it stops; the wipe removes it.
+# The collector writes traces.jsonl and metrics.jsonl until it stops; the
+# wipe removes it.
 otel="$(docker ps -aq --filter name=^forge-perf-otel)"
 if [ -n "$otel" ]; then
   docker stop -t 60 "$otel" >/dev/null || echo "recover: the trace collector did not stop cleanly" >&2

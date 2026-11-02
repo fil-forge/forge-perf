@@ -6,7 +6,8 @@
 # A key belongs here only when no value of it can carry a bucket name, an
 # object key, a URL, a path, a query string, SQL text or a network address.
 # The list comes from what ingot, sprue, hilt and piri set at their origin/main
-# of 2026-09-28 and from a local traced run's spans. Left out on purpose:
+# of 2026-09-28 and from a local traced run's spans, with ingot's brought up to
+# its origin/main of 2026-10-08. Left out on purpose:
 # url.*, server.*, client.*, network.peer.*, user_agent.original, user.name,
 # aws.s3.bucket, aws.s3.key, aws.request_id, aws.region, db.query.text,
 # db.namespace, pgx.prepare_stmt.name, ucan.task, space.did, blob.digest,
@@ -40,26 +41,46 @@ pgx.rows_affected
 error.type
 exception.type
 
-# ingot
+# ingot. Builds before fil-forge/ingot#218 name the ingot.reads.*.local
+# counts ingot.reads.*.spool. The ingot.sweep.* keys are on the spans of
+# ingot's background sweeps: counts, bytes, and a pass's stop reason from a
+# fixed set.
 ingot.auth.local_hit
 ingot.auth.path
 ingot.blob.bytes
+ingot.blob.plaintext_bytes
 ingot.blob.result
 ingot.blobs.concluded
 ingot.blobs.total
 ingot.blobs.uploaded
 ingot.body.blobs
 ingot.body.bytes
+ingot.body.streamed
 ingot.log.attempts
 ingot.log.blocks
 ingot.log.bytes
 ingot.log.plane
 ingot.log.segment_bytes
+ingot.reads.blobs.local
 ingot.reads.blobs.network
 ingot.reads.blobs.spool
 ingot.reads.blocks.cache
+ingot.reads.blocks.local
 ingot.reads.blocks.log
 ingot.reads.blocks.network
+ingot.reads.blocks.spool
+ingot.sweep.budget_bytes
+ingot.sweep.budget_files
+ingot.sweep.bytes
+ingot.sweep.count
+ingot.sweep.files
+ingot.sweep.forced_bytes
+ingot.sweep.forced_files
+ingot.sweep.orphan_bytes
+ingot.sweep.orphan_files
+ingot.sweep.skipped
+ingot.sweep.stop
+ingot.sweep.usage_bytes
 ingot.tree.keys_returned
 ingot.tree.keys_scanned
 ingot.tree.versions_returned

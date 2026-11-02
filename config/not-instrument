@@ -19,6 +19,10 @@ README.md
 calibration/
 # The ceiling tool runs only on a calibration box, never during a run.
 cmd/s3-ceiling/
+# The Grafana step reads these only after the record is written.
+config/grafana-span-attributes.txt
+config/grafana.conf
+config/otel-grafana.yaml
 data/
 docs/
 # go.mod and go.sum belong here only while no Go code runs during a run.
