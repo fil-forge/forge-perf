@@ -5,7 +5,7 @@ import * as M from "./model.js";
 const REPO = "https://github.com/fil-forge/forge-perf";
 const SMELT = "https://github.com/fil-forge/smelt";
 const $ = (sel) => document.querySelector(sel);
-const state = { data: null, series: "per-trigger", shown: 50, now: Date.now() };
+const state = { data: null, series: "per-trigger", range: "type", shown: 50, now: Date.now() };
 
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
@@ -139,88 +139,157 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
   return box;
 }
 
+// The range buttons for one series' runs. The reader's choice is kept across
+// series; a series without that range shows all of its runs.
+function drawRanges(rows) {
+  const el = $("#range");
+  const choices = rows.length ? M.rangeChoices(rows) : [];
+  const range = choices.includes(state.range) ? state.range : "all";
+  el.replaceChildren(...choices.map((id) => h("button", { type: "button", value: id, "aria-pressed": id === range,
+    onclick: () => { state.range = id; drawHistory(); } }, M.rangeLabel(id, rows))));
+  el.hidden = choices.length < 2;
+  return range;
+}
+
+const bandText = (s) => (s.failed && s.no_data ? "failed / no data" : s.failed ? "failed" : "no data");
+
+// The history: ingest p5 and median per run, and under it each run's restore
+// share. Both charts share one time scale and the same side margins, so a
+// run sits at the same x in each.
 function drawHistory() {
   const host = $("#chart");
   host.replaceChildren();
   const series = M.SERIES.find((s) => s.id === state.series);
-  const rows = M.history(state.data.runs, series.id).map((r) => ({ ...r, x: new Date(r.run_started_at) }));
-  if (!rows.length) { host.append(h("p", { class: "empty" }, `No ${series.label.toLowerCase()} runs yet.`)); return; }
+  const all = M.history(state.data.runs, series.id);
+  const range = drawRanges(all);
+  if (!all.length) { host.append(h("p", { class: "empty" }, `No ${series.label.toLowerCase()} runs yet.`)); return; }
+  const rows = M.inRange(all, range, state.now).map((r) => ({ ...r, x: new Date(r.run_started_at) }));
+  if (!rows.length) { host.append(h("p", { class: "empty" }, `No ${series.label.toLowerCase()} runs in this range.`)); return; }
   const color = css(`--series-${series.slot}`), muted = css("--text-muted"), second = css("--text-secondary");
-  const surface = css("--surface-1"), grid = css("--chart-grid");
+  const primary = css("--text-primary"), surface = css("--surface-1"), grid = css("--chart-grid");
   const joined = rows.filter((r) => ["valid", "availability_warning"].includes(r.klass) && r.p5_bytes_per_s != null);
-  const plotted = rows.filter((r) => r.p5_bytes_per_s != null && !["failed", "no_data"].includes(r.klass));
-  const strip = rows.filter((r) => ["failed", "no_data"].includes(r.klass));
+  const plotted = rows.filter((r) => r.p5_bytes_per_s != null && !M.GAP_CLASSES.includes(r.klass));
+  const spans = M.noDataSpans(rows);
+  const inView = M.gatesInView(state.data.gates, rows);
   const measured = state.data.gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s / 1e9);
   // With nothing plotted, a readable range: up to the lowest measured gate, or 1 GB/s.
   const max = plotted.length ? Math.max(...plotted.map((r) => r.p5_bytes_per_s / 1e9), ...plotted.map((r) => (r.median_bytes_per_s ?? 0) / 1e9), 1e-3)
     : (measured.length ? Math.min(...measured) : 1) / 1.15;
-  const shown = [], above = [];
-  for (const g of state.data.gates.filter((g) => g.current)) {
-    (g.current.ceiling_bytes_per_s / 1e9 <= 1.3 * max ? shown : above).push(g);
-  }
+  const shown = inView.filter((g) => g.current.ceiling_bytes_per_s / 1e9 <= 1.3 * max);
+  const above = inView.filter((g) => !shown.includes(g));
+
   const width = host.clientWidth || 640;
+  const narrow = width < 480;
+  const margin = { left: 40, right: narrow ? 58 : 72 };
+  // The axis goes under the restore-share chart when there is one.
+  const shares = plotted.flatMap((r) => { const m = M.mode(r); return m ? [{ ...r, share: m.percent }] : []; });
+  const height = narrow ? 230 : 300, top = 26, bottom = shares.length ? 8 : 30;
+  const end = Math.max(+rows[rows.length - 1].x, ...spans.map((s) => Date.parse(s.to)));
+  const x = { type: "utc", domain: [rows[0].x, new Date(end)], label: null };
+  if (rows.length === 1) x.domain = [new Date(+rows[0].x - 43200e3), new Date(+rows[0].x + 43200e3)];
+  const ymax = max * 1.15;
+  // A no-data span stays at least 4 px wide, so a single run's band shows.
+  const minSpan = ((x.domain[1] - x.domain[0]) / Math.max(1, width - margin.left - margin.right)) * 4;
+  const bands = spans.map((s) => ({ ...s, x1: new Date(s.from), x2: new Date(Math.max(Date.parse(s.to), Date.parse(s.from) + minSpan)) }));
+  // The legend's swatch names the bands; each band's title gives its runs and times.
+  const bandMark = Plot.rect(bands, { x1: "x1", x2: "x2", fill: grid, fillOpacity: 0.8, clip: true,
+    title: (s) => `${bandText(s)}: ${s.failed + s.no_data} run${s.failed + s.no_data === 1 ? "" : "s"}, ${utc(s.from)} to ${utc(s.to)}` });
+  // A box change at the start of the range is where the range begins, so it gets no rule.
+  const boxes = rows.filter((r, i) => r.box_change && i > 0);
+  const dotR = narrow ? 2.5 : 4;
+  const boxRule = Plot.ruleX(boxes, { x: "x", stroke: second, strokeWidth: 1.5 });
+
+  // Labels in the right margin: the line ends, then each gate in view, spread
+  // so none overlaps another.
+  const last = joined[joined.length - 1];
+  // The median is drawn as a line only, so it is named only when its last stretch has one.
+  const medianLine = last && last.median_bytes_per_s != null && joined.filter((r) => r.segment === last.segment).length > 1;
+  const labels = [
+    ...(last ? [{ v: last.p5_bytes_per_s / 1e9, text: "p5", fill: primary },
+      ...(medianLine ? [{ v: last.median_bytes_per_s / 1e9, text: "Median", fill: second }] : [])] : []),
+    ...shown.map((g) => ({ v: g.current.ceiling_bytes_per_s / 1e9, text: `Gate ${g.gate}`, fill: muted,
+      title: `Gate ${g.gate}: ${g.instance_type} ceiling, ${M.gbps(g.current.ceiling_bytes_per_s)} GB/s` })),
+  ];
+  const plotH = height - top - bottom;
+  const toPx = (v) => top + (1 - v / ymax) * plotH, fromPx = (px) => (1 - (px - top) / plotH) * ymax;
+  M.spread(labels.map((l) => toPx(l.v)), 14, top + 4, height - bottom - 2).forEach((px, i) => { labels[i].v = fromPx(px); });
+
   const p5Line = (r) => {
     const mode = M.modeLabel(r);
     return `p5 ${M.gbps(r.p5_bytes_per_s)} GB/s${mode ? ` · ${mode}` : ""}`;
   };
-  const tip = (r) => [r.run_id, utc(r.run_started_at), p5Line(r),
-    `median ${M.gbps(r.median_bytes_per_s)} GB/s`, `${r.sustained_windows ?? 0} windows`, M.outcomeText(r), "Click to open details"].join("\n");
-  const changes = rows.filter((r) => M.instrumentMarker(r));
-  const boxes = rows.filter((r) => r.box_change);
-  const x = { type: "utc", domain: [rows[0].x, rows[rows.length - 1].x], nice: rows.length > 1, label: null };
-  if (rows.length === 1) x.domain = [new Date(+rows[0].x - 43200e3), new Date(+rows[0].x + 43200e3)];
-  const last = joined[joined.length - 1];
+  const tip = (r) => [r.run_id, utc(r.run_started_at), p5Line(r), `median ${M.gbps(r.median_bytes_per_s)} GB/s`,
+    r.restore_median_bytes_per_s != null && `restore median ${M.gbps(r.restore_median_bytes_per_s)} GB/s`,
+    `${r.sustained_windows ?? 0} windows`, M.instrumentMarker(r) && `instrument changed: ${r.instrument_changes.join(", ")}`,
+    M.outcomeText(r), "Click to open details"].filter(Boolean).join("\n");
+  const style = { background: "transparent", color: second, fontSize: "12px" };
   const chart = Plot.plot({
-    width, height: width < 480 ? 240 : 320, marginRight: 70, marginTop: 24, marginBottom: strip.length ? 52 : 30, x,
-    y: { domain: [0, max * 1.15], grid: true, label: "GB/s", ticks: 5 },
-    style: { background: "transparent", color: second, fontSize: "12px" },
+    width, height, marginLeft: margin.left, marginRight: margin.right, marginTop: top, marginBottom: bottom,
+    x: { ...x, axis: shares.length ? null : undefined },
+    y: { domain: [0, ymax], grid: true, label: "GB/s", ticks: 5 },
+    style,
     marks: [
       Plot.gridY({ stroke: grid, strokeOpacity: 1, ticks: 5 }),
-      Plot.ruleY(shown, { y: (g) => g.current.ceiling_bytes_per_s / 1e9, stroke: muted, strokeDasharray: "4,3" }),
-      Plot.text(shown, { y: (g) => g.current.ceiling_bytes_per_s / 1e9, frameAnchor: "left", dx: 4, dy: -7, textAnchor: "start",
-        text: (g) => `Gate ${g.gate} · ${g.instance_type}`, fill: muted }),
-      Plot.ruleX(changes, { x: "x", stroke: muted, strokeDasharray: "1,3", title: (r) => `Instrument changed: ${r.instrument_changes.join(", ")}` }),
-      Plot.text(spaced(changes, x.domain, width), { x: "x", frameAnchor: "top", dy: -12, text: () => "instrument", fill: muted }),
-      Plot.ruleX(boxes, { x: "x", stroke: second, strokeWidth: 2 }),
-      Plot.text(boxes, { x: "x", frameAnchor: "top", dy: -12, dx: 4, textAnchor: "start", text: "box_change", fill: second }),
-      Plot.line(joined, { x: "x", z: (r) => r.box.instance_type, y: (r) => r.median_bytes_per_s / 1e9, stroke: color, strokeWidth: 2, strokeDasharray: "5,4" }),
-      Plot.line(joined, { x: "x", z: (r) => r.box.instance_type, y: (r) => r.p5_bytes_per_s / 1e9, stroke: color, strokeWidth: 2 }),
+      bandMark,
+      Plot.ruleY(shown, { y: (g) => g.current.ceiling_bytes_per_s / 1e9, stroke: muted, strokeOpacity: 0.7, strokeDasharray: "4,3" }),
+      boxRule,
+      Plot.text(boxes, { x: "x", frameAnchor: "top", dy: 18, dx: 4, textAnchor: "start", text: "box_change", fill: second,
+        stroke: surface, strokeWidth: 3 }),
+      Plot.line(joined, { x: "x", z: "segment", y: (r) => r.median_bytes_per_s / 1e9, stroke: color, strokeOpacity: 0.55,
+        strokeWidth: 1.5, strokeDasharray: "5,4" }),
+      Plot.line(joined, { x: "x", z: "segment", y: (r) => r.p5_bytes_per_s / 1e9, stroke: color, strokeWidth: 2 }),
       Plot.dot(plotted, {
-        x: "x", y: (r) => r.p5_bytes_per_s / 1e9, r: 4.5,
+        x: "x", y: (r) => r.p5_bytes_per_s / 1e9, r: dotR,
         symbol: (r) => (r.klass === "availability_warning" ? "triangle" : "circle"),
         fill: (r) => (r.klass === "invalid" ? "none" : color), stroke: (r) => (r.klass === "invalid" ? muted : r.incoming ? surface : color),
         strokeWidth: (r) => (r.incoming ? 2 : 1.5),
       }),
-      Plot.dot(strip, { x: "x", frameAnchor: "bottom", dy: 42, symbol: "times", r: 4,
-        stroke: (r) => (r.klass === "failed" ? css("--status-critical") : muted), strokeWidth: 2 }),
-      last && Plot.text([last], { x: "x", y: (r) => r.p5_bytes_per_s / 1e9, text: () => "p5", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
-      last && Plot.text([last], { x: "x", y: (r) => r.median_bytes_per_s / 1e9, text: () => "Median", dx: 8, textAnchor: "start", fill: css("--text-primary") }),
-      Plot.tip(rows.filter((r) => r.p5_bytes_per_s != null || strip.includes(r)), Plot.pointerX({
-        x: "x", y: (r) => (strip.includes(r) ? 0 : r.p5_bytes_per_s / 1e9), title: tip, fill: surface, stroke: grid })),
+      // Instrument changes: a small mark on the top edge, detailed in its title and the run's tooltip.
+      Plot.dot(rows.filter((r) => M.instrumentMarker(r)), { x: "x", frameAnchor: "top", dy: 4, symbol: "triangle", rotate: 180, r: 3.5,
+        fill: muted, title: (r) => `Instrument changed: ${r.instrument_changes.join(", ")}` }),
+      Plot.text(labels, { y: "v", frameAnchor: "right", dx: 8, textAnchor: "start", text: "text", fill: "fill", title: "title" }),
+      Plot.tip(plotted, Plot.pointerX({ x: "x", y: (r) => r.p5_bytes_per_s / 1e9, title: tip, fill: surface, stroke: grid })),
     ].filter(Boolean),
   });
   chart.setAttribute("aria-label", `${series.label} history: p5 and median ingest rate per run. The runs table below lists the same runs.`);
   chart.addEventListener("click", () => { if (chart.value) location.hash = `run=${chart.value.run_id}`; });
   host.append(chart);
-  if (strip.length) host.append(h("p", { class: "note" }, "✕ below the time axis: failed and no-data runs, whose rates are absent or untrustworthy."));
+
+  if (shares.length) {
+    const t = M.RESTORE_HEAVY_PERCENT;
+    const shareTop = Math.max(50, Math.ceil((Math.max(...shares.map((s) => s.share)) + 5) / 10) * 10);
+    // Three lines, so the tooltip fits the short chart.
+    const shareTip = (r) => [r.run_id, M.modeText(r),
+      `restore ${M.gbps(r.restore_median_bytes_per_s)} · ingest ${M.gbps(r.median_bytes_per_s)} GB/s (medians)`].join("\n");
+    host.append(h("p", { class: "panel-title" }, `Restore share: restore's median as a percent of the ingest and restore medians. `
+      + `At or above ${t}%, a run is restore-heavy.`));
+    const panel = Plot.plot({
+      width, height: narrow ? 110 : 130, marginLeft: margin.left, marginRight: margin.right, marginTop: 8, marginBottom: 30, x,
+      y: { domain: [0, shareTop], label: null, ticks: [0, t, shareTop], tickFormat: (d) => `${d}%` },
+      style,
+      marks: [
+        Plot.gridY([0, shareTop], { stroke: grid, strokeOpacity: 1 }),
+        bandMark,
+        boxRule,
+        Plot.ruleY([t], { stroke: second, strokeDasharray: "4,3" }),
+        Plot.text([t], { y: (d) => d, frameAnchor: "right", dx: 8, textAnchor: "start", text: () => "restore-", dy: -7, fill: second }),
+        Plot.text([t], { y: (d) => d, frameAnchor: "right", dx: 8, textAnchor: "start", text: () => "heavy", dy: 7, fill: second }),
+        Plot.dot(shares, { x: "x", y: "share", r: narrow ? 2.5 : 3.5, fill: color, stroke: surface, strokeWidth: 1 }),
+        Plot.tip(shares, Plot.pointerX({ x: "x", y: "share", title: shareTip, fill: surface, stroke: grid })),
+      ],
+    });
+    panel.setAttribute("aria-label", `${series.label} restore share per run, with the ${t}% line between ingest-heavy and restore-heavy runs. `
+      + "The runs table below gives each run's mode.");
+    panel.addEventListener("click", () => { if (panel.value) location.hash = `run=${panel.value.run_id}`; });
+    host.append(panel);
+  }
+  if (spans.length) host.append(h("p", { class: "note" }, "Shaded: failed and no-data runs, whose rates are absent or untrustworthy. The lines do not cross them."));
   for (const o of M.pairedOffsets(rows)) {
     host.append(h("p", { class: "note" }, `Paired runs ${o.pairing_id}${o.size_bytes != null ? ` at ${gb(o.size_bytes)}` : ""}: median ${M.gbps(o.to_median)} GB/s on ${o.to} `
       + `(${o.to_runs} run${o.to_runs === 1 ? "" : "s"}) against ${M.gbps(o.from_median)} GB/s on ${o.from} `
       + `(${o.from_runs} run${o.from_runs === 1 ? "" : "s"}), ${o.ratio.toFixed(2)}×.`));
   }
   if (above.length) host.append(h("p", { class: "note" }, above.map((g) => `Gate ${g.gate} (${M.gbps(g.current.ceiling_bytes_per_s)} GB/s) above range`).join(" · ")));
-}
-
-// Marker labels at least 80 px apart, so neighbouring changes keep their rules
-// without their labels running together; the tooltip still lists each one.
-function spaced(rows, [t0, t1], width) {
-  let last = -Infinity;
-  return rows.filter((r) => {
-    const px = ((r.x - t0) / (t1 - t0 || 1)) * width;
-    if (px - last < 80) return false;
-    last = px;
-    return true;
-  });
 }
 
 // An experiment's pull request, the set the run ran, and links to the other

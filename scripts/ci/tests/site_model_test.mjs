@@ -322,6 +322,65 @@ test("only a traced run with its trace file and both times gets a trace link", (
   assert.equal(M.traceLink(run({ run_started_at: times.run_started_at, flags: ["traced"] })), null);
 });
 
+test("history lines break at failed and no-data runs, and each instance type keeps its own line through a pairing", () => {
+  const big = { id: "main", tier: 2, instance_type: "m9gd.8xlarge" };
+  const d = index([
+    run(), run({ class: "failed" }), run(), run({ class: "no_data", p5_bytes_per_s: null }), run({ class: "invalid" }), run(),
+    run({ pairing_id: "pair-20261003-a", box: big }), run({ pairing_id: "pair-20261003-a" }), run({ pairing_id: "pair-20261003-a", box: big }),
+  ]);
+  const seg = M.history(d.runs, "per-trigger").map((r) => r.segment);
+  assert.notEqual(seg[0], seg[2], "a failed run breaks the line");
+  assert.notEqual(seg[2], seg[5], "a no-data run breaks the line");
+  assert.equal(seg[4], seg[5], "an invalid run does not");
+  assert.equal(seg[5], seg[7], "the small box's runs join across the paired big box's");
+  assert.equal(seg[6], seg[8]);
+  assert.notEqual(seg[6], seg[7], "two instance types never share a line");
+});
+
+test("no-data spans join consecutive failed and no-data runs, and a run the chart draws ends one", () => {
+  const at = (day, cls, extra = {}) => run({ class: cls, run_started_at: `2026-10-${day}T00:00:00Z`,
+    run_finished_at: `2026-10-${day}T00:50:00Z`, ...(cls === "valid" || cls === "invalid" ? {} : { p5_bytes_per_s: null }), ...extra });
+  const d = index([at("01", "valid"), at("02", "no_data"), at("03", "failed"), at("04", "invalid", { p5_bytes_per_s: null }),
+    at("05", "no_data"), at("06", "valid"), at("07", "failed"), at("08", "invalid")]);
+  assert.deepEqual(M.noDataSpans(M.history(d.runs, "per-trigger")), [
+    { from: "2026-10-02T00:00:00Z", to: "2026-10-05T00:50:00Z", failed: 1, no_data: 2 },
+    { from: "2026-10-07T00:00:00Z", to: "2026-10-07T00:50:00Z", failed: 1, no_data: 0 },
+  ]);
+});
+
+test("time ranges: since the latest run's instance type, the last 30 days, or all", () => {
+  const big = { id: "main", tier: 3, instance_type: "m9gd.16xlarge" };
+  const rows = M.history(index([
+    run({ run_started_at: "2026-08-01T00:00:00Z" }), run({ run_started_at: "2026-09-20T00:00:00Z", box: big }),
+    run({ run_started_at: "2026-09-25T00:00:00Z" }), run({ run_started_at: "2026-10-05T00:00:00Z", box: big }),
+  ]).runs, "per-trigger");
+  assert.deepEqual(M.inRange(rows, "type", NOW).map((r) => r.run_started_at), ["2026-09-20T00:00:00Z", "2026-09-25T00:00:00Z", "2026-10-05T00:00:00Z"]);
+  // NOW is 10 October, so the last 30 days start on 10 September.
+  const late = run({ run_started_at: "2026-09-12T00:00:00Z" });
+  const withLate = M.history(index([...rows, late].sort((a, b) => a.run_started_at.localeCompare(b.run_started_at))).runs, "per-trigger");
+  assert.deepEqual(M.inRange(withLate, "30d", NOW).map((r) => r.run_started_at),
+    ["2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z", "2026-09-25T00:00:00Z", "2026-10-05T00:00:00Z"]);
+  assert.equal(M.inRange(rows, "all", NOW).length, 4);
+  assert.deepEqual(M.rangeChoices(rows), ["type", "30d", "all"]);
+  assert.equal(M.rangeLabel("type", rows), "Since m9gd.16xlarge");
+  const one = rows.filter((r) => r.box.instance_type === "m9gd.2xlarge");
+  assert.deepEqual(M.rangeChoices(one), ["30d", "all"], "with one instance type, the type range is the whole history");
+  assert.deepEqual(M.inRange([], "type", NOW), []);
+});
+
+test("only the measured gates of instance types in view are drawn", () => {
+  const d = index([run()], [measured(1, 0.36e9, "2026-09-01T00:00:00Z"), { ...measured(2, 2.05e9, "2026-09-01T00:00:00Z"), instance_type: "m9gd.8xlarge" }, unmeasured(3)]);
+  assert.deepEqual(M.gatesInView(d.gates, d.runs).map((g) => g.gate), [1]);
+  assert.deepEqual(M.gatesInView(d.gates, []), []);
+});
+
+test("labels spread apart within their bounds and stay put when already apart", () => {
+  assert.deepEqual(M.spread([100, 50, 200], 14, 0, 300), [100, 50, 200]);
+  assert.deepEqual(M.spread([100, 105, 110], 14, 0, 300), [100, 114, 128]);
+  assert.deepEqual(M.spread([290, 295], 14, 0, 300), [286, 300], "the lowest stays inside the bottom bound");
+  assert.deepEqual(M.spread([-5], 14, 0, 300), [0], "and the highest inside the top");
+});
+
 test("experiment runs never move the mercury or light a gate, and name their pull request and pairing", () => {
   const e = { request_id: "ingot-pr123-0123456789ab-17000000001", service: "ingot", repository: "fil-forge/ingot",
     pr: 123, commit: "0123456789abcdef0123456789abcdef01234567" };
