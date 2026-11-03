@@ -145,9 +145,12 @@ function drawRanges(rows) {
   const el = $("#range");
   const choices = rows.length ? M.rangeChoices(rows) : [];
   const range = choices.includes(state.range) ? state.range : "all";
+  // The buttons are rebuilt on every draw, so keep keyboard focus on the one that had it.
+  const focused = el.contains(document.activeElement) ? document.activeElement.value : null;
   el.replaceChildren(...choices.map((id) => h("button", { type: "button", value: id, "aria-pressed": id === range,
     onclick: () => { state.range = id; drawHistory(); } }, M.rangeLabel(id, rows))));
   el.hidden = choices.length < 2;
+  if (focused) [...el.children].find((b) => b.value === focused)?.focus();
   return range;
 }
 
@@ -168,10 +171,10 @@ function drawHistory() {
   const color = css(`--series-${series.slot}`), muted = css("--text-muted"), second = css("--text-secondary");
   const primary = css("--text-primary"), surface = css("--surface-1"), grid = css("--chart-grid");
   const joined = rows.filter((r) => ["valid", "availability_warning"].includes(r.klass) && r.p5_bytes_per_s != null);
-  const plotted = rows.filter((r) => r.p5_bytes_per_s != null && !M.GAP_CLASSES.includes(r.klass));
+  const plotted = rows.filter(M.drawn);
   const spans = M.noDataSpans(rows);
   const inView = M.gatesInView(state.data.gates, rows);
-  const measured = state.data.gates.filter((g) => g.current).map((g) => g.current.ceiling_bytes_per_s / 1e9);
+  const measured = inView.map((g) => g.current.ceiling_bytes_per_s / 1e9);
   // With nothing plotted, a readable range: up to the lowest measured gate, or 1 GB/s.
   const max = plotted.length ? Math.max(...plotted.map((r) => r.p5_bytes_per_s / 1e9), ...plotted.map((r) => (r.median_bytes_per_s ?? 0) / 1e9), 1e-3)
     : (measured.length ? Math.min(...measured) : 1) / 1.15;
@@ -191,11 +194,13 @@ function drawHistory() {
   // A no-data span stays at least 4 px wide, so a single run's band shows.
   const minSpan = ((x.domain[1] - x.domain[0]) / Math.max(1, width - margin.left - margin.right)) * 4;
   const bands = spans.map((s) => ({ ...s, x1: new Date(s.from), x2: new Date(Math.max(Date.parse(s.to), Date.parse(s.from) + minSpan)) }));
-  // The legend's swatch names the bands; each band's title gives its runs and times.
+  // The legend's swatch names the bands; each band's title gives its count of runs and its times.
   const bandMark = Plot.rect(bands, { x1: "x1", x2: "x2", fill: grid, fillOpacity: 0.8, clip: true,
     title: (s) => `${bandText(s)}: ${s.failed + s.no_data} run${s.failed + s.no_data === 1 ? "" : "s"}, ${utc(s.from)} to ${utc(s.to)}` });
   // A box change at the start of the range is where the range begins, so it gets no rule.
   const boxes = rows.filter((r, i) => r.box_change && i > 0);
+  // A box label in the right half reads leftward from its rule, clear of the margin labels.
+  const mid = (+x.domain[0] + +x.domain[1]) / 2;
   const dotR = narrow ? 2.5 : 4;
   const boxRule = Plot.ruleX(boxes, { x: "x", stroke: second, strokeWidth: 1.5 });
 
@@ -233,8 +238,9 @@ function drawHistory() {
       bandMark,
       Plot.ruleY(shown, { y: (g) => g.current.ceiling_bytes_per_s / 1e9, stroke: muted, strokeOpacity: 0.7, strokeDasharray: "4,3" }),
       boxRule,
-      Plot.text(boxes, { x: "x", frameAnchor: "top", dy: 18, dx: 4, textAnchor: "start", text: "box_change", fill: second,
-        stroke: surface, strokeWidth: 3 }),
+      ...["start", "end"].map((side) => Plot.text(boxes.filter((r) => (+r.x > mid) === (side === "end")), { x: "x",
+        frameAnchor: "top", dy: 18, dx: side === "end" ? -4 : 4, textAnchor: side, text: "box_change", fill: second,
+        stroke: surface, strokeWidth: 3 })),
       Plot.line(joined, { x: "x", z: "segment", y: (r) => r.median_bytes_per_s / 1e9, stroke: color, strokeOpacity: 0.55,
         strokeWidth: 1.5, strokeDasharray: "5,4" }),
       Plot.line(joined, { x: "x", z: "segment", y: (r) => r.p5_bytes_per_s / 1e9, stroke: color, strokeWidth: 2 }),
@@ -284,7 +290,7 @@ function drawHistory() {
     host.append(panel);
   }
   if (spans.length) host.append(h("p", { class: "note" }, "Shaded: failed and no-data runs, whose rates are absent or untrustworthy. The lines do not cross them."));
-  for (const o of M.pairedOffsets(rows)) {
+  for (const o of M.pairingsInView(all, rows)) {
     host.append(h("p", { class: "note" }, `Paired runs ${o.pairing_id}${o.size_bytes != null ? ` at ${gb(o.size_bytes)}` : ""}: median ${M.gbps(o.to_median)} GB/s on ${o.to} `
       + `(${o.to_runs} run${o.to_runs === 1 ? "" : "s"}) against ${M.gbps(o.from_median)} GB/s on ${o.from} `
       + `(${o.from_runs} run${o.from_runs === 1 ? "" : "s"}), ${o.ratio.toFixed(2)}×.`));

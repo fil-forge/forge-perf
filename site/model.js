@@ -187,6 +187,9 @@ export function heartbeatLine(hb, now) {
 // chart draws no point for them and its lines do not cross them.
 export const GAP_CLASSES = ["failed", "no_data"];
 
+// Whether the history chart draws a point for this run.
+export const drawn = (r) => r.p5_bytes_per_s != null && !GAP_CLASSES.includes(r.klass);
+
 // The runs of one series with what the chart marks on them. `segment` names
 // the stretch of one instance type's runs that a line joins: each type has
 // its own, so the runs of a pairing join their own type's runs across the
@@ -235,9 +238,11 @@ export function noDataSpans(rows) {
 export const RANGES = ["type", "30d", "all"];
 const RANGE_DAYS = 30;
 
-// The ranges worth offering for these rows: "type" only when it differs from "all".
+// The ranges worth offering for these rows: "type" only when it leaves some
+// runs out and still holds a run the chart draws a point for.
 export function rangeChoices(rows) {
-  return rows.some((r) => r.box.instance_type !== rows[rows.length - 1].box.instance_type) ? RANGES : RANGES.filter((r) => r !== "type");
+  const since = inRange(rows, "type");
+  return since.length < rows.length && since.some(drawn) ? RANGES : RANGES.filter((r) => r !== "type");
 }
 
 export function rangeLabel(id, rows) {
@@ -260,7 +265,9 @@ export function gatesInView(gates, rows) {
 }
 
 // Pixel positions for labels stacked beside one edge, each as near its own y as
-// it can be while keeping `gap` from its neighbours and inside [lo, hi].
+// it can be while keeping `gap` from its neighbours. They stay inside [lo, hi]
+// when they fit there; when they do not, the gaps and hi hold and the top
+// labels pass lo.
 export function spread(ys, gap, lo, hi) {
   const order = ys.map((y, i) => [y, i]).sort((a, b) => a[0] - b[0]);
   const out = new Array(ys.length);
@@ -302,6 +309,14 @@ export function pairedOffsets(runs) {
                from_runs: fromMedians.length, to_runs: toMedians.length, ratio: toMedian / fromMedian });
   }
   return out;
+}
+
+// The offsets of the pairings with a run among `rows`, the runs in view. Each
+// is taken over all of the series' runs, since a range can start partway
+// through a pairing: its first type's runs come before the new type's first.
+export function pairingsInView(all, rows) {
+  const ids = new Set(rows.map((r) => r.pairing_id).filter(Boolean));
+  return pairedOffsets(all).filter((o) => ids.has(o.pairing_id));
 }
 
 function median(values) {
