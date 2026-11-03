@@ -238,11 +238,14 @@ export function noDataSpans(rows) {
 export const RANGES = ["type", "30d", "all"];
 const RANGE_DAYS = 30;
 
-// The ranges worth offering for these rows: "type" only when it leaves some
-// runs out and still holds a run the chart draws a point for.
-export function rangeChoices(rows) {
-  const since = inRange(rows, "type");
-  return since.length < rows.length && since.some(drawn) ? RANGES : RANGES.filter((r) => r !== "type");
+// The ranges worth offering for these rows: a range other than "all" only
+// when it leaves some runs out and still holds a run the chart draws a point for.
+export function rangeChoices(rows, now) {
+  return RANGES.filter((id) => {
+    if (id === "all") return true;
+    const kept = inRange(rows, id, now);
+    return kept.length < rows.length && kept.some(drawn);
+  });
 }
 
 export function rangeLabel(id, rows) {
@@ -262,6 +265,23 @@ export function inRange(rows, range, now) {
 export function gatesInView(gates, rows) {
   const types = new Set(rows.map((r) => r.box.instance_type));
   return gates.filter((g) => g.current && types.has(g.instance_type));
+}
+
+// Where each box-change label goes, given each rule's x and the label's width
+// in pixels, in x order. A label reads rightward from its rule unless that
+// would pass `right`, then leftward; one that would overlap an earlier label
+// in its row moves down to the first row where it fits. Returns
+// { side: "start" | "end", row } per label.
+export function boxLabelLayout(items, right, pad = 4) {
+  const ends = [];
+  return items.map(({ px, width }) => {
+    const side = px + pad + width > right ? "end" : "start";
+    const from = side === "start" ? px + pad : px - pad - width;
+    let row = ends.findIndex((end) => from >= end + pad);
+    if (row < 0) row = ends.length;
+    ends[row] = from + width;
+    return { side, row };
+  });
 }
 
 // Pixel positions for labels stacked beside one edge, each as near its own y as

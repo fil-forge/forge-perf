@@ -143,7 +143,7 @@ function headline({ runs, merc, gates, lit, heartbeats, published_at }) {
 // series; a series without that range shows all of its runs.
 function drawRanges(rows) {
   const el = $("#range");
-  const choices = rows.length ? M.rangeChoices(rows) : [];
+  const choices = rows.length ? M.rangeChoices(rows, state.now) : [];
   const range = choices.includes(state.range) ? state.range : "all";
   // The buttons are rebuilt on every draw, so keep keyboard focus on the one that had it.
   const focused = el.contains(document.activeElement) ? document.activeElement.value : null;
@@ -199,8 +199,13 @@ function drawHistory() {
     title: (s) => `${bandText(s)}: ${s.failed + s.no_data} run${s.failed + s.no_data === 1 ? "" : "s"}, ${utc(s.from)} to ${utc(s.to)}` });
   // A box change at the start of the range is where the range begins, so it gets no rule.
   const boxes = rows.filter((r, i) => r.box_change && i > 0);
-  // A box label in the right half reads leftward from its rule, clear of the margin labels.
-  const mid = (+x.domain[0] + +x.domain[1]) / 2;
+  // Box labels stay inside the frame, clear of the margin labels and of each
+  // other. 7 px a character overestimates the chart's 12px text.
+  const frameRight = width - margin.right;
+  const px = (d) => margin.left + ((d - x.domain[0]) / (x.domain[1] - x.domain[0])) * (frameRight - margin.left);
+  const layout = M.boxLabelLayout(boxes.map((r) => ({ px: px(r.x), width: 7 * r.box_change.length })), frameRight);
+  const boxLabels = boxes.map((r, i) => ({ ...r, ...layout[i] }));
+  const labelGroups = [...new Set(boxLabels.map((b) => `${b.side} ${b.row}`))].map((k) => k.split(" "));
   const dotR = narrow ? 2.5 : 4;
   const boxRule = Plot.ruleX(boxes, { x: "x", stroke: second, strokeWidth: 1.5 });
 
@@ -238,8 +243,8 @@ function drawHistory() {
       bandMark,
       Plot.ruleY(shown, { y: (g) => g.current.ceiling_bytes_per_s / 1e9, stroke: muted, strokeOpacity: 0.7, strokeDasharray: "4,3" }),
       boxRule,
-      ...["start", "end"].map((side) => Plot.text(boxes.filter((r) => (+r.x > mid) === (side === "end")), { x: "x",
-        frameAnchor: "top", dy: 18, dx: side === "end" ? -4 : 4, textAnchor: side, text: "box_change", fill: second,
+      ...labelGroups.map(([side, row]) => Plot.text(boxLabels.filter((b) => b.side === side && b.row === +row), { x: "x",
+        frameAnchor: "top", dy: 18 + 16 * row, dx: side === "end" ? -4 : 4, textAnchor: side, text: "box_change", fill: second,
         stroke: surface, strokeWidth: 3 })),
       Plot.line(joined, { x: "x", z: "segment", y: (r) => r.median_bytes_per_s / 1e9, stroke: color, strokeOpacity: 0.55,
         strokeWidth: 1.5, strokeDasharray: "5,4" }),

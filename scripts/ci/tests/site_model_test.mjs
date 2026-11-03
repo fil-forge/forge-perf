@@ -361,22 +361,37 @@ test("time ranges: since the latest run's instance type, the last 30 days, or al
   assert.deepEqual(M.inRange(withLate, "30d", NOW).map((r) => r.run_started_at),
     ["2026-09-12T00:00:00Z", "2026-09-20T00:00:00Z", "2026-09-25T00:00:00Z", "2026-10-05T00:00:00Z"]);
   assert.equal(M.inRange(rows, "all", NOW).length, 4);
-  assert.deepEqual(M.rangeChoices(rows), ["type", "30d", "all"]);
+  assert.deepEqual(M.rangeChoices(rows, NOW), ["type", "30d", "all"]);
   assert.equal(M.rangeLabel("type", rows), "Since m9gd.16xlarge");
   const one = rows.filter((r) => r.box.instance_type === "m9gd.2xlarge");
-  assert.deepEqual(M.rangeChoices(one), ["30d", "all"], "with one instance type, the type range is the whole history");
+  assert.deepEqual(M.rangeChoices(one, NOW), ["30d", "all"], "with one instance type, the type range is the whole history");
   assert.deepEqual(M.inRange([], "type", NOW), []);
 });
 
-test("the since-type range is offered only when it leaves runs out and holds a run with a point", () => {
+test("a range other than all is offered only when it leaves runs out and holds a run with a point", () => {
   const big = { id: "main", tier: 3, instance_type: "m9gd.16xlarge" };
-  const at = (day, fields = {}) => run({ run_started_at: `2026-09-${day}T00:00:00Z`, ...fields });
+  const at = (date, fields = {}) => run({ run_started_at: `2026-${date}T00:00:00Z`, ...fields });
   const rows = (runs) => M.history(index(runs).runs, "per-trigger");
-  assert.deepEqual(M.rangeChoices(rows([at("01"), at("02", { box: big }), at("03")])), ["30d", "all"],
+  // NOW is 10 October, so the last 30 days start on 10 September.
+  assert.deepEqual(M.rangeChoices(rows([at("08-01"), at("10-02", { box: big }), at("10-03")]), NOW), ["30d", "all"],
     "back on the first type, the range since its first run is every run");
-  assert.deepEqual(M.rangeChoices(rows([at("01"), at("02", { box: big, class: "failed" }),
-    at("03", { box: big, class: "no_data", p5_bytes_per_s: null })])), ["30d", "all"], "the new type has no run with a point yet");
-  assert.deepEqual(M.rangeChoices(rows([at("01"), at("02", { box: big, class: "failed" }), at("03", { box: big })])), ["type", "30d", "all"]);
+  assert.deepEqual(M.rangeChoices(rows([at("08-01"), at("10-02", { box: big, class: "failed" }),
+    at("10-03", { box: big, class: "no_data", p5_bytes_per_s: null })]), NOW), ["all"],
+  "neither the new type nor the last 30 days has a run with a point yet");
+  assert.deepEqual(M.rangeChoices(rows([at("08-01"), at("10-02", { box: big, class: "failed" }), at("10-03", { box: big })]), NOW),
+    ["type", "30d", "all"]);
+  assert.deepEqual(M.rangeChoices(rows([at("10-01"), at("10-02")]), NOW), ["all"], "the last 30 days hold every run");
+});
+
+test("box labels read rightward unless they would pass the frame, and drop a row rather than overlap", () => {
+  assert.deepEqual(M.boxLabelLayout([{ px: 50, width: 80 }, { px: 300, width: 80 }], 400),
+    [{ side: "start", row: 0 }, { side: "start", row: 0 }]);
+  assert.deepEqual(M.boxLabelLayout([{ px: 350, width: 80 }], 400), [{ side: "end", row: 0 }], "past the frame, it reads leftward");
+  assert.deepEqual(M.boxLabelLayout([{ px: 50, width: 80 }, { px: 100, width: 80 }, { px: 200, width: 80 }], 400),
+    [{ side: "start", row: 0 }, { side: "start", row: 1 }, { side: "start", row: 0 }], "a row is reused once there is room");
+  assert.deepEqual(M.boxLabelLayout([{ px: 100, width: 80 }, { px: 350, width: 80 }, { px: 360, width: 80 }], 400),
+    [{ side: "start", row: 0 }, { side: "end", row: 0 }, { side: "end", row: 1 }]);
+  assert.deepEqual(M.boxLabelLayout([], 400), []);
 });
 
 test("a pairing's note follows the range, taken over all of the pairing's runs", () => {
