@@ -6,7 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "run_id", "series", "pairing_id", "experiment", "trigger", "box", "time", "outcome",
-               "drill", "latency", "network", "provenance", "instrument", "trace"],
+               "drill", "latency", "network", "provenance", "instrument", "trace", "catalog"],
   "properties": {
     "schema": {"const": "forge-perf.run/v1"},
     "run_id": {"$ref": "#/$defs/run_id"},
@@ -103,8 +103,8 @@
           "few_windows", "cap_not_reached", "nic_allowance_exceeded", "offered_rate_near_median",
           "superseded", "raw_missing", "cpu_capped", "traced", "trace_missing"]}},
         "drill_exit": {"enum": [0, 1, 2, null]},
-        "stopped_step": {"enum": ["preflight", "checkout", "images", "boot", "setup", "latency", "drill", "check",
-                                  null]},
+        "stopped_step": {"enum": ["preflight", "checkout", "images", "boot", "setup", "latency", "drill", "catalog",
+                                  "check", null]},
         "failure_codes": {"type": "array", "uniqueItems": true, "items": {"enum": [
           "config_error", "interrupted", "unexpected_error", "transport_error", "timeout",
           "access_denied", "not_found", "conflict", "bucket_create_failed", "bucket_offline",
@@ -305,6 +305,21 @@
         "dropped_spans": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
         "file_bytes": {"$ref": "#/$defs/count"},
         "file_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]}
+      }
+    }]},
+    "catalog": {"oneOf": [{"type": "null"}, {
+      "type": "object", "additionalProperties": false,
+      "required": ["buckets", "forge_bytes", "dead_on_arrival_bytes", "unmeasured_bytes", "local_bytes",
+                   "live_bytes", "live_blocks", "missing_blocks"],
+      "properties": {
+        "buckets": {"$ref": "#/$defs/count"},
+        "forge_bytes": {"$ref": "#/$defs/count"},
+        "dead_on_arrival_bytes": {"$ref": "#/$defs/count"},
+        "unmeasured_bytes": {"$ref": "#/$defs/count"},
+        "local_bytes": {"$ref": "#/$defs/count"},
+        "live_bytes": {"$ref": "#/$defs/count"},
+        "live_blocks": {"$ref": "#/$defs/count"},
+        "missing_blocks": {"$ref": "#/$defs/count"}
       }
     }]}
   },

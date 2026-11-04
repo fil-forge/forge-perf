@@ -20,6 +20,8 @@ export D="$work/d" FIXTURES="$host/fixtures" TESTS="$host/tests" REAL_CURL
 mkdir -p "$work/bin" "$D"
 unset INVOCATION_ID FORGE_PERF_HOST_OPS FORGE_PERF_LOCK_HELD AWS_ENDPOINT_URL AWS_PROFILE
 export PYTHONDONTWRITEBYTECODE=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# The catalog step polls ingot without pausing; the stub answers the same report.
+export FORGE_PERF_CATALOG_POLL=0
 # No background gc or maintenance in the fixture repositories, which setup
 # fetches into; a detached gc still writing when the trap runs makes rm fail.
 export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false \
@@ -88,6 +90,27 @@ case "$*" in
     if [ -n "${NANO_WRONG:-}" ]; then echo 0; else cat "$D/nanocpus-${!#}"; fi ;;
   "inspect -f"*) echo 172.30.0.5 ;;
   "inspect --format"*) echo "/smelt-${!#}-1" ;;
+  # ingot's catalog report. CATALOG_FAIL: an image without the command. A
+  # call without the drill's key misses the retired blocks; with it, the key
+  # arrives in the environment. The call with the key fails
+  # (CATALOG_WALK_FAIL), prints no report (CATALOG_WALK_JUNK), or logs the
+  # secret (CATALOG_LEAK).
+  "exec cid-ingot /usr/bin/ingot catalog usage" | \
+    "exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY cid-ingot timeout -k 5 590 /usr/bin/ingot catalog usage")
+    [ -z "${CATALOG_FAIL:-}" ] || { echo "unknown command \"catalog\" for \"ingot\"" >&2; exit 2; }
+    if [ "$2" = -e ]; then
+      echo "${AWS_ACCESS_KEY_ID-unset} ${AWS_SECRET_ACCESS_KEY-unset}" >>"$D/catalog-key"
+      [ -z "${CATALOG_WALK_FAIL:-}" ] || { echo "hilt is down" >&2; exit 2; }
+      [ -z "${CATALOG_WALK_JUNK:-}" ] || { echo "not a report"; exit 0; }
+      [ -z "${CATALOG_LEAK:-}" ] || echo "signing with $AWS_SECRET_ACCESS_KEY" >&2
+      cat "$FIXTURES/valid/catalog/usage.json"
+    # CATALOG_DRIFT: segments still shipping, so no two reports agree.
+    elif [ -n "${CATALOG_DRIFT:-}" ]; then
+      echo x >>"$D/drift"
+      jq --argjson n "$(wc -l <"$D/drift")" '.total.forge_bytes += $n' "$FIXTURES/valid/catalog/usage.json"
+    else
+      jq '.total.missing_blocks += 5' "$FIXTURES/valid/catalog/usage.json"
+    fi ;;
   "logs --timestamps"*)
     printf '%s\n' "2026-10-01T12:00:00Z started" "2026-10-01T12:00:01Z access_key_id: AKIAFAKEKEYID"
     [ -z "${LEAK:-}" ] || echo "2026-10-01T12:00:02Z s3 {fake-secret-value}" ;;
@@ -99,6 +122,9 @@ cat >"$work/bin/aws" <<'STUB'
 echo "aws $*" >>"$D/aws.log"
 case " $* " in
   *" list-objects-v2 "*) [ ! -e "$D/s3-down" ] || exit 255; if [ -e "$D/objects" ]; then echo 1; else echo 0; fi ;;
+  # The drill's key, which smelt's s3-key.sh wrote. NO_DRILL_KEY: it never did.
+  *" configure get --profile smelt-drill aws_access_key_id ") [ -z "${NO_DRILL_KEY:-}" ] || exit 1; echo AKIADRILLKEYID ;;
+  *" configure get --profile smelt-drill aws_secret_access_key ") [ -z "${NO_DRILL_KEY:-}" ] || exit 1; echo drill-secret-value ;;
   *" ssm get-parameter "*)
     [ ! -e "$D/ssm-down" ] || exit 255
     case "$*" in
@@ -422,6 +448,15 @@ jq -e '.drill.settings.workers == 16 and .drill.results.sustained_windows == 6 a
   .latency.after.ok and .network.allowance_exceeded.bw_in == 1 and .time.drill_finished_at != null' "$rec" >/dev/null ||
   fail "record fields $(jq -c '[.drill.results, .latency.before, .network]' "$rec")"
 [ "$(tr '\n' ' ' <"$D/netem.log")" = "netem apply netem verify pre netem verify post " ] || fail "netem calls"
+# The record takes the report's totals but fetched_segments.
+jq -e --slurpfile u "$FIXTURES/valid/catalog/usage.json" \
+  '.catalog == ({buckets: ($u[0].buckets | length)} + ($u[0].total | del(.fetched_segments)))' "$rec" >/dev/null ||
+  fail "record catalog $(jq -c .catalog "$rec")"
+[ "$(grep -cx 'docker exec cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 2 ] ||
+  fail "the catalog step did not stop at two agreeing reports"
+[ "$(cat "$D/catalog-key")" = "AKIADRILLKEYID drill-secret-value" ] ||
+  fail "the catalog walks with the drill's key: $(cat "$D/catalog-key"), want one, with the drill's pair"
+lacks "$D/docker.log" drill-secret-value
 id="$(runner .run_id)"
 [ "$(tr '\n' ' ' <"$D/drill.env")" = "CONFIG_NOTE=forge-perf/$id DISK_FACTOR=1.25 DURATION=1h LABEL=$id \
 STOP_INGEST_AT=100GB WORKERS=16 " ] || fail "drill env $(cat "$D/drill.env")"
@@ -840,9 +875,41 @@ grep -qx wipe "$D/wipe.log" && [ ! -e "$work/box/state/current.json" ] || fail "
 echo "ok: a stop mid-drill interrupts the drill, records drill_interrupted and wipes"
 
 setup
-run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 -- --set "$work/set.json" --workers 16
+run 0 NETEM_LOCAL=1 RTT_TOLERANCE_PCT=40 CATALOG_FAIL=1 -- --set "$work/set.json" --workers 16
 [ "$(cat "$D/netem.env")" = "1 40" ] || fail "netem.sh saw $(cat "$D/netem.env")"
 echo "ok: a local netem tolerance reaches netem.sh"
+[ "$(jq -c .catalog "$D/record.json")" = null ] && [ "$(outcome)" = "valid " ] ||
+  fail "an ingot without the catalog command: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
+echo "ok: an ingot without the catalog command leaves the record's catalog null and the run valid"
+
+for c in NO_DRILL_KEY CATALOG_WALK_FAIL CATALOG_WALK_JUNK; do
+  setup
+  run 0 "$c=1" -- --set "$work/set.json" --workers 16
+  jq -e --slurpfile u "$FIXTURES/valid/catalog/usage.json" '.catalog.missing_blocks == $u[0].total.missing_blocks + 5' \
+    "$D/record.json" >/dev/null && [ "$(outcome)" = "valid " ] ||
+    fail "$c: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome); want the keyless walk's"
+  if [ "$c" = NO_DRILL_KEY ]; then
+    [ ! -e "$D/catalog-key" ] || fail "without the drill's key a walk ran with one: $(cat "$D/catalog-key")"
+  else
+    [ "$(cat "$D/catalog-key")" = "AKIADRILLKEYID drill-secret-value" ] ||
+      fail "$c: the walks with the key were $(cat "$D/catalog-key" 2>/dev/null), want one"
+  fi
+done
+echo "ok: without the drill's key, or when the walk with it fails or prints no report, the record keeps the walk of ingot's disk"
+
+setup
+run 0 CATALOG_LEAK=1 -- --set "$work/set.json" --workers 16
+has "$work/out" "a credential is still in the collected files"
+jq -e '.outcome.flags | index("raw_missing")' "$D/record.json" >/dev/null || fail "record lacks raw_missing"
+echo "ok: the drill's secret in the catalog step's log refuses the raw tarball, and the record says raw_missing"
+
+setup
+run 0 CATALOG_DRIFT=1 -- --set "$work/set.json" --workers 16
+[ "$(grep -c 'cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log")" = 9 ] && [ ! -e "$D/catalog-key" ] ||
+  fail "the catalog step made $(grep -c 'cid-ingot /usr/bin/ingot catalog usage' "$D/docker.log") calls, want 9 without the key"
+[ "$(jq -c .catalog "$D/record.json")" = null ] && [ "$(outcome)" = "valid " ] ||
+  fail "reports that never agree: catalog $(jq -c .catalog "$D/record.json"), outcome $(outcome)"
+echo "ok: catalog reports that never agree leave the record's catalog null after nine calls"
 
 # A traced run: the collector starts on forge-network after the network and
 # before the stack, smelt sees the endpoint, ratio and run ID, and after the
@@ -874,7 +941,9 @@ zstd -dc "$D/raw.tar.zst" | tar -tf - >"$work/list"
 has "$work/list" "./run/traces/traces.jsonl"
 has "$work/list" "./run/traces/collector-metrics.txt"
 has "$work/list" "./run/traces/collector.log"
-zstd -dc "$D/raw.tar.zst" | tar -xOf - ./run/traces/collector-metrics.txt | grep -q otelcol_receiver_accepted_spans ||
+# grep reads to the end: exiting at the match can end tar with SIGPIPE, and
+# under pipefail that fails the check.
+zstd -dc "$D/raw.tar.zst" | tar -xOf - ./run/traces/collector-metrics.txt | grep otelcol_receiver_accepted_spans >/dev/null ||
   fail "no collector counters"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
 python3 "$repo/scripts/host/schemacheck.py" "$repo/schema/run-record.v1.json" "$D/record.json" >/dev/null || fail "schema"
@@ -885,7 +954,7 @@ setup
 run 1 OTEL_DIES=1 FORGE_PERF_TRACE_SETTLE_S=0 -- --set "$work/set.json" --workers 16 --trace 1
 [ "$(runner '.reasons | join(",")')" = stack_boot_failed ] || fail "reasons $(runner .reasons)"
 grep -q "the trace collector stopped while the stack booted" "$work/out" || fail "no collector message"
-zstd -dc "$D/raw.tar.zst" | tar -tf - | grep -qxF ./run/traces/collector.log || fail "no collector log in the tarball"
+zstd -dc "$D/raw.tar.zst" | tar -tf - | grep -xF ./run/traces/collector.log >/dev/null || fail "no collector log in the tarball"
 [ ! -e "$D/otel" ] || fail "the collector was not removed"
 echo "ok: a collector that dies during the boot stops the run as stack_boot_failed"
 
@@ -1057,7 +1126,9 @@ has "$D/aws.log" "--name /forge-perf/grafana-token"
 lacks "$work/out" "$token"
 ! grep -rqF "$token" "$work/box/state" "$work/box/nvme" "$work/box/outbox" "$D/record.json" "$D/docker.log" \
   "$D/aws.log" "$D/grafana-run.args" || fail "the token reached a file"
-! zstd -dc "$D/raw.tar.zst" | tar -xOf - | grep -qF "$token" || fail "the token reached the raw tarball"
+# grep reads to the end: exiting at a match can end tar with SIGPIPE, which
+# under pipefail would turn a leak into a pass.
+! zstd -dc "$D/raw.tar.zst" | tar -xOf - | grep -F "$token" >/dev/null || fail "the token reached the raw tarball"
 [ "$(outcome)" = "valid " ] || fail "outcome $(jq -c .outcome "$D/record.json")"
 echo "ok: a traced run sends scrubbed spans and its results between the record and the upload, and the token stays off disk"
 
