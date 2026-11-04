@@ -46,7 +46,7 @@ scripts/operator/calibration-summary.py noise --series per-trigger --runs <id> .
 scripts/operator/calibration-summary.py noise --series nightly --runs <id> ...
 scripts/operator/calibration-summary.py falsification \
   --band calibration/noise/main-per-trigger.json \
-  --check older-digest=<id>,<id>,<id> --check cpu-cap=<id>,<id>,<id>
+  --check ingot-1cpu=<id>,<id>,<id> --check piri-0-1cpu=<id>,<id>,<id>
 scripts/operator/calibration-summary.py --records <dir> --out-dir <dir> workers --runs <id> ...
 ```
 
@@ -59,3 +59,14 @@ A file holds the box and instance type the runs share, and per run its ID, start
 | `workers/<date>-<instance type>.json` | the shared ingest cap; per workers value, its runs, mean p5 and mean median; `winner`, the smallest value whose mean p5 and mean median are both within 5% (`margin`) of the best qualified means, or null when no value is within 5% on both. A value with any run not `valid`, or with `availability_errors` among its reasons, is disqualified and names those runs. A sweep with no qualified value writes no file. The date is the latest run's start. |
 | `noise/<box>-<series>.json` | count, mean, min, max, sample standard deviation and coefficient of variation of p5 and of median; `pass` when the p5 coefficient of variation is at most 10% (`max_cv`). The file also names the workers value and ingest cap. Every run must be `valid`, record a p5 and a median, and share one box, instance type, workers value, ingest cap, instrument fingerprint and set of image digests. |
 | `falsification/<date>.json` | the band's box, instance type, workers value, ingest cap, series, run IDs and minimum p5; per check, each run's p5 and flags, how many landed below the band's minimum p5, and `pass` when all three did. A check names exactly three runs, no run appears in two checks, and every run must be `valid` (`cpu_capped` is a flag, so a capped run can be) and match the band's box, instance type, workers value and ingest cap. The band must be a noise file that passed its CV test. `pass` at the top needs every check to pass. The date is the latest run's start. |
+
+A noise file is named for its box and series, not its instance type, so calibrating a new type on the same box replaces the band the last one wrote: tier 3's per-trigger band replaced tier 1's in commit 740e5d6, and `noise/main-nightly.json` is still tier 1's. A falsification file copies what it needs from its band, but its command reproduces it only against that band, which git keeps. `falsification/2026-09-27.json` comes back byte for byte from tier 1's band and the check runs the file names:
+
+```
+git show 296f011:calibration/noise/main-per-trigger.json > /tmp/tier1-per-trigger.json
+scripts/operator/calibration-summary.py falsification --band /tmp/tier1-per-trigger.json \
+  --check ingot-1cpu=main-20260927t193116z,main-20260927t194240z,main-20260927t195409z \
+  --check piri-0-1cpu=main-20260927t200536z,main-20260927t201255z,main-20260927t202019z
+```
+
+The tier 3 band now at `noise/main-per-trigger.json` refuses those runs, which ran on m9gd.2xlarge with 32 workers and a 100 GB cap.
