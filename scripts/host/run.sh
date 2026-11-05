@@ -22,7 +22,7 @@
 # the record's experiment block, pins the branch image under its pull request
 # tag, and leaves pending.json and last-started.json alone (docs/runner.md,
 # "Experiments"). The steps are preflight, checkout, images,
-# boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
+# boot, setup, latency, drill, catalog and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
 #
@@ -46,7 +46,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=runlib.sh
 . "$here/runlib.sh"
 
-STEPS="preflight checkout images boot setup latency drill check"
+STEPS="preflight checkout images boot setup latency drill catalog check"
 from_pending="" pending_file=""
 refuse() {
   echo "run.sh: $*" >&2
@@ -888,6 +888,50 @@ step_drill() {
   esac
 }
 
+# step_catalog: ingot's catalog figures for the record (docs/record.md,
+# "catalog"): `ingot catalog usage` in the ingot container, 15 seconds apart,
+# until two reports agree on every total, so the drill's last segments have
+# shipped; nine calls at most. These calls carry no key, so they walk ingot's
+# disk alone and are quick. Then one call with the drill's key walks the
+# segments ingot retired too, from Forge, and its report becomes usage.json;
+# docker exec takes the pair from this shell's environment, so it never
+# reaches a command line. Without the key, or should that call fail, the
+# agreed report is kept, its missing_blocks marking live_bytes a lower bound.
+# A failed call before then, an image without the command, or reports that
+# never agree leave no report, and the record's catalog null; the run goes on
+# either way. Each call has its own timeout rather than `limited`'s, whose
+# overrun would turn a later failure into step_timeout. The keyed walk's runs
+# inside the container too, so a client killed at its limit leaves no walk
+# behind, and a stop request waits for the walk to end, ten minutes at most.
+step_catalog() {
+  local c report total prev="" i id secret
+  step "catalog"
+  mkdir -p "$RUN/catalog"
+  c="$(cd "$SMELT" && docker compose ps -q ingot)" && [ -n "$c" ] ||
+    { echo "run.sh: no ingot container; the record has no catalog" >&2; return 0; }
+  for i in 1 2 3 4 5 6 7 8 9; do
+    report="$(timeout --kill-after=10 120 docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
+      { echo "run.sh: ingot catalog usage failed; the record has no catalog" >&2; return 0; }
+    total="$(jq -ce .total <<<"$report" 2>/dev/null)" || total=""
+    [ -z "$total" ] || [ "$total" != "$prev" ] || break
+    prev="$total"
+    [ "$i" = 9 ] || sleep "${FORGE_PERF_CATALOG_POLL:-15}"
+    report=""
+  done
+  [ -n "$report" ] || { echo "run.sh: ingot's catalog reports never agreed; the record has no catalog" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+  id="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_access_key_id 2>/dev/null)" || id=""
+  secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || secret=""
+  [ -n "$id" ] && [ -n "$secret" ] ||
+    { echo "run.sh: no drill key in profile $DRILL_AWS_PROFILE; the catalog walk read ingot's disk alone" >&2; return 0; }
+  report="$(AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" timeout --kill-after=10 600 \
+    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" timeout -k 5 590 /usr/bin/ingot catalog usage \
+    2>>"$RUN/catalog/usage.err")" &&
+    jq -e .total >/dev/null 2>&1 <<<"$report" ||
+    { echo "run.sh: the catalog walk with the drill's key failed; the record keeps the walk of ingot's disk" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+}
+
 step_check() {
   local status=0 modified
   step "check"
@@ -910,6 +954,7 @@ step_check() {
 close_out() {
   local raw="$FORGE_PERF_OUTBOX/$run_id.raw.tar.zst" record="$FORGE_PERF_OUTBOX/$run_id.json" status=0 ok=0
   local forbid="$SECRETS/forbid" smelt_run id="${SMELT_PIRI_S3_ACCESS_KEY_ID:-}" secret="${SMELT_PIRI_S3_SECRET_ACCESS_KEY:-}"
+  local drill_secret
   trap 'echo "run.sh: stop requested; finishing the record and the wipe" >&2' TERM INT
   [ -z "$sampler" ] || kill "$sampler" 2>/dev/null
   if [ -n "$drill_pid" ]; then
@@ -921,12 +966,17 @@ close_out() {
   step "collect"
   mkdir -p "$FORGE_PERF_OUTBOX" "$SECRETS"
   [ ! -d "$RUN" ] || q host_read journalctl -u forge-perf-run --since "@$started_epoch" --no-pager >"$RUN/journal.txt"
-  # piri's pair and the harness credential, which no collected file may hold.
+  # piri's pair, the harness credential and the drill's secret, which no
+  # collected file may hold. collect.sh leaves out the drill's .env files, so
+  # its secret can only be there by a leak, such as through the catalog
+  # step's usage.err. Its key ID is left off: s3-key.sh prints it.
+  drill_secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || drill_secret=""
   (
     umask 077
     : >"$forbid"
     if [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ]; then
-      { printf '%s\n' "$id" "$secret"; cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
+      { printf '%s\n' "$id" "$secret"; [ -z "$drill_secret" ] || printf '%s\n' "$drill_secret"
+        cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
         awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' >"$forbid"
     fi
   )
@@ -942,7 +992,7 @@ close_out() {
   rj --arg t "$(now)" '.time.run_finished_at = $t'
   smelt_run="$(find "$SMELT/generated/perf-runs/drill" -mindepth 1 -maxdepth 1 -type d -name "*-$run_id" 2>/dev/null)"
   set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --traces "$RUN/traces" \
-    --denylist "$DENYLIST" --out "$record"
+    --catalog "$RUN/catalog/usage.json" --denylist "$DENYLIST" --out "$record"
   [ -z "$smelt_run" ] || [ "$(wc -l <<<"$smelt_run")" -ne 1 ] || set -- "$@" --run-dir "$smelt_run"
   [ ! -s "$forbid" ] || set -- "$@" --forbid "$forbid"
   status=0

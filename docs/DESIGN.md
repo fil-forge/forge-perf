@@ -109,6 +109,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
+| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; ingot keeps its default retention, and the walk of each bucket's live catalog reads the segments it retired from Forge with the drill's key | none. Without a settled report the record's `catalog` is null; without the walk with the key, it carries the walk of ingot's disk, whose `missing_blocks` marks `live_bytes` a lower bound |
 | Post-check | latency, restarts, addresses, image IDs | `invalid` |
 | Record, upload, wipe | build and check the record; upload raw, then record; wipe (§6) | minimal `no_data` record |
 
@@ -191,7 +192,7 @@ publish.yml, every 15 min, one at a time, role forge-perf-ci-results
 
 The bucket is versioned; `raw/` expires after 180 days, `published/` after 90, and the results role cannot read `raw/`. Raw tarballs go up with `aws s3 cp` and a SHA-256 checksum, records with `aws s3api put-object --content-md5 --if-none-match '*'`, so no record is overwritten. A zero exit, or a 412 on a record, clears its outbox entry.
 
-`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential remains in the tree.
+`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential, or the drill's secret, remains in the tree.
 
 ### The record
 

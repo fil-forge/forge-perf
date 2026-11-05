@@ -9,8 +9,8 @@
 # --timestamps` of every stack container as logs/<container>.log, and drops
 # every line that names access_key_id or secret_access_key, which `piri init`
 # prints. Then it looks for each line of FORBID (piri's key ID and secret, the
-# harness credential) in the staged files as a literal string, and writes OUT,
-# a zstd tarball, only when none appears.
+# harness credential, the drill's secret) in the staged files as a literal
+# string, and writes OUT, a zstd tarball, only when none appears.
 #
 # Exit status: 0 OUT written; 3 no OUT, because FORBID is missing or empty or
 # one of its strings is in the files; 1 any other failure. The stage and any
