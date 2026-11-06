@@ -118,8 +118,8 @@ class Preview(unittest.TestCase):
         now = preview.dt.datetime(2026, 10, 10, 12, tzinfo=preview.dt.timezone.utc)
         with tempfile.TemporaryDirectory() as tmp:
             names = preview.build(tmp, now)
-            self.assertEqual(names, ["box-change", "calibration-only", "experiment", "gate-lit", "instrument-change",
-                                     "modes", "no-runs", "one-run", "outcomes"])
+            self.assertEqual(names, ["box-change", "busy", "calibration-only", "experiment", "gate-lit",
+                                     "instrument-change", "modes", "no-runs", "one-run", "outcomes"])
             index = {n: json.loads((Path(tmp) / n / "data/index.json").read_text(encoding="utf-8")) for n in names}
             for name in names:
                 errors = check_data.gate_errors(index[name]["gates"])
@@ -148,6 +148,15 @@ class Preview(unittest.TestCase):
             self.assertEqual([p for p in percents if abs(p - threshold) < 5], [])
             self.assertTrue(any(p > threshold for p in percents) and any(p < threshold for p in percents))
             self.assertGreater(percents[-1], threshold)
+            # The busy history: a box change, a stretch of no-data runs, both modes and instrument changes.
+            busy = index["busy"]["runs"]
+            self.assertEqual({r["box"]["instance_type"] for r in busy}, {"m9gd.8xlarge", "m9gd.16xlarge"})
+            classes = "".join("n" if r["class"] == "no_data" else "f" if r["class"] == "failed" else "." for r in busy)
+            self.assertIn("nnnnnnf", classes)
+            shares = [100 * r["restore_median_bytes_per_s"] / (r["median_bytes_per_s"] + r["restore_median_bytes_per_s"])
+                      for r in busy if r["restore_median_bytes_per_s"] is not None]
+            self.assertTrue(any(p > threshold for p in shares) and any(p < threshold for p in shares))
+            self.assertGreater(sum(1 for r in busy if "smelt" in (r["instrument_changes"] or [])), 5)
             outcomes = index["outcomes"]["runs"]
             broken = [i for i, r in enumerate(outcomes) if r["size_bytes"] is None]
             self.assertEqual(len(broken), 1)
