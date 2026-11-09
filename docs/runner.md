@@ -417,8 +417,10 @@ Each `SERVICE` is a compose service that `config/groups.conf` lists, named once,
 `--drill` replaces drill settings from the settings file for every run of the campaign, for a diagnostic that changes how the drill's streams overlap. The drill runs ingest, read-back and restore at once and has no flag to turn restore off: `--accounts` must be at least 1 and caps the restore workers, which are otherwise 8, and the restore stream is paced by the same `--rate-target` as ingest. So the nearest to ingest on its own is one restore worker, with every read-back after the cap:
 
 ```
-campaign.sh --set calibration/sets/cal-1.json --runs 2 --drill ACCOUNTS=1,VERIFY_LAG_MIN=20m,VERIFY_LAG_MAX=20m
+campaign.sh --set calibration/sets/overlap-1.json --runs 2 --drill ACCOUNTS=1,VERIFY_LAG_MIN=20m,VERIFY_LAG_MAX=20m
 ```
+
+`calibration/sets/overlap-1.json` is the set main ran in a `/forge-perf` experiment on 2026-11-09 (`main-20261109t153429z`), whose runs came out restore-heavy, so its runs with `--drill` compare with that experiment's main runs.
 
 A tier 3 trigger run ingests for roughly 10 minutes, so with a 20-minute lag its windows fall into three phases: ingest beside one restore worker, then restore alone until the first read-back is due, then read-back beside restore until the last blob is read. Each record's per-window rates show the phases. The names it takes are `ACCOUNTS` (a positive integer), `RESTORE_SCALE` (a positive decimal) and `VERIFY_LAG_MIN` and `VERIFY_LAG_MAX` (a duration such as `90s`, `20m` or `1h`), each named once and, given both lags, in order. They go into every run's `pending.json` as `"drill": {"ACCOUNTS": "1"}`. `run.sh` checks them again, refuses a run whose lag range ends up out of order with the settings file's, and sets each in place of the settings file's value before the drill starts, so the record's `drill.settings` holds the values the run used. A run with drill settings is series `calibration`, and an experiment's run takes none. Like `--cap`, `--drill` runs only by hand on a held persistent box, and `campaign.json` takes no drill settings.
 
