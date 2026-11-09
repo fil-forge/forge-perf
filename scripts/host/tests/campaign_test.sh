@@ -199,14 +199,15 @@ campaign 0 --set "$work/set.json" --runs 2 --drill ACCOUNTS=1,VERIFY_LAG_MIN=20m
   fail "drill settings $(cat "$D/runs.log")"
 grep -q ", drill ACCOUNTS=1,VERIFY_LAG_MIN=20m,VERIFY_LAG_MAX=20m" "$work/out" || fail "no word of the drill settings"
 rm "$D/runs.log"
-campaign 0 --set "$work/set.json" --runs 1 --drill RESTORE_SCALE=0.5
-[ "$(runs '"\(.series)/\(.drill.RESTORE_SCALE)"')" = calibration/0.5 ] || fail "restore scale $(cat "$D/runs.log")"
+campaign 0 --set "$work/set.json" --runs 1 --drill RESTORE_SCALE=0.125
+[ "$(runs '"\(.series)/\(.drill.RESTORE_SCALE)"')" = calibration/0.125 ] || fail "restore scale $(cat "$D/runs.log")"
 rm "$D/runs.log"
 campaign 0 --set "$work/set.json" --runs 1
 [ "$(runs 'has("drill")')" = false ] || fail "a run without drill settings $(cat "$D/runs.log")"
 for bad in ACCOUNTS=0 ACCOUNTS=-1 ACCOUNTS=1.5 ACCOUNTS=100000 RESTORE_SCALE=0 RESTORE_SCALE=0.0 RESTORE_SCALE=.5 \
-  RESTORE_SCALE=1000 VERIFY_LAG_MIN=20 VERIFY_LAG_MIN=1d VERIFY_LAG_MIN=1m30s WORKERS=8 accounts=1 ACCOUNTS \
-  ACCOUNTS=1,ACCOUNTS=2 "ACCOUNTS=1," VERIFY_LAG_MIN=2h,VERIFY_LAG_MAX=1h; do
+  RESTORE_SCALE=1000 RESTORE_SCALE=0.0625 VERIFY_LAG_MIN=20 VERIFY_LAG_MIN=1d VERIFY_LAG_MIN=1m30s \
+  VERIFY_LAG_MIN=0s VERIFY_LAG_MAX=0m VERIFY_LAG_MIN=020m WORKERS=8 accounts=1 ACCOUNTS ACCOUNTS=1,ACCOUNTS=2 \
+  "ACCOUNTS=1," VERIFY_LAG_MIN=2h,VERIFY_LAG_MAX=1h $'ACCOUNTS=1\nWORKERS=8'; do
   campaign 1 --set "$work/set.json" --runs 1 --drill "$bad"
   grep -q -- "--drill" "$work/out" || fail "--drill $bad refused without naming --drill"
 done

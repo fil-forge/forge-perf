@@ -34,9 +34,10 @@
 # same on a campaign box; without it each run takes the settings file's ratio.
 # --drill sets drill settings for every run in place of the settings file's,
 # for a diagnostic such as one restore worker with read-back after ingest:
-# ACCOUNTS (a positive integer), RESTORE_SCALE (a positive decimal),
-# VERIFY_LAG_MIN and VERIFY_LAG_MAX (a duration such as 90s, 20m or 1h). A run
-# with drill settings is series calibration. campaign.json takes none.
+# ACCOUNTS (a positive integer), RESTORE_SCALE (a positive decimal with at
+# most three places), VERIFY_LAG_MIN and VERIFY_LAG_MAX (a duration above zero
+# such as 90s, 20m or 1h). A run with drill settings is series calibration.
+# campaign.json takes none.
 #
 # For each run it writes pending.json with kind campaign under poll.lock and
 # runs `systemctl start --wait forge-perf-run.service`. The poller leaves a
@@ -179,8 +180,9 @@ fi
 drill='{}'
 if [ -n "$drill_arg" ]; then
   [ "${FORGE_PERF_MODE:-persistent}" = persistent ] || die "--drill runs only on a held persistent box"
-  usage_drill="--drill takes NAME=VALUE[,NAME=VALUE...]: ACCOUNTS a positive integer, RESTORE_SCALE a positive decimal, VERIFY_LAG_MIN and VERIFY_LAG_MAX a duration such as 20m"
-  [[ "$drill_arg" =~ ^[^,]+(,[^,]+)*$ ]] || die "$usage_drill"
+  usage_drill="--drill takes NAME=VALUE[,NAME=VALUE...]: ACCOUNTS a positive integer, RESTORE_SCALE a positive decimal with at most three places, VERIFY_LAG_MIN and VERIFY_LAG_MAX a duration above zero such as 20m"
+  # A newline would end `read` early and drop the pairs after it unchecked.
+  [[ "$drill_arg" =~ ^[^,]+(,[^,]+)*$ && "$drill_arg" != *$'\n'* ]] || die "$usage_drill"
   IFS=, read -ra pairs <<<"$drill_arg"
   for p in "${pairs[@]}"; do
     [[ "$p" =~ ^([A-Z_]+)=(.+)$ ]] || die "$usage_drill"

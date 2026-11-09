@@ -117,7 +117,7 @@ Each step runs under `timeout`; an overrun is reason `step_timeout`. `INGOT_URL`
 
 ### Drill settings
 
-Values live in `config/settings/<instance type>.env`, so a resize without a settings file for the new type stops runs. Every flag is passed and recorded:
+Values live in `config/settings/<instance type>.env`, so a resize without a settings file for the new type stops runs. A campaign's `--drill` can replace the restore and read-back settings for a diagnostic run, which is then series `calibration` (docs/runner.md, "Campaigns"). Every flag is passed and recorded:
 
 ```
 bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \

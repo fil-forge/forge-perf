@@ -814,7 +814,7 @@ want="calibration 1 500 1200 1200"
 echo "ok: a pending run's drill settings replace the settings file's, reach the record and make it calibration"
 
 for bad in '{"WORKERS": "8"}' '{"ACCOUNTS": 1}' '{"ACCOUNTS": "0"}' '{"ACCOUNTS": "1\n"}' '{"RESTORE_SCALE": "0"}' \
-  '{"VERIFY_LAG_MIN": "2h"}' '["ACCOUNTS"]'; do
+  '{"RESTORE_SCALE": "0.0625"}' '{"VERIFY_LAG_MIN": "0s"}' '{"VERIFY_LAG_MIN": "2h"}' '["ACCOUNTS"]'; do
   drilled "$bad"
   run 2 --
   grep -qE "pending.json has (a )?drill setting|VERIFY_LAG_MIN is above VERIFY_LAG_MAX" "$work/out" ||

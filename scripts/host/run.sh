@@ -32,7 +32,7 @@
 # reached --until, or another run holds the lock; 1 a step stopped the run, or
 # the record or the wipe failed, and runner.json names the reason; 2 the run
 # did not start (usage, no settings for this instance type, WORKERS empty, an
-# unusable set, a malformed trace ratio); 130 or 143 a stop request, after the record and the wipe.
+# unusable set, a malformed trace ratio or drill settings); 130 or 143 a stop request, after the record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
 # pending.json.rejected, so the next poll does not start it again, and an
 # experiment's run as pending-experiment.json.rejected.
