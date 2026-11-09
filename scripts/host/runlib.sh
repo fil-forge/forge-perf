@@ -67,6 +67,18 @@ finally:
     os.close(fd)' "$1"
 }
 
+# drill_value_ok NAME VALUE: whether NAME is a drill setting a campaign may set
+# in place of the settings file's (campaign.sh --drill), and VALUE a value of
+# the form the settings file gives it, within the record schema's bounds.
+drill_value_ok() {
+  case "$1" in
+    ACCOUNTS) [[ "$2" =~ ^[1-9][0-9]{0,4}$ ]] ;;
+    RESTORE_SCALE) [[ "$2" =~ ^[0-9]{1,3}(\.[0-9]+)?$ && "$2" =~ [1-9] ]] ;;
+    VERIFY_LAG_MIN | VERIFY_LAG_MAX) [[ "$2" =~ ^[0-9]{1,6}[smh]$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 stack_containers() {
   if host_ops_skipped; then
     {

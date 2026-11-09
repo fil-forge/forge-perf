@@ -8,7 +8,7 @@
 #       /etc/forge-perf/campaign.json, which the box's user data wrote
 #   campaign.sh --set FILE --runs N [--workers W[,W...]] [--size SIZE]
 #               [--duration DURATION] [--pairing ID] [--cap SERVICE=CPUS[,...]]
-#               [--trace RATIO]
+#               [--trace RATIO] [--drill NAME=VALUE[,...]]
 #       by hand on a persistent box that is held (status.sh hold)
 #
 # A campaign box stays at campaign.json's forge_perf_sha and never updates.
@@ -32,6 +32,11 @@
 # a traced run keeps its series. --trace 0 runs every run untraced, whatever
 # the settings file says. campaign.json's trace_ratio, a string, does the
 # same on a campaign box; without it each run takes the settings file's ratio.
+# --drill sets drill settings for every run in place of the settings file's,
+# for a diagnostic such as one restore worker with read-back after ingest:
+# ACCOUNTS (a positive integer), RESTORE_SCALE (a positive decimal),
+# VERIFY_LAG_MIN and VERIFY_LAG_MAX (a duration such as 90s, 20m or 1h). A run
+# with drill settings is series calibration. campaign.json takes none.
 #
 # For each run it writes pending.json with kind campaign under poll.lock and
 # runs `systemctl start --wait forge-perf-run.service`. The poller leaves a
@@ -47,7 +52,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2; exit 2; }
 
 conf="${FORGE_PERF_CAMPAIGN_CONF:-/etc/forge-perf/campaign.json}"
-set_file="" runs="" workers="" size="" duration="" pairing="" cap="" trace="" from_conf=""
+set_file="" runs="" workers="" size="" duration="" pairing="" cap="" trace="" drill_arg="" from_conf=""
 [ $# -gt 0 ] || from_conf=1
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
@@ -60,6 +65,7 @@ while [ $# -gt 0 ]; do
     --pairing) pairing="$2" ;;
     --cap) cap="$2" ;;
     --trace) trace="$2" ;;
+    --drill) drill_arg="$2" ;;
     *) usage ;;
   esac
   shift 2
@@ -114,6 +120,8 @@ if [ -n "$from_conf" ]; then
   [ "${FORGE_PERF_MODE:-}" = campaign ] || die "campaign.json drives only a campaign box; use --set here"
   c="$(jq -ce 'objects' "$conf")" || die "$conf is missing or not a JSON object"
   ! jq -e 'has("cap") or has("caps")' <<<"$c" >/dev/null || die "campaign.json takes no caps; --cap runs only on a held persistent box"
+  ! jq -e 'has("drill")' <<<"$c" >/dev/null ||
+    die "campaign.json takes no drill settings; --drill runs only on a held persistent box"
   # Before the checkout, so a campaign that cannot start does not idle to
   # expires_at. A calibration box stays up: an operator is attached.
   [ "$(jq -r .mode <<<"$c")" = calibration ] || armed=1
@@ -166,6 +174,27 @@ if [ -n "$cap" ]; then
     caps="$(jq -c --arg s "$svc" --arg n "$cpus" '.[$s] = $n' <<<"$caps")"
   done
 fi
+# --drill: NAME=VALUE pairs, each a drill setting run.sh lets a campaign set,
+# named once, as {"ACCOUNTS": "1"} in every run's pending.json.
+drill='{}'
+if [ -n "$drill_arg" ]; then
+  [ "${FORGE_PERF_MODE:-persistent}" = persistent ] || die "--drill runs only on a held persistent box"
+  usage_drill="--drill takes NAME=VALUE[,NAME=VALUE...]: ACCOUNTS a positive integer, RESTORE_SCALE a positive decimal, VERIFY_LAG_MIN and VERIFY_LAG_MAX a duration such as 20m"
+  [[ "$drill_arg" =~ ^[^,]+(,[^,]+)*$ ]] || die "$usage_drill"
+  IFS=, read -ra pairs <<<"$drill_arg"
+  for p in "${pairs[@]}"; do
+    [[ "$p" =~ ^([A-Z_]+)=(.+)$ ]] || die "$usage_drill"
+    name="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+    drill_value_ok "$name" "$value" || die "$usage_drill"
+    ! jq -e --arg n "$name" 'has($n)' <<<"$drill" >/dev/null || die "--drill names $name twice"
+    drill="$(jq -c --arg n "$name" --arg v "$value" '.[$n] = $v' <<<"$drill")"
+  done
+  # Given both, the drill needs them in order; given one, run.sh checks it
+  # against the settings file's other.
+  jq -e 'def s: capture("^(?<n>[0-9]+)(?<u>[smh])$") | (.n | tonumber) * {"s": 1, "m": 60, "h": 3600}[.u];
+    (has("VERIFY_LAG_MIN") and has("VERIFY_LAG_MAX") | not) or (.VERIFY_LAG_MIN | s) <= (.VERIFY_LAG_MAX | s)' \
+    <<<"$drill" >/dev/null || die "--drill: VERIFY_LAG_MIN is above VERIFY_LAG_MAX"
+fi
 case "$set_file" in /*) ;; *) set_file="$FORGE_PERF_CHECKOUT/$set_file" ;; esac
 set_json="$(jq -ce 'objects' "$set_file")" || die "$set_file is not a JSON object"
 
@@ -173,7 +202,7 @@ set_json="$(jq -ce 'objects' "$set_file")" || die "$set_file is not a JSON objec
 IFS=, read -ra values <<<"$workers"
 [ "${#values[@]}" -gt 0 ] || values=("")
 order=() series=campaign
-[ "${#values[@]}" -eq 1 ] && [ "$caps" = '{}' ] || series=calibration
+[ "${#values[@]}" -eq 1 ] && [ "$caps" = '{}' ] && [ "$drill" = '{}' ] || series=calibration
 for ((r = 0; r < runs; r++)); do
   if ((r % 2 == 0)); then
     order+=("${values[@]}")
@@ -225,16 +254,17 @@ for ((i = start; i < total; i++)); do
   fi
   jq -n --argjson set "$set_json" --arg series "$series" --arg w "$w" --arg size "$size" \
     --arg duration "$duration" --arg pairing "$pairing" --argjson caps "$caps" --arg trace "$trace" \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    --argjson drill "$drill" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     def opt($k; $v): if $v == "" then {} else {($k): $v} end;
     {kind: "campaign", series: $series, set: $set, superseded: 0, first_seen_at: $at,
      pairing_id: (if $pairing == "" then null else $pairing end)}
     + opt("workers"; $w) + opt("size"; $size) + opt("duration"; $duration) + opt("trace_ratio"; $trace)
-    + (if $caps == {} then {} else {caps: $caps} end)' | write_durable "$state/pending.json"
+    + (if $caps == {} then {} else {caps: $caps} end)
+    + (if $drill == {} then {} else {drill: $drill} end)' | write_durable "$state/pending.json"
   exec 8>&-
   traced="${trace:+, traced at $trace}"
   [ "$trace" != 0 ] || traced=", untraced"
-  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}$traced"
+  echo "campaign: run $((i + 1)) of $total, series $series, workers ${w:-from the settings file}${cap:+, capped $cap}$traced${drill_arg:+, drill $drill_arg}"
   if ! host_op systemctl start --wait forge-perf-run.service; then
     # run.sh moves a pending run it refuses to pending.json.rejected, and
     # writes no record for it.

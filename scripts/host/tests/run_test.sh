@@ -733,7 +733,8 @@ run 0 -- --workers 16 --until preflight
 echo "ok: a pending-experiment.json that no experiment holds is dropped"
 
 for bad in '.experiment.role = "candidate"' '.pairing_id = "exp-other-pr1-0123456789ab-1"' \
-  '.overrides[].ref = "main"' '.caps = {"ingot": "1.0"}' '.experiment.repository = "someone/ingot"'; do
+  '.overrides[].ref = "main"' '.caps = {"ingot": "1.0"}' '.drill = {"ACCOUNTS": "1"}' \
+  '.experiment.repository = "someone/ingot"'; do
   setup
   exp_pending branch
   jq "$bad" "$work/box/state/pending-experiment.json" >"$work/p" && mv "$work/p" "$work/box/state/pending-experiment.json"
@@ -790,6 +791,37 @@ for bad in '{"ingot": "0"}' '{"ingot": 1}' '{"Ingot": "1.0"}' '["ingot"]'; do
   [ -e "$work/box/state/pending.json.rejected" ] || fail "pending not moved aside for caps $bad"
 done
 echo "ok: a pending run with malformed caps does not start"
+
+# campaign.sh --drill: the settings replace the settings file's, reach the
+# drill, land in the record's settings, and make the run calibration even
+# while live.
+drilled() {
+  setup
+  sed 's/^SERIES_LIVE=.*/SERIES_LIVE=1/' "$work/checkout/config/launch.conf" >"$work/launch.conf"
+  mv "$work/launch.conf" "$work/checkout/config/launch.conf"
+  git -C "$work/checkout" commit -qam live
+  jq --argjson drill "$1" '{kind: "campaign", series: "campaign", set: ., superseded: 0, workers: "16", drill: $drill}' \
+    "$work/set.json" >"$work/box/state/pending.json"
+  echo '{"at": "2026-10-01T12:00:00Z"}' >"$work/box/state/hold"
+}
+drilled '{"ACCOUNTS": "1", "RESTORE_SCALE": "0.5", "VERIFY_LAG_MIN": "20m", "VERIFY_LAG_MAX": "20m"}'
+run 0 --
+want="calibration 1 500 1200 1200"
+[ "$(runner '"\(.series) \(.settings | "\(.accounts) \(.restore_scale_permille) \(.verify_lag_min_s) \(.verify_lag_max_s)")"')" = \
+  "$want" ] || fail "runner $(runner '[.series, .settings]')"
+[ "$(jq -r '"\(.series) \(.drill.settings | "\(.accounts) \(.restore_scale_permille) \(.verify_lag_min_s) \(.verify_lag_max_s)")"' \
+  "$D/record.json")" = "$want" ] || fail "record $(jq -c '[.series, .drill.settings]' "$D/record.json")"
+echo "ok: a pending run's drill settings replace the settings file's, reach the record and make it calibration"
+
+for bad in '{"WORKERS": "8"}' '{"ACCOUNTS": 1}' '{"ACCOUNTS": "0"}' '{"ACCOUNTS": "1\n"}' '{"RESTORE_SCALE": "0"}' \
+  '{"VERIFY_LAG_MIN": "2h"}' '["ACCOUNTS"]'; do
+  drilled "$bad"
+  run 2 --
+  grep -qE "pending.json has (a )?drill setting|VERIFY_LAG_MIN is above VERIFY_LAG_MAX" "$work/out" ||
+    fail "drill settings $bad accepted"
+  [ -e "$work/box/state/pending.json.rejected" ] || fail "pending not moved aside for drill settings $bad"
+done
+echo "ok: a pending run with malformed drill settings, or a lag range out of order, does not start"
 
 setup
 jq '{kind: "nightly", set: ., superseded: 1}' "$work/set.json" >"$work/box/state/pending.json"

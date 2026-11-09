@@ -191,6 +191,27 @@ for bad in ingot ingot=0 ingot=0.0 ingot=-1 ingot=1.5x ingot=.5 nosuch=1 ingot=1
 done
 echo "ok: --cap puts validated caps in every run and makes it calibration; malformed caps are refused"
 
+# --drill on a held persistent box: every run carries the settings and is calibration.
+rm -f "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 2 --drill ACCOUNTS=1,VERIFY_LAG_MIN=20m,VERIFY_LAG_MAX=20m
+[ "$(runs '"\(.series)/\(.drill | tojson)"')" = \
+  "$(printf 'calibration/{"ACCOUNTS":"1","VERIFY_LAG_MIN":"20m","VERIFY_LAG_MAX":"20m"} %.0s' 1 2 | sed 's/ $//')" ] ||
+  fail "drill settings $(cat "$D/runs.log")"
+grep -q ", drill ACCOUNTS=1,VERIFY_LAG_MIN=20m,VERIFY_LAG_MAX=20m" "$work/out" || fail "no word of the drill settings"
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 1 --drill RESTORE_SCALE=0.5
+[ "$(runs '"\(.series)/\(.drill.RESTORE_SCALE)"')" = calibration/0.5 ] || fail "restore scale $(cat "$D/runs.log")"
+rm "$D/runs.log"
+campaign 0 --set "$work/set.json" --runs 1
+[ "$(runs 'has("drill")')" = false ] || fail "a run without drill settings $(cat "$D/runs.log")"
+for bad in ACCOUNTS=0 ACCOUNTS=-1 ACCOUNTS=1.5 ACCOUNTS=100000 RESTORE_SCALE=0 RESTORE_SCALE=0.0 RESTORE_SCALE=.5 \
+  RESTORE_SCALE=1000 VERIFY_LAG_MIN=20 VERIFY_LAG_MIN=1d VERIFY_LAG_MIN=1m30s WORKERS=8 accounts=1 ACCOUNTS \
+  ACCOUNTS=1,ACCOUNTS=2 "ACCOUNTS=1," VERIFY_LAG_MIN=2h,VERIFY_LAG_MAX=1h; do
+  campaign 1 --set "$work/set.json" --runs 1 --drill "$bad"
+  grep -q -- "--drill" "$work/out" || fail "--drill $bad refused without naming --drill"
+done
+echo "ok: --drill puts validated drill settings in every run and makes it calibration; malformed ones are refused"
+
 # --trace: every run carries the ratio as a string and keeps its series.
 rm -f "$D/runs.log"
 campaign 0 --set "$work/set.json" --runs 2 --trace 0.1
@@ -240,5 +261,15 @@ cp "$repo/calibration/sets/shakedown.json" "$work/set.json"
 campaign 1 --set "$work/set.json" --runs 1 --cap ingot=1.0
 grep -q "runs only on a held persistent box" "$work/out" || fail "--cap on a campaign box"
 echo "ok: a campaign box takes no caps, from campaign.json or the command line"
+
+setup campaign
+conf '.drill = {"ACCOUNTS": "1"}'
+campaign 1
+grep -q "campaign.json takes no drill settings" "$work/out" || fail "campaign.json with drill settings"
+[ ! -e "$D/runs.log" ] || fail "campaign.json with drill settings ran"
+cp "$repo/calibration/sets/shakedown.json" "$work/set.json"
+campaign 1 --set "$work/set.json" --runs 1 --drill ACCOUNTS=1
+grep -q -- "--drill runs only on a held persistent box" "$work/out" || fail "--drill on a campaign box"
+echo "ok: a campaign box takes no drill settings, from campaign.json or the command line"
 
 echo "campaign: all tests passed"
