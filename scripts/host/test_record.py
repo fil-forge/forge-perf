@@ -739,9 +739,8 @@ class Tracing(unittest.TestCase):
                    "attributes": [{"key": k, "value": {"stringValue": v}} for k, v in attrs.items()]}
             return out if start is None else out | {"startTimeUnixNano": start}
 
-        def usage(t, spool, cache):
-            return {"name": "ingot.local_blobs.usage",
-                    "gauge": {"dataPoints": [point(t, spool, dir="spool"), point(t, cache, dir="cache")]}}
+        def usage(t, cache):
+            return {"name": "ingot.local_blobs.usage", "gauge": {"dataPoints": [point(t, cache, dir="cache")]}}
 
         def removed(t, value, temporality=2, reason="budget", start=None):
             return {"name": "ingot.local_blobs.removed_bytes",
@@ -755,36 +754,41 @@ class Tracing(unittest.TestCase):
 
         budget = {"name": "ingot.local_blobs.budget", "gauge": {"dataPoints": [point(1, "50")]}}
         files = {
-            "two samples and a budget": ([export("ingot", usage(1, "5", "10"), budget),
-                                          export("ingot", usage(2, "3", "4"), removed(2, "9"))],
+            "two samples and a budget": ([export("ingot", usage(1, "15"), budget),
+                                          export("ingot", usage(2, "7"), removed(2, "9"))],
                                          {"samples": 2, "peak_usage_bytes": 15, "last_usage_bytes": 7,
                                           "budget_bytes": 50, "removed": {"budget": 9}}),
-            "totals: the latest point counts": ([export("ingot", usage(1, "1", "1"), removed(3, "9"), removed(2, "4"))],
+            "totals: the latest point counts": ([export("ingot", usage(1, "2"), removed(3, "9"), removed(2, "4"))],
                                                {"removed": {"budget": 9}}),
-            "deltas: the points add up": ([export("ingot", usage(1, "1", "1"), removed(2, "4", 1), removed(3, "5", 1))],
+            "deltas: the points add up": ([export("ingot", usage(1, "2"), removed(2, "4", 1), removed(3, "5", 1))],
                                           {"removed": {"budget": 9}}),
-            "another service's points": ([export("ingot", usage(1, "1", "1")), export("upload", usage(2, "9", "9"))],
+            "another service's points": ([export("ingot", usage(1, "2")), export("upload", usage(2, "18"))],
                                          {"samples": 1, "peak_usage_bytes": 2}),
-            "a reason outside the list": ([export("ingot", usage(1, "1", "1"), removed(2, "4", reason="FIXTURE"))],
+            "every reason": ([export("ingot", usage(1, "2"), *(removed(2, str(n), reason=r) for n, r in
+                                                               enumerate(("released", "budget", "expired", "orphan"), 1)))],
+                             {"removed": {"released": 1, "budget": 2, "expired": 3, "orphan": 4}}),
+            "a reason outside the list": ([export("ingot", usage(1, "2"), removed(2, "4", reason="FIXTURE"))],
                                           {"removed": {}}),
-            "a value that is not a count": ([export("ingot", usage(1, "1", "1")), export("ingot", usage(2, "-1", "1")),
-                                             export("ingot", usage(3, "1.5", "1")),
-                                             export("ingot", usage(4, str(2 ** 53), "1"))],
+            # Builds from before fil-forge/ingot#340 and #346 report reasons ingot has since dropped.
+            "an older build's reasons": ([export("ingot", usage(1, "2"),
+                                                 *(removed(2, "4", reason=r) for r in ("budget_forced", "parked", "accepted")))],
+                                         {"removed": {}}),
+            "a value that is not a count": ([export("ingot", usage(1, "2")), export("ingot", usage(2, "-1")),
+                                             export("ingot", usage(3, "1.5")),
+                                             export("ingot", usage(4, str(2 ** 53)))],
                                             {"samples": 1, "peak_usage_bytes": 2}),
-            "a restart starts the counter again": ([export("ingot", usage(1, "1", "1"), removed(2, "500", start="1"),
+            "a restart starts the counter again": ([export("ingot", usage(1, "2"), removed(2, "500", start="1"),
                                                            removed(3, "520", start="1"), removed(6, "30", start="5"))],
                                                    {"removed": {"budget": 550}}),
-            "dirs split across lines": ([export("ingot", one_dir(1, "5", "spool")),
-                                         export("ingot", one_dir(1, "10", "cache"))],
-                                        {"samples": 1, "peak_usage_bytes": 15}),
-            "a double or a number in place of a count": ([export("ingot", usage(1, "1", "1")),
-                                                          export("ingot", one_dir(2, 9.5, "spool", "asDouble"),
-                                                                 one_dir(2, 9.5, "cache", "asDouble")),
-                                                          export("ingot", one_dir(3, 9, "spool"), one_dir(3, 9, "cache"))],
+            # A build from before fil-forge/ingot#346 also reports its spool.
+            "an older build's spool": ([export("ingot", one_dir(1, "5", "spool"), one_dir(1, "10", "cache"))],
+                                       {"samples": 1, "peak_usage_bytes": 10}),
+            "a double or a number in place of a count": ([export("ingot", usage(1, "2")),
+                                                          export("ingot", one_dir(2, 9.5, "cache", "asDouble")),
+                                                          export("ingot", one_dir(3, 9, "cache"))],
                                                          {"samples": 1, "peak_usage_bytes": 2}),
-            "one dir only": ([export("ingot", {"name": "ingot.local_blobs.usage",
-                                               "gauge": {"dataPoints": [point(1, "5", dir="spool")]}})], None),
-            "no ingot points": ([export("upload", usage(1, "1", "1")), "not json"], None),
+            "no cache point": ([export("ingot", one_dir(1, "5", "spool"))], None),
+            "no ingot points": ([export("upload", usage(1, "2")), "not json"], None),
         }
         for name, (lines, want) in files.items():
             with self.subTest(case=name):

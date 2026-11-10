@@ -316,13 +316,11 @@
             "budget_bytes": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/count"}]},
             "removed_bytes": {
               "type": "object", "additionalProperties": false,
-              "required": ["released", "parked", "accepted", "budget", "budget_forced", "orphan"],
+              "required": ["released", "budget", "expired", "orphan"],
               "properties": {
                 "released": {"$ref": "#/$defs/count"},
-                "parked": {"$ref": "#/$defs/count"},
-                "accepted": {"$ref": "#/$defs/count"},
                 "budget": {"$ref": "#/$defs/count"},
-                "budget_forced": {"$ref": "#/$defs/count"},
+                "expired": {"$ref": "#/$defs/count"},
                 "orphan": {"$ref": "#/$defs/count"}
               }
             }

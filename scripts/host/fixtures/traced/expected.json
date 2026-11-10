@@ -479,10 +479,8 @@
       "budget_bytes": 200000000000,
       "removed_bytes": {
         "released": 0,
-        "parked": 0,
-        "accepted": 0,
-        "budget": 0,
-        "budget_forced": 610000000000,
+        "budget": 610000000000,
+        "expired": 0,
         "orphan": 1000000
       }
     }

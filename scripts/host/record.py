@@ -77,8 +77,10 @@ TRACE_SERVICES = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["s
 CATALOG_FIELDS = list(SCHEMA["properties"]["catalog"]["oneOf"][1]["required"])
 # ingot's local blob metrics in metrics.jsonl: the usage gauge's dirs, summed,
 # and the removal counter's reasons, the record's keys. A point with any other
-# dir or reason is left out, so no metric text reaches the record.
-LOCAL_BLOB_DIRS = {"spool", "cache"}
+# dir or reason is left out, so no metric text reaches the record. ingot reports
+# one dir, its cache; a build from before fil-forge/ingot#346 also reports its
+# spool, which the record leaves out.
+LOCAL_BLOB_DIRS = {"cache"}
 LOCAL_BLOB_REASONS = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["local_blobs"]["oneOf"][1]
                           ["properties"]["removed_bytes"]["required"])
 COUNT_TEXT = re.compile(r"^[0-9]{1,16}$")
@@ -316,9 +318,9 @@ def resource_service(resource_data):
 
 def read_local_blobs(path):
     """ingot's local blob storage over the run, from metrics.jsonl: how many usage
-    samples the file holds, the highest and the last usage (spool and cache together),
-    the budget ingot last reported, and the bytes it removed by reason. None when the
-    file is missing or holds no sample with both dirs. A sample is one collection of
+    samples the file holds, the highest and the last usage of its cache, the budget
+    ingot last reported, and the bytes it removed by reason. None when the file is
+    missing or holds no sample of the cache. A sample is one collection of
     the usage gauge, once an export interval, so the peak is the highest sampled usage,
     not the highest between samples. A line that is not an OTLP JSON metric export, or
     whose values are not counts, adds nothing, as in read_spans."""
