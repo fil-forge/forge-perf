@@ -43,6 +43,9 @@ def changes(record, previous):
     # A record from before tracing has no `trace`; it was untraced.
     if (record.get("trace") or {}).get("ratio") != (previous.get("trace") or {}).get("ratio"):
         out.append("trace")
+    # Likewise a record from before the local blob budget ran without one.
+    if record.get("ingot_local_blob_max_bytes") != previous.get("ingot_local_blob_max_bytes"):
+        out.append("local-blob-budget")
     if not broken and record["instrument"]["box_fingerprint"] != previous["instrument"]["box_fingerprint"]:
         out.append("box")
     return out

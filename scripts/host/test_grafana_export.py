@@ -254,7 +254,7 @@ class ExportTest(unittest.TestCase):
         self.assertEqual({a["key"]: a["value"]["stringValue"] for a in point["attributes"]}, {
             "box": "main", "instance_type": "m9gd.2xlarge", "tier": "1", "series": "per-trigger",
             "class": "valid", "traced": "true", "workers": "4", "size_bytes": "1000000000",
-            "run_id": "main-20261001t120000z"})
+            "local_blob_max_bytes": "0", "run_id": "main-20261001t120000z"})
         self.assertIn("results sent", proc.stderr)
 
     def test_an_untraced_run_sends_its_results_and_no_spans(self):
@@ -265,6 +265,13 @@ class ExportTest(unittest.TestCase):
         (body,) = self.stub.bodies("/otlp/v1/metrics")
         point = body["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]
         self.assertIn(attr("traced", stringValue="false"), point["attributes"])
+
+    def test_a_run_with_a_local_blob_budget_labels_its_results_with_it(self):
+        self.record["ingot_local_blob_max_bytes"] = 200000000000
+        self.export()
+        (body,) = self.stub.bodies("/otlp/v1/metrics")
+        point = body["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]
+        self.assertIn(attr("local_blob_max_bytes", stringValue="200000000000"), point["attributes"])
 
     def test_a_run_without_p5_sends_what_it_has(self):
         self.record = json.loads((FIXTURES / "wrote-nothing" / "expected.json").read_text())
