@@ -156,7 +156,7 @@ When the drill never ran there is no run directory, and the builder uses `runner
 | `catalog.local_bytes` | `total.local_bytes`: the catalog segment files still on ingot's disk, shipped or not; ingot's default retention keeps a few per bucket |
 | `catalog.live_bytes`, `catalog.live_blocks` | `total.live_bytes` and `total.live_blocks`: the CAR frames of the distinct blocks each bucket's root reaches, walked over the local segments and, with the drill's key, the segments ingot retired, read from Forge |
 | `catalog.missing_blocks` | `total.missing_blocks`: catalog blocks a root reaches that the walk could not read, from ingot's disk or, with the drill's key, from Forge. Above 0, `live_bytes` is a lower bound: the catalog step found no drill key in `DRILL_AWS_PROFILE` (`config/smelt.conf`), the walk with it failed or timed out, a stop request came during it, or the key could not read a bucket. The journal says which |
-| `ingot_local_blob_max_bytes` | runner `ingot_local_blob_max_bytes`: ingot's local blob budget, which its sweeper evicts cached bodies to stay under; null for a run without one, whose ingot keeps every body it accepted |
+| `ingot_local_blob_max_bytes` | runner `ingot_local_blob_max_bytes`: ingot's local blob budget, which its sweeper evicts cached bodies to stay under; null for a run without one, whose ingot keeps every body it accepted for its `cache_ttl`, an hour by default |
 
 The pass summary `rtt`, from one pass of `latency.json`:
 
@@ -169,7 +169,7 @@ The pass summary `rtt`, from one pass of `latency.json`:
 
 Rates stay in bytes per second as the drill reports them. The page divides by 10^9.
 
-Both read streams read from ingot's local disk on the box's NVMe while ingot still holds the blob. Ingot reads its cache and spool before it asks Forge, and without a local blob budget it keeps every blob it accepted: in a traced 2,000 GB run without one, every read-back and restore GET read its blob locally. Tier 3 sets a 2,300 GB budget ([runner.md](runner.md#ingots-local-blob-budget)), which its 2,000 GB trigger runs stay under. Its 2,600 GB nightly crosses it. Every blob past ingot's 10-minute read-after-write window has been read back within the hour, and ingot keeps those. So it evicts the youngest blobs, not yet read back, and the nightly's read-back reads those from piri; restore, which reads older blobs, stays local unless that was not enough. The group keeps the name `cache_served` from when read-back was thought to come from the page cache. A harness from before the read-back and restore p5 facts leaves those three fields null.
+Both read streams read from ingot's local disk on the box's NVMe while ingot still holds the blob. Ingot reads its local copy before it asks Forge, and without a local blob budget it keeps every blob it accepted for longer than a run: in a traced 2,000 GB run without one, every read-back and restore GET read its blob locally. Tier 3 sets a 1,000 GB budget ([runner.md](runner.md#ingots-local-blob-budget)), which every tier 3 run crosses 4 to 6 minutes into ingest. Ingot evicts the oldest blobs first and keeps about the last 4 minutes of ingest, so read-back, 30 to 60 seconds behind, still reads locally, and restore, which reads older blobs, reads those ingot has evicted from piri. The group keeps the name `cache_served` from when read-back was thought to come from the page cache. A harness from before the read-back and restore p5 facts leaves those three fields null.
 
 ## Classification
 
