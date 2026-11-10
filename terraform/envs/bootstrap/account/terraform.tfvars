@@ -1,3 +1,5 @@
 # Alerts fire when spend on Project=forge-perf passes this, or is forecast to.
-# Tier 2 runs about $1,500 a month, before campaigns.
+# Sized for tier 2 running all month, about $1,500 before campaigns. Tier 3
+# bills compute only while it runs, about $4 an hour (docs/DESIGN.md section 3),
+# so its month depends on how many hours it runs.
 budget_monthly_usd = 1600
