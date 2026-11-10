@@ -683,6 +683,8 @@ class Tracing(unittest.TestCase):
         path = case.traces / "collector-metrics.txt"
         scrapes = {
             "no counter": ("# HELP x y\notelcol_receiver_accepted_spans_total 5\n", 0),
+            "metric points, not spans": ("otelcol_receiver_refused_metric_points_total 7\n"
+                                         "otelcol_exporter_send_failed_metric_points 2\n", 0),
             "without _total, with a timestamp": ("otelcol_exporter_send_failed_spans{exporter=\"file\"} 4 1790856295000\n"
                                                  "otelcol_exporter_enqueue_failed_spans_total 1\n", 5),
             "a float the exporter writes": ("otelcol_processor_refused_spans_total{a=\"b c\"} 1.2e+01\n"
@@ -723,9 +725,90 @@ class Tracing(unittest.TestCase):
         self.assertEqual(rec["outcome"]["flags"], ["traced"])
         self.assertEqual(rec["instrument"], case.expected["instrument"])
 
+    def test_local_blobs(self):
+        case = Case(self, "traced")
+        path = case.traces / "metrics.jsonl"
+
+        def export(service, *metrics):
+            return json.dumps({"resourceMetrics": [{
+                "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": service}}]},
+                "scopeMetrics": [{"metrics": list(metrics)}]}]})
+
+        def point(t, value, start=None, **attrs):
+            out = {"timeUnixNano": str(t), "asInt": value,
+                   "attributes": [{"key": k, "value": {"stringValue": v}} for k, v in attrs.items()]}
+            return out if start is None else out | {"startTimeUnixNano": start}
+
+        def usage(t, cache):
+            return {"name": "ingot.local_blobs.usage", "gauge": {"dataPoints": [point(t, cache, dir="cache")]}}
+
+        def removed(t, value, temporality=2, reason="budget", start=None):
+            return {"name": "ingot.local_blobs.removed_bytes",
+                    "sum": {"aggregationTemporality": temporality,
+                            "dataPoints": [point(t, value, start, reason=reason)]}}
+
+        def one_dir(t, value, dir_, key="asInt"):
+            data_point = point(t, "0", dir=dir_)
+            del data_point["asInt"]
+            return {"name": "ingot.local_blobs.usage", "gauge": {"dataPoints": [data_point | {key: value}]}}
+
+        budget = {"name": "ingot.local_blobs.budget", "gauge": {"dataPoints": [point(1, "50")]}}
+        files = {
+            "two samples and a budget": ([export("ingot", usage(1, "15"), budget),
+                                          export("ingot", usage(2, "7"), removed(2, "9"))],
+                                         {"samples": 2, "peak_usage_bytes": 15, "last_usage_bytes": 7,
+                                          "budget_bytes": 50, "removed": {"budget": 9}}),
+            "totals: the latest point counts": ([export("ingot", usage(1, "2"), removed(3, "9"), removed(2, "4"))],
+                                               {"removed": {"budget": 9}}),
+            "deltas: the points add up": ([export("ingot", usage(1, "2"), removed(2, "4", 1), removed(3, "5", 1))],
+                                          {"removed": {"budget": 9}}),
+            "another service's points": ([export("ingot", usage(1, "2")), export("upload", usage(2, "18"))],
+                                         {"samples": 1, "peak_usage_bytes": 2}),
+            "every reason": ([export("ingot", usage(1, "2"), *(removed(2, str(n), reason=r) for n, r in
+                                                               enumerate(("released", "budget", "expired", "orphan"), 1)))],
+                             {"removed": {"released": 1, "budget": 2, "expired": 3, "orphan": 4}}),
+            "a reason outside the list": ([export("ingot", usage(1, "2"), removed(2, "4", reason="FIXTURE"))],
+                                          {"removed": {}}),
+            # Builds from before fil-forge/ingot#340 and #346 report reasons ingot has since dropped.
+            "an older build's reasons": ([export("ingot", usage(1, "2"),
+                                                 *(removed(2, "4", reason=r) for r in ("budget_forced", "parked", "accepted")))],
+                                         {"removed": {}}),
+            "a value that is not a count": ([export("ingot", usage(1, "2")), export("ingot", usage(2, "-1")),
+                                             export("ingot", usage(3, "1.5")),
+                                             export("ingot", usage(4, str(2 ** 53)))],
+                                            {"samples": 1, "peak_usage_bytes": 2}),
+            "a restart starts the counter again": ([export("ingot", usage(1, "2"), removed(2, "500", start="1"),
+                                                           removed(3, "520", start="1"), removed(6, "30", start="5"))],
+                                                   {"removed": {"budget": 550}}),
+            # A build from before fil-forge/ingot#346 also reports its spool.
+            "an older build's spool": ([export("ingot", one_dir(1, "5", "spool"), one_dir(1, "10", "cache"))],
+                                       {"samples": 1, "peak_usage_bytes": 10}),
+            "a double or a number in place of a count": ([export("ingot", usage(1, "2")),
+                                                          export("ingot", one_dir(2, 9.5, "cache", "asDouble")),
+                                                          export("ingot", one_dir(3, 9, "cache"))],
+                                                         {"samples": 1, "peak_usage_bytes": 2}),
+            "no cache point": ([export("ingot", one_dir(1, "5", "spool"))], None),
+            "no ingot points": ([export("upload", usage(1, "2")), "not json"], None),
+        }
+        for name, (lines, want) in files.items():
+            with self.subTest(case=name):
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                got = case.build()["trace"]["local_blobs"]
+                if want is None:
+                    self.assertIsNone(got)
+                    continue
+                for key in ("samples", "peak_usage_bytes", "last_usage_bytes", "budget_bytes"):
+                    if key in want:
+                        self.assertEqual(got[key], want[key])
+                self.assertEqual(got["removed_bytes"], dict.fromkeys(got["removed_bytes"], 0) | want.get("removed", {}))
+        path.unlink()
+        rec = case.build()
+        self.assertIsNone(rec["trace"]["local_blobs"])
+        self.assertNotIn("trace_missing", rec["outcome"]["flags"])
+
     def test_trace_text_never_reaches_the_record(self):
         case = Case(self, "traced")
-        for name in ("traces.jsonl", "collector-metrics.txt", "collector.log"):
+        for name in ("traces.jsonl", "metrics.jsonl", "collector-metrics.txt", "collector.log"):
             self.assertIn(MARKER, (case.traces / name).read_text(encoding="utf-8"))
         self.assertEqual(case.cli().returncode, 0)
         text = case.out.read_text(encoding="utf-8")
