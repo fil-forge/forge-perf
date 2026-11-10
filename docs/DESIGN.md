@@ -68,7 +68,7 @@ The instance role reads `/forge-perf/*` parameters, writes its own prefixes of t
 
 ### Host
 
-`provision.sh` is idempotent and pins the tools in `host/versions.env`: Docker CE and Compose from Docker's apt repository, held; Go 1.26 with `GOTOOLCHAIN=local`; ucantool v0.1.0 at infra-nodes' checksum, so smelt's `init.sh` never installs `@latest` (`smelt/scripts/init.sh:40-53`); AWS CLI v2. fio, jq, zstd, git, curl and the other Ubuntu archive tools are installed unpinned, and `scripts/host/box-facts.sh` reports the version of each. infra-nodes uses Ubuntu's `docker.io` (`infra-nodes/terraform/modules/node/files/bootstrap.sh.tftpl:29-40`), but `noble-updates` keeps only the newest build, and Docker's repository lets a replaced box install the same one. `provision.sh` also purges unattended-upgrades, holds kernel packages and snaps, loads `sch_netem`, `sch_prio` and `cls_u32`, and moves Docker's address pools to `10.213.0.0/16`, clear of the VPC. A run records the box facts (instance type, AMI, kernel, Docker, CPU and NVMe model) and refuses to start with an unsynchronized clock or on a CPU without `sha2`, since SHA-256 would fall back to software.
+`provision.sh` is idempotent and pins the tools in `host/versions.env`: Docker CE and Compose from Docker's apt repository, held; Go 1.27 with `GOTOOLCHAIN=local`; ucantool v0.1.0 at infra-nodes' checksum, so smelt's `init.sh` never installs `@latest` (`smelt/scripts/init.sh:40-53`); AWS CLI v2. fio, jq, zstd, git, curl and the other Ubuntu archive tools are installed unpinned, and `scripts/host/box-facts.sh` reports the version of each. infra-nodes uses Ubuntu's `docker.io` (`infra-nodes/terraform/modules/node/files/bootstrap.sh.tftpl:29-40`), but `noble-updates` keeps only the newest build, and Docker's repository lets a replaced box install the same one. `provision.sh` also purges unattended-upgrades, holds kernel packages and snaps, loads `sch_netem`, `sch_prio` and `cls_u32`, and moves Docker's address pools to `10.213.0.0/16`, clear of the VPC. A run records the box facts (instance type, AMI, kernel, Docker, CPU and NVMe model) and refuses to start with an unsynchronized clock or on a CPU without `sha2`, since SHA-256 would fall back to software.
 
 | Unit | What it does |
 |---|---|
@@ -109,6 +109,7 @@ Runs follow storage-qualification main, which accepts the `--stop-ingest-at` fla
 | Boot, setup | `docker network create --subnet 172.30.0.0/24 forge-network`; `make up` with the rendered manifest, piri's S3 key and indexing off; `INGOT_URL=http://<ingot bridge IP> perf-drill.sh setup` | `no_data` |
 | Latency | apply and verify netem (§5) | `invalid` |
 | Drill | drop the page cache, snapshot NIC counters, `perf-drill.sh run` under `timeout --signal=INT --kill-after=5m` of `DURATION` + 30 min; watch free NVMe space | classified (§7) |
+| Catalog | `ingot catalog usage` in the ingot container, once ingot has shipped the drill's last catalog segments; ingot keeps its default retention, and the walk of each bucket's live catalog reads the segments it retired from Forge with the drill's key | none. Without a settled report the record's `catalog` is null; without the walk with the key, it carries the walk of ingot's disk, whose `missing_blocks` marks `live_bytes` a lower bound |
 | Post-check | latency, restarts, addresses, image IDs | `invalid` |
 | Record, upload, wipe | build and check the record; upload raw, then record; wipe (§6) | minimal `no_data` record |
 
@@ -116,7 +117,7 @@ Each step runs under `timeout`; an overrun is reason `step_timeout`. `INGOT_URL`
 
 ### Drill settings
 
-Values live in `config/settings/<instance type>.env`, so a resize without a settings file for the new type stops runs. Every flag is passed and recorded:
+Values live in `config/settings/<instance type>.env`, so a resize without a settings file for the new type stops runs. A campaign's `--drill` can replace the restore and read-back settings for a diagnostic run, which is then series `calibration` (docs/runner.md, "Campaigns"). Every flag is passed and recorded:
 
 ```
 bin/drill --provider <run dir>/drill --profile import --stop-ingest-at 100GB \
@@ -191,7 +192,7 @@ publish.yml, every 15 min, one at a time, role forge-perf-ci-results
 
 The bucket is versioned; `raw/` expires after 180 days, `published/` after 90, and the results role cannot read `raw/`. Raw tarballs go up with `aws s3 cp` and a SHA-256 checksum, records with `aws s3api put-object --content-md5 --if-none-match '*'`, so no record is overwritten. A zero exit, or a 412 on a record, clears its outbox entry.
 
-`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential remains in the tree.
+`piri init` prints its config, S3 secret included, on every fresh volume (`piri/cmd/cli/setup/register.go:1086-1105`, `smelt/systems/piri/entrypoint.sh:98-110`). `run.sh` strips those lines before tarring, leaves out the drill's `provider/.env`, and refuses to upload while any piri or harness credential, or the drill's secret, remains in the tree.
 
 ### The record
 
@@ -200,7 +201,7 @@ Run IDs are `<box>-<yyyymmdd>t<hhmmss>z` (`main-20261001t120312z`), taken from `
 | Group | Contents |
 |---|---|
 | identity, `time` | `run_id`, `series` (`per-trigger`, `nightly`, `campaign`, `calibration`, `experiment`), `pairing_id`, for an experiment's run its request, service, pull request, commit and role (`main` or `branch`), trigger reason, changed components; UTC `run_started_at`, `stack_up_at`, `drill_started_at`, `drill_finished_at`, `run_finished_at` |
-| `box`, `outcome` | box facts; class, reasons, flags, drill exit code and failure codes |
+| `box`, `outcome` | box facts; class, reasons, flags, drill exit code, the step that stopped the run and failure codes |
 | `drill` | every setting; p5, median and per-window ingest rates; window, byte, blob, request and error counts; piri's failed S3 PUTs (`piri/pkg/store/objectstore/minio/minio.go:67`), which separate S3 incidents from Forge errors; read-back and restore p5, median and per-window rates and restore's ranged GETs a second, grouped as `cache_served` and served from ingot's local disk unless a local blob budget evicted the blob first |
 | `latency`, `network` | measured round trips before and after; changes in the Elastic Network Adapter's allowance-exceeded counters; egress rate |
 | `provenance` | forge-perf, smelt and harness SHAs; each image's repository, digest, revision label and role (`under_test` or `instrument`) |
@@ -231,9 +232,9 @@ Flags leave the class alone: `few_windows` (under 20 steady windows, where p5 is
 
 A static site in `site/`, with Observable Plot and d3 vendored:
 
-1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` and `experiment` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason. Under the ingest numbers the headline gives the same run's read-back and restore p5 and median, and restore's ranged GETs per second.
+1. The thermometer beside the headline numbers in text. The mercury is the latest valid per-trigger or nightly p5 on the persistent box, with its age and a pointer at its median. Gates come from `data/gates.json`; an unmeasured gate is `null` and drawn dashed. Valid per-trigger, nightly and campaign runs light gates; `calibration` and `experiment` runs never do. With no valid per-trigger or nightly run on the persistent box, the headline gives the latest run's class and reason. Under the ingest numbers the headline gives the same run's read-back and restore p5 and median, and restore's ranged GETs per second. Beside the p5 it names the run's mode (item 3).
 2. History, one series at a time: p5 line, dashed median, gate lines, markers for instrument and box changes.
-3. The runs table, with ingest, read-back and restore rates, opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text. An experiment's run names its pull request, the set it ran and the other runs of its pairing.
+3. The runs table, with ingest, read-back and restore rates and each run's mode (restore-heavy or ingest-heavy: how restore and ingest split the box; restore-heavy runs show the lower p5), opening `#run=<run_id>` with every record field, compare links against the previous run, and the harness SHA as plain text. An experiment's run names its pull request, the set it ran and the other runs of its pairing.
 4. How it is measured: the method, the workload (the drill's import profile, ~128 MiB objects) and the gaps from §2.
 
 ## 8. smelt changes
@@ -254,7 +255,7 @@ PR 5 stacks on PR 4; the others are independent. piri needs no region setting: m
 
 One session measures all three instance types in turn. A tier's ceiling is the lower of two measurements, each scored as p5 of 30-second windows over its sustained segment.
 
-**S3 PUT.** `cmd/s3-ceiling` reproduces piri's call: minio-go v7.3.0 (piri's pin, `piri/go.mod:44`; CI fails if they diverge), TLS to the regional endpoint, piri's static key, `PutObject` of 134,217,728 bytes from a non-seekable body into the box's own `pdp` bucket, 8 workers per core. AWS documents burst bandwidth as lasting typically 5 to 60 minutes. On m9gd.2xlarge the phase therefore runs 75 minutes and scores its last 30, starting once `bw_out_allowance_exceeded` has risen steadily for 5 minutes (counter name **[unverified]**). The larger types are rated sustained and run 30 minutes.
+**S3 PUT.** `cmd/s3-ceiling` reproduces piri's call: minio-go at piri's pin (v7.3.0, `piri/go.mod:44`, when the committed ceilings were measured; CI fails if they diverge), TLS to the regional endpoint, piri's static key, `PutObject` of 134,217,728 bytes from a non-seekable body into the box's own `pdp` bucket, 8 workers per core. AWS documents burst bandwidth as lasting typically 5 to 60 minutes. On m9gd.2xlarge the phase therefore runs 75 minutes and scores its last 30, starting once `bw_out_allowance_exceeded` has risen steadily for 5 minutes (counter name **[unverified]**). The larger types are rated sustained and run 30 minutes.
 
 **NVMe write.** `scripts/host/ceiling-nvme.sh` discards the device and runs `fio --direct=1 --ioengine=io_uring --rw=write --bs=1M --iodepth=32 --numjobs=4 --size=25% --offset_increment=25%` over it. A 100 GB file write on ext4 sets the ceiling instead if it lands more than 10% lower. Tier 1's drive is rated at 87,209 4 KiB write IOPS (0.36 GB/s at that size), so it may set gate 1 below the NIC's 0.53 GB/s.
 

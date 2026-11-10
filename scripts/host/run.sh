@@ -12,7 +12,9 @@
 # series calibration. --workers, --size and --duration override the settings
 # file. A campaign's pending run can carry CPU caps (campaign.sh --cap), which
 # setup applies with `docker update --cpus`; a capped run is series
-# calibration. --trace RATIO, a pending run's trace_ratio (campaign.sh --trace)
+# calibration. It can also carry drill settings (campaign.sh --drill), which
+# replace the settings file's; such a run is series calibration too.
+# --trace RATIO, a pending run's trace_ratio (campaign.sh --trace)
 # or the settings file's TRACE_RATIO, in that order, traces the run: a
 # collector runs beside the stack and the services sample RATIO of requests
 # (docs/runner.md, "Tracing"). --trace 0, or a pending trace_ratio of "0",
@@ -22,7 +24,7 @@
 # the record's experiment block, pins the branch image under its pull request
 # tag, and leaves pending.json and last-started.json alone (docs/runner.md,
 # "Experiments"). The steps are preflight, checkout, images,
-# boot, setup, latency, drill and check; then every run that started, whether a step stopped it or not, is
+# boot, setup, latency, drill, catalog and check; then every run that started, whether a step stopped it or not, is
 # collected, recorded, sent to Grafana, uploaded and wiped. --until STEP stops after STEP and
 # leaves the stack as it is, with no record.
 #
@@ -30,8 +32,8 @@
 # reached --until, or another run holds the lock; 1 a step stopped the run, or
 # the record or the wipe failed, and runner.json names the reason; 2 the run
 # did not start (usage, no settings for this instance type, WORKERS empty, an
-# unusable set, a malformed trace ratio or local blob budget); 130 or 143 a stop request, after the
-# record and the wipe.
+# unusable set, a malformed trace ratio, drill settings or local blob budget);
+# 130 or 143 a stop request, after the record and the wipe.
 # A run taken from pending.json that does not start leaves the file as
 # pending.json.rejected, so the next poll does not start it again, and an
 # experiment's run as pending-experiment.json.rejected.
@@ -47,7 +49,7 @@ here="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=runlib.sh
 . "$here/runlib.sh"
 
-STEPS="preflight checkout images boot setup latency drill check"
+STEPS="preflight checkout images boot setup latency drill catalog check"
 from_pending="" pending_file=""
 refuse() {
   echo "run.sh: $*" >&2
@@ -117,7 +119,7 @@ settings="$cfg/settings/$instance_type.env"
 
 # --- the set, the series and the drill settings -------------------------------
 
-kind=manual superseded=0 pairing=null attempt=0 caps='{}' experiment=null overrides='{}'
+kind=manual superseded=0 pairing=null attempt=0 caps='{}' drill='{}' experiment=null overrides='{}'
 if [ -n "$set_file" ]; then
   set_json="$(jq -ce 'objects' "$set_file")" || refuse "$set_file is not a JSON object"
 else
@@ -152,6 +154,15 @@ else
   caps="$(jq -ce '.caps // {} | objects | select(all(to_entries[]; (.key | test("^[a-z0-9][a-z0-9-]*$"))
     and (.value | type == "string" and test("^[0-9]+(\\.[0-9]+)?$") and test("[1-9]"))))' <<<"$pending")" ||
     refuse "pending.json has caps that are not {service: positive decimal}"
+  # A campaign's drill settings (campaign.sh --drill), each one that
+  # drill_value_ok takes, applied below in place of the settings file's.
+  drill="$(jq -ce '.drill // {} | objects
+    | select(all(to_entries[]; .value | type == "string" and (contains("\n") | not)))' <<<"$pending")" ||
+    refuse "pending.json has drill settings that are not {NAME: value}"
+  while IFS= read -r name; do
+    drill_value_ok "$name" "$(jq -r --arg n "$name" '.[$n]' <<<"$drill")" ||
+      refuse "pending.json has a drill setting $name that campaign.sh --drill does not take"
+  done < <(jq -r 'keys[]' <<<"$drill")
   # A campaign's own workers, size and duration, unless the command line says.
   for v in workers size duration; do
     [ -n "${!v}" ] || printf -v "$v" '%s' "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$pending")"
@@ -208,6 +219,13 @@ grep -qxE 'per-trigger|nightly|campaign|calibration|experiment' <<<"$series" || 
 # A capped run is the falsification check: it never lights a gate.
 [ "$caps" = '{}' ] || [ "$kind" != experiment ] || refuse "an experiment's run takes no caps"
 [ "$caps" = '{}' ] || series=calibration
+# Drill settings in place of the settings file's are a diagnostic: the run
+# never counts, and its record's settings show the values it ran with.
+[ "$drill" = '{}' ] || [ "$kind" != experiment ] || refuse "an experiment's run takes no drill settings"
+[ "$drill" = '{}' ] || series=calibration
+while IFS= read -r name; do
+  printf -v "$name" '%s' "$(jq -r --arg n "$name" '.[$n]' <<<"$drill")"
+done < <(jq -r 'keys[]' <<<"$drill")
 
 # A traced run keeps its series; the record says it was traced. A ratio of 0
 # from the command line or pending.json turns off the settings file's.
@@ -240,6 +258,8 @@ settings_json="$(jq -nce --arg manifest "$MANIFEST_NAME" --arg window "${WINDOW:
    enforce_floor: ($floor == "true"), progress_s: ($progress | secs), keep_objects: ($keep == "1")}
   | if [.[] | select(. == null)] == [] then . else error("unreadable") end')" ||
   refuse "a drill setting in $settings (or --size/--duration) is malformed"
+jq -e '.verify_lag_min_s <= .verify_lag_max_s' <<<"$settings_json" >/dev/null ||
+  refuse "VERIFY_LAG_MIN is above VERIFY_LAG_MAX (from $settings or the pending run's drill settings)"
 # Ingot's local blob budget in bytes, or empty for none, at most 2^53 - 1 so
 # jq and the record hold it exactly. Every compose call of the run gives ingot
 # that budget or none, never a caller's own.
@@ -911,6 +931,50 @@ step_drill() {
   esac
 }
 
+# step_catalog: ingot's catalog figures for the record (docs/record.md,
+# "catalog"): `ingot catalog usage` in the ingot container, 15 seconds apart,
+# until two reports agree on every total, so the drill's last segments have
+# shipped; nine calls at most. These calls carry no key, so they walk ingot's
+# disk alone and are quick. Then one call with the drill's key walks the
+# segments ingot retired too, from Forge, and its report becomes usage.json;
+# docker exec takes the pair from this shell's environment, so it never
+# reaches a command line. Without the key, or should that call fail, the
+# agreed report is kept, its missing_blocks marking live_bytes a lower bound.
+# A failed call before then, an image without the command, or reports that
+# never agree leave no report, and the record's catalog null; the run goes on
+# either way. Each call has its own timeout rather than `limited`'s, whose
+# overrun would turn a later failure into step_timeout. The keyed walk's runs
+# inside the container too, so a client killed at its limit leaves no walk
+# behind, and a stop request waits for the walk to end, ten minutes at most.
+step_catalog() {
+  local c report total prev="" i id secret
+  step "catalog"
+  mkdir -p "$RUN/catalog"
+  c="$(cd "$SMELT" && docker compose ps -q ingot)" && [ -n "$c" ] ||
+    { echo "run.sh: no ingot container; the record has no catalog" >&2; return 0; }
+  for i in 1 2 3 4 5 6 7 8 9; do
+    report="$(timeout --kill-after=10 120 docker exec "$c" /usr/bin/ingot catalog usage 2>>"$RUN/catalog/usage.err")" ||
+      { echo "run.sh: ingot catalog usage failed; the record has no catalog" >&2; return 0; }
+    total="$(jq -ce .total <<<"$report" 2>/dev/null)" || total=""
+    [ -z "$total" ] || [ "$total" != "$prev" ] || break
+    prev="$total"
+    [ "$i" = 9 ] || sleep "${FORGE_PERF_CATALOG_POLL:-15}"
+    report=""
+  done
+  [ -n "$report" ] || { echo "run.sh: ingot's catalog reports never agreed; the record has no catalog" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+  id="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_access_key_id 2>/dev/null)" || id=""
+  secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || secret=""
+  [ -n "$id" ] && [ -n "$secret" ] ||
+    { echo "run.sh: no drill key in profile $DRILL_AWS_PROFILE; the catalog walk read ingot's disk alone" >&2; return 0; }
+  report="$(AWS_ACCESS_KEY_ID="$id" AWS_SECRET_ACCESS_KEY="$secret" timeout --kill-after=10 600 \
+    docker exec -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY "$c" timeout -k 5 590 /usr/bin/ingot catalog usage \
+    2>>"$RUN/catalog/usage.err")" &&
+    jq -e .total >/dev/null 2>&1 <<<"$report" ||
+    { echo "run.sh: the catalog walk with the drill's key failed; the record keeps the walk of ingot's disk" >&2; return 0; }
+  printf '%s\n' "$report" >"$RUN/catalog/usage.json"
+}
+
 step_check() {
   local status=0 modified
   step "check"
@@ -933,6 +997,7 @@ step_check() {
 close_out() {
   local raw="$FORGE_PERF_OUTBOX/$run_id.raw.tar.zst" record="$FORGE_PERF_OUTBOX/$run_id.json" status=0 ok=0
   local forbid="$SECRETS/forbid" smelt_run id="${SMELT_PIRI_S3_ACCESS_KEY_ID:-}" secret="${SMELT_PIRI_S3_SECRET_ACCESS_KEY:-}"
+  local drill_secret
   trap 'echo "run.sh: stop requested; finishing the record and the wipe" >&2' TERM INT
   [ -z "$sampler" ] || kill "$sampler" 2>/dev/null
   if [ -n "$drill_pid" ]; then
@@ -944,12 +1009,17 @@ close_out() {
   step "collect"
   mkdir -p "$FORGE_PERF_OUTBOX" "$SECRETS"
   [ ! -d "$RUN" ] || q host_read journalctl -u forge-perf-run --since "@$started_epoch" --no-pager >"$RUN/journal.txt"
-  # piri's pair and the harness credential, which no collected file may hold.
+  # piri's pair, the harness credential and the drill's secret, which no
+  # collected file may hold. collect.sh leaves out the drill's .env files, so
+  # its secret can only be there by a leak, such as through the catalog
+  # step's usage.err. Its key ID is left off: s3-key.sh prints it.
+  drill_secret="$(aws configure get --profile "$DRILL_AWS_PROFILE" aws_secret_access_key 2>/dev/null)" || drill_secret=""
   (
     umask 077
     : >"$forbid"
     if [ "${#id}" -ge 8 ] && [ "${#secret}" -ge 8 ]; then
-      { printf '%s\n' "$id" "$secret"; cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
+      { printf '%s\n' "$id" "$secret"; [ -z "$drill_secret" ] || printf '%s\n' "$drill_secret"
+        cat "$SECRETS/harness-key" "$SECRETS/harness-token" 2>/dev/null; } |
         awk '{ gsub(/^[ \t]+|[ \t\r]+$/, "") } length($0) >= 8' >"$forbid"
     fi
   )
@@ -965,7 +1035,7 @@ close_out() {
   rj --arg t "$(now)" '.time.run_finished_at = $t'
   smelt_run="$(find "$SMELT/generated/perf-runs/drill" -mindepth 1 -maxdepth 1 -type d -name "*-$run_id" 2>/dev/null)"
   set -- build --runner "$state/runner.json" --latency "$RUN/netem/latency.json" --traces "$RUN/traces" \
-    --denylist "$DENYLIST" --out "$record"
+    --catalog "$RUN/catalog/usage.json" --denylist "$DENYLIST" --out "$record"
   [ -z "$smelt_run" ] || [ "$(wc -l <<<"$smelt_run")" -ne 1 ] || set -- "$@" --run-dir "$smelt_run"
   [ ! -s "$forbid" ] || set -- "$@" --forbid "$forbid"
   status=0
@@ -1050,7 +1120,7 @@ jq -n --arg run_id "$run_id" --arg series "$series" --argjson pairing "$pairing"
    superseded: $superseded, box: $box,
    time: {run_started_at: $started, stack_up_at: null, drill_started_at: null, drill_finished_at: null,
           run_finished_at: null},
-   settings: $settings,
+   step: "preflight", settings: $settings,
    provenance: {forge_perf: {sha: $fp, instrument_tree: $tree}, smelt: {sha: $smelt}, harness: {sha: $harness}},
    images: $images, reasons: [], restarted_services: [], watchdog_fired: false,
    nic: {allowance_exceeded: null, egress_bytes_per_s_median: null, seconds_above_baseline: null},
@@ -1076,7 +1146,11 @@ esac
 exec 8>&-
 echo "run $run_id: series $series, trigger $reason, smelt $smelt_sha, harness $harness_sha"
 
+# runner.json names the step in progress, so a record whose run a step stopped
+# says which step (outcome.stopped_step); null means every step ran.
 for s in $STEPS; do
+  rj --arg s "$s" '.step = $s'
   "step_$s"
   [ "$s" != "$until" ] || break
 done
+[ -n "$until" ] || rj '.step = null'

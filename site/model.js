@@ -113,6 +113,36 @@ export function readLine(run, id) {
   return parts.join(" · ");
 }
 
+// Ingest and restore run together on one box, and runs fall into one of two
+// splits between them: restore takes a large share and ingest runs lower, or
+// the reverse. Runs of one instrument have landed in either, so a p5 compares
+// with runs of the same mode. A run is restore-heavy when restore's median, as
+// a whole percent of the ingest and restore medians together, is at least
+// this: the page shows that same whole percent, so the label and the figure
+// agree. The value was chosen in the gap between the two splits in recorded runs.
+export const RESTORE_HEAVY_PERCENT = 28;
+export const MODE_LABEL = { restore_heavy: "restore-heavy", ingest_heavy: "ingest-heavy" };
+
+// A run's mode and restore's whole-percent share of the two medians, or null
+// when the run lacks either median or both are zero.
+export function mode(run) {
+  const ingest = run.median_bytes_per_s, restore = run.restore_median_bytes_per_s;
+  if (ingest == null || restore == null || ingest + restore <= 0) return null;
+  const percent = Math.round((100 * restore) / (ingest + restore));
+  return { id: percent >= RESTORE_HEAVY_PERCENT ? "restore_heavy" : "ingest_heavy", percent };
+}
+
+export function modeLabel(run) {
+  const m = mode(run);
+  return m && MODE_LABEL[m.id];
+}
+
+// The mode with restore's share, or null for a run without a mode.
+export function modeText(run) {
+  const m = mode(run);
+  return m && `${MODE_LABEL[m.id]}, restore share ${m.percent}%`;
+}
+
 export function gbps(bytes) {
   if (bytes == null) return "–";
   const v = bytes / 1e9;
