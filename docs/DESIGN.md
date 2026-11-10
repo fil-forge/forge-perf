@@ -309,7 +309,7 @@ A run has about cap ÷ (rate × 30 s) windows. At 0.53 GB/s, 100 GB gives 6, 350
 | Can a tier 1 run above the NIC baseline light gate 1? | yes, flagged |
 | Keep the stack after an integrity failure? | wiped |
 | Should guppy and indexing-service, off the drill path, trigger runs? | they trigger runs |
-| A weekly reference run of `cal-1` to separate host drift from code? | none |
+| A weekly reference run of `cal-1`, or on tier 3 of a set with fil-forge/smelt#69, to separate host drift from code? | none |
 | Log scale for the thermometer? At 0.04 GB/s a linear tube is 1% full. | linear |
 | Does ingot's catalog shipping, with sprue's indexer cleared, back up over 500 GB? | measured on the first such run |
 | **[unverified]** Graviton5 support in the pinned kernel; ENA counter names; the instance-store model string; m9gd in us-east-2a; `172.31.200.0/24` free; `--if-none-match` in the pinned AWS CLI; the AMI's time source; whether the Action's pushes count as activity for GitHub's 60-day rule | first boot and calibration |
