@@ -64,6 +64,7 @@
       "traced"
     ],
     "drill_exit": 0,
+    "stopped_step": null,
     "failure_codes": []
   },
   "drill": {
@@ -485,5 +486,6 @@
         "orphan": 1000000
       }
     }
-  }
+  },
+ "catalog": null
 }
