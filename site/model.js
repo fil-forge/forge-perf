@@ -183,22 +183,119 @@ export function heartbeatLine(hb, now) {
   return parts.join(", ");
 }
 
-// The runs of one series with what the chart marks on them.
+// Failed and no-data runs: their rates are absent or untrustworthy, so the
+// chart draws no point for them and its lines do not cross them.
+export const GAP_CLASSES = ["failed", "no_data"];
+
+// Whether the history chart draws a point for this run.
+export const drawn = (r) => r.p5_bytes_per_s != null && !GAP_CLASSES.includes(r.klass);
+
+// The runs of one series with what the chart marks on them. `segment` names
+// the stretch of one instance type's runs that a line joins: each type has
+// its own, so the runs of a pairing join their own type's runs across the
+// other's, and each failed or no-data run starts a new one, so no line
+// crosses it.
 export function history(runs, series) {
   const rows = runs.filter((r) => r.series === series);
   const firstType = new Map();
   const seen = new Set();
+  let gaps = 0;
   return rows.map((r) => {
     const type = r.box.instance_type;
     const isNew = seen.size > 0 && !seen.has(type);
     seen.add(type);
     if (r.pairing_id && !firstType.has(r.pairing_id)) firstType.set(r.pairing_id, type);
+    if (GAP_CLASSES.includes(r.klass)) gaps += 1;
     return {
       ...r,
       box_change: isNew ? type : null,
       incoming: Boolean(r.pairing_id) && firstType.get(r.pairing_id) !== r.box.instance_type,
+      segment: `${type} ${gaps}`,
     };
   });
+}
+
+// Each run of consecutive failed and no-data runs in a series, which the chart
+// shades from the first one's start to the last one's finish. A run the chart
+// draws a point for ends a span; one it draws nothing for leaves it open.
+export function noDataSpans(rows) {
+  const spans = [];
+  let open = null;
+  for (const r of rows) {
+    if (GAP_CLASSES.includes(r.klass)) {
+      if (!open) spans.push(open = { from: r.run_started_at, to: r.run_finished_at || r.run_started_at, failed: 0, no_data: 0 });
+      open.to = r.run_finished_at || r.run_started_at;
+      open[r.klass] += 1;
+    } else if (r.p5_bytes_per_s != null) {
+      open = null;
+    }
+  }
+  return spans;
+}
+
+// The history chart's time ranges. "type" starts at the first run on the
+// latest run's instance type, so earlier boxes do not set the scale.
+export const RANGES = ["type", "30d", "all"];
+const RANGE_DAYS = 30;
+
+// The ranges worth offering for these rows: a range other than "all" only
+// when it leaves some runs out and still holds a run the chart draws a point for.
+export function rangeChoices(rows, now) {
+  return RANGES.filter((id) => {
+    if (id === "all") return true;
+    const kept = inRange(rows, id, now);
+    return kept.length < rows.length && kept.some(drawn);
+  });
+}
+
+export function rangeLabel(id, rows) {
+  if (id === "type") return `Since ${rows[rows.length - 1].box.instance_type}`;
+  return id === "30d" ? `${RANGE_DAYS} days` : "All";
+}
+
+export function inRange(rows, range, now) {
+  if (!rows.length || range === "all") return rows;
+  if (range === "30d") return rows.filter((r) => Date.parse(r.run_started_at) >= now - RANGE_DAYS * 86400e3);
+  const type = rows[rows.length - 1].box.instance_type;
+  return rows.slice(rows.findIndex((r) => r.box.instance_type === type));
+}
+
+// The measured gates of the instance types these runs ran on: another type's
+// ceiling says nothing about them, and the thermometer shows every gate.
+export function gatesInView(gates, rows) {
+  const types = new Set(rows.map((r) => r.box.instance_type));
+  return gates.filter((g) => g.current && types.has(g.instance_type));
+}
+
+// Where each box-change label goes, given each rule's x and the label's width
+// in pixels, in x order. A label reads rightward from its rule unless that
+// would pass `right`, then leftward; one that would overlap an earlier label
+// in its row moves down to the first row where it fits. Returns
+// { side: "start" | "end", row } per label.
+export function boxLabelLayout(items, right, pad = 4) {
+  const ends = [];
+  return items.map(({ px, width }) => {
+    const side = px + pad + width > right ? "end" : "start";
+    const from = side === "start" ? px + pad : px - pad - width;
+    let row = ends.findIndex((end) => from >= end + pad);
+    if (row < 0) row = ends.length;
+    ends[row] = from + width;
+    return { side, row };
+  });
+}
+
+// Pixel positions for labels stacked beside one edge, each as near its own y as
+// it can be while keeping `gap` from its neighbours. They stay inside [lo, hi]
+// when they fit there; when they do not, the gaps and hi hold and the top
+// labels pass lo.
+export function spread(ys, gap, lo, hi) {
+  const order = ys.map((y, i) => [y, i]).sort((a, b) => a[0] - b[0]);
+  const out = new Array(ys.length);
+  let floor = -Infinity;
+  for (const [y, i] of order) out[i] = floor = Math.max(y, floor + gap, lo);
+  let ceiling = Infinity;
+  for (const [, i] of [...order].reverse()) out[i] = ceiling = Math.min(out[i], ceiling - gap, hi);
+  return out;
 }
 
 // For each pairing with counting runs on two instance types, the median of
@@ -232,6 +329,14 @@ export function pairedOffsets(runs) {
                from_runs: fromMedians.length, to_runs: toMedians.length, ratio: toMedian / fromMedian });
   }
   return out;
+}
+
+// The offsets of the pairings with a run among `rows`, the runs in view. Each
+// is taken over all of the series' runs, since a range can start partway
+// through a pairing: its first type's runs come before the new type's first.
+export function pairingsInView(all, rows) {
+  const ids = new Set(rows.map((r) => r.pairing_id).filter(Boolean));
+  return pairedOffsets(all).filter((o) => ids.has(o.pairing_id));
 }
 
 function median(values) {
