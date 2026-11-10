@@ -41,10 +41,11 @@ pgx.rows_affected
 error.type
 exception.type
 
-# ingot. Builds before fil-forge/ingot#218 name the ingot.reads.*.local
-# counts ingot.reads.*.spool. The ingot.sweep.* keys are on the spans of
-# ingot's background sweeps: counts, bytes, and a pass's stop reason from a
-# fixed set.
+# ingot. Some keys are set only by older builds and stay listed, so an
+# experiment on an older branch keeps them: builds before fil-forge/ingot#218,
+# for one, name the ingot.reads.*.local counts ingot.reads.*.spool. The
+# ingot.sweep.* keys are on the spans of ingot's background sweeps: counts,
+# bytes, and a pass's stop reason from a fixed set.
 ingot.auth.local_hit
 ingot.auth.path
 ingot.blob.bytes
@@ -55,6 +56,7 @@ ingot.blobs.total
 ingot.blobs.uploaded
 ingot.body.blobs
 ingot.body.bytes
+ingot.body.streamed
 ingot.log.attempts
 ingot.log.blocks
 ingot.log.bytes
@@ -74,8 +76,11 @@ ingot.sweep.budget_files
 ingot.sweep.bytes
 ingot.sweep.count
 ingot.sweep.files
+ingot.sweep.forced_bytes
+ingot.sweep.forced_files
 ingot.sweep.orphan_bytes
 ingot.sweep.orphan_files
+ingot.sweep.skipped
 ingot.sweep.stop
 ingot.sweep.usage_bytes
 ingot.tree.keys_returned

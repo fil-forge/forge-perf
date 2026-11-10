@@ -75,8 +75,8 @@ TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 # service.name, or none, counts as `other`, so no span text reaches the record.
 TRACE_SERVICES = list(SCHEMA["properties"]["trace"]["oneOf"][1]["properties"]["spans_by_service"]["required"])
 CATALOG_FIELDS = list(SCHEMA["properties"]["catalog"]["oneOf"][1]["required"])
-# ingot's local blob metrics in metrics.jsonl: the usage gauge's dirs, summed,
-# and the removal counter's reasons, the record's keys. A point with any other
+# ingot's local blob metrics in metrics.jsonl: the usage gauge's dir and the
+# removal counter's reasons, the record's keys. A point with any other
 # dir or reason is left out, so no metric text reaches the record. ingot reports
 # one dir, its cache; a build from before fil-forge/ingot#346 also reports its
 # spool, which the record leaves out.
