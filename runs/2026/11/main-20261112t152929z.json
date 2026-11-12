@@ -1,0 +1,541 @@
+{
+  "box": {
+    "ami_id": "ami-03e774c3214166a53",
+    "arch": "arm64",
+    "availability_zone": "us-east-2a",
+    "cpu": {
+      "cores": 64,
+      "features": [
+        "fp",
+        "asimd",
+        "evtstrm",
+        "aes",
+        "pmull",
+        "sha1",
+        "sha2",
+        "crc32",
+        "atomics",
+        "fphp",
+        "asimdhp",
+        "cpuid",
+        "asimdrdm",
+        "jscvt",
+        "fcma",
+        "lrcpc",
+        "dcpop",
+        "sha3",
+        "asimddp",
+        "sha512",
+        "sve",
+        "asimdfhm",
+        "dit",
+        "uscat",
+        "ilrcpc",
+        "flagm",
+        "sb",
+        "paca",
+        "pacg",
+        "dcpodp",
+        "sve2",
+        "sveaes",
+        "svepmull",
+        "svebitperm",
+        "svesha3",
+        "flagm2",
+        "frint",
+        "svei8mm",
+        "svebf16",
+        "i8mm",
+        "bf16",
+        "dgh",
+        "rng",
+        "bti",
+        "ecv",
+        "afp",
+        "wfxt"
+      ],
+      "implementer": "0x41",
+      "part": "0xd84"
+    },
+    "docker_compose": "5.5.1",
+    "docker_server": "29.8.1",
+    "id": "main",
+    "instance_type": "m9gd.16xlarge",
+    "kernel": "7.0.0-1012-aws",
+    "mem_total_bytes": 265546084352,
+    "nvme": {
+      "filesystem": "ext4",
+      "model": "Amazon EC2 NVMe Instance Storage",
+      "size_bytes": 3800000000000
+    },
+    "region": "us-east-2",
+    "tier": 3
+  },
+  "catalog": {
+    "buckets": 2,
+    "dead_on_arrival_bytes": 49698842,
+    "forge_bytes": 575838891,
+    "live_blocks": 18680,
+    "live_bytes": 502620164,
+    "local_bytes": 27806561,
+    "missing_blocks": 0,
+    "unmeasured_bytes": 0
+  },
+  "drill": {
+    "requests": {
+      "backend_s3_errors": 0,
+      "integrity_failures": 0,
+      "status_408": 0,
+      "status_429": 0,
+      "status_5xx": 0,
+      "total": 1175522,
+      "transport_errors": 0
+    },
+    "results": {
+      "blobs_written": 14725,
+      "bytes_ingested": 1999894144300,
+      "bytes_read_back": 2019610490690,
+      "bytes_restored": 1366693056358,
+      "cache_served": {
+        "read_back_median_bytes_per_s": 2972402795.9,
+        "read_back_p5_bytes_per_s": 2107498972.2,
+        "restore_median_bytes_per_s": 1834066086.4666667,
+        "restore_p5_bytes_per_s": 1517288164,
+        "restore_ranged_gets_median_per_s": 1526.9
+      },
+      "cap_reached": true,
+      "ingest_cutoff_s": 650.953481017,
+      "ingest_median_bytes_per_s": 2898306334.5666666,
+      "ingest_p5_bytes_per_s": 2333436079.8,
+      "ingest_sent_bytes": 1999894144300,
+      "sustained_windows": 21,
+      "total_windows": 23,
+      "window_ingest_bytes_per_s": [
+        3861765269.8333335,
+        3925356924.7,
+        3882932013.866667,
+        3755805947.1666665,
+        3717747731.4666667,
+        2333436079.8,
+        2711484888.0666666,
+        3581123688.0333333,
+        2935508645.133333,
+        2224808013.5333333,
+        2825335997.6666665,
+        3305268464.4333334,
+        2868090107.1666665,
+        2838247690.8333335,
+        2546374712.9333334,
+        2767229839.1,
+        3088729787.1,
+        2898306334.5666666,
+        2677300271.233333,
+        2576151215.133333,
+        3001574514.233333,
+        1360868763.7,
+        0
+      ],
+      "window_read_back_bytes_per_s": [
+        201170488.6,
+        2762615275.8333335,
+        3893353661.133333,
+        4004867873.3,
+        3754530303.3,
+        3821224059,
+        3236807600,
+        2107498972.2,
+        3477344627.266667,
+        3371625936.3333335,
+        2462793777.6666665,
+        2530357366.9333334,
+        3119358534.4333334,
+        3104639244,
+        2972402795.9,
+        2732858580.8,
+        2630641417.6666665,
+        2876871366.4333334,
+        3068225370.6666665,
+        2864389172.133333,
+        2666879188.3333335,
+        2695710153.366667,
+        2595699094.5666666
+      ],
+      "window_restore_bytes_per_s": [
+        2132203261.0,
+        1928522824.4666667,
+        1766343290.2,
+        1577073984.9333334,
+        1318701339.0666666,
+        1753276132.4333334,
+        1926081303.8,
+        1517288164.0,
+        1678003544.1333334,
+        1867916612.7,
+        1871755545.8666666,
+        1736645543.8,
+        1866976880.6666667,
+        1834066086.4666667,
+        1868653546.2,
+        1873102133.9,
+        1814090938.1,
+        1834009940.2333333,
+        1825423849.7666667,
+        1885724458.5333333,
+        1869648345.0666666,
+        2347276898.766667,
+        3627492292.3333335
+      ],
+      "writes_median_per_s": 21.3
+    },
+    "settings": {
+      "accounts": 64,
+      "duration_s": 7200,
+      "enforce_floor": false,
+      "keep_objects": true,
+      "manifest": "perf-piri-1-postgres-s3",
+      "profile": "import",
+      "progress_s": 30,
+      "ramp_s": 10,
+      "rate_target_bytes_per_s": 6000000000,
+      "restore_scale_permille": 250,
+      "stop_ingest_at_bytes": 2000000000000,
+      "verify_lag_max_s": 60,
+      "verify_lag_min_s": 30,
+      "window_s": 30,
+      "workers": 64
+    }
+  },
+  "experiment": null,
+  "instrument": {
+    "box_fingerprint": "4d7de5899dd545e79a85c99a16467afaf6d3678ec95a8f2d36bbaec507d1c66c",
+    "fingerprint": "682658efd6a0d4880e09eb329f044a31bf001aff775324ad0659d325f14836a0"
+  },
+  "latency": {
+    "after": {
+      "central_to_node_median_ms": 25,
+      "connect_median_max_ms": 25.076,
+      "host_to_ingot_ms": 0.006,
+      "intra_group_max_ms": 0.033,
+      "node_to_central_median_ms": 25,
+      "ok": true
+    },
+    "before": {
+      "central_to_node_median_ms": 25,
+      "connect_median_max_ms": 25.0745,
+      "host_to_ingot_ms": 0.006,
+      "intra_group_max_ms": 0.033,
+      "node_to_central_median_ms": 25,
+      "ok": true
+    },
+    "central_ips_stable": true,
+    "jitter_ms": 0,
+    "max_drift_pct": 0.0,
+    "pairs": 9,
+    "target_rtt_ms": 25,
+    "tolerance_pct": 10
+  },
+  "network": {
+    "allowance_exceeded": {
+      "bw_in": 0,
+      "bw_out": 397780070,
+      "conntrack": 0,
+      "linklocal": 0,
+      "pps": 0
+    },
+    "egress_bytes_per_s_median": 3009904566,
+    "seconds_above_baseline": 118
+  },
+  "outcome": {
+    "class": "valid",
+    "drill_exit": 0,
+    "failure_codes": [],
+    "flags": [
+      "nic_allowance_exceeded",
+      "traced"
+    ],
+    "reasons": [],
+    "restarted_services": [],
+    "stopped_step": null
+  },
+  "pairing_id": null,
+  "provenance": {
+    "forge_perf": {
+      "instrument_tree": "b0d6d0d0fb12f12785bab681c6275fdf66c8010c5b8b9d4c636c9d217bd2f995",
+      "sha": "ad107068914458e341baed0ab709aea2db799781"
+    },
+    "harness": {
+      "binary_sha256": "0ef269f597981b0d916b4d6754796fce6c58c0accf009735896780dfb7f20057",
+      "go_version": "go1.27.3",
+      "modified": false,
+      "sha": "b46ffe5b10f4a4f21ae6ea0a335e31989e832a21"
+    },
+    "images": [
+      {
+        "digest": "sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab",
+        "ref": "latest",
+        "repo": "amazon/dynamodb-local",
+        "revision": null,
+        "role": "instrument",
+        "services": [
+          "dynamodb-local"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:06ede396eb1ed1ab56ecafc4ae754443ddd6f259b161e22e20264dfca5c5d839",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/delegator",
+        "revision": "2b1bf4ae1399fce75ecfbf36754f07af5d7fe28a",
+        "role": "under_test",
+        "services": [
+          "delegator"
+        ],
+        "source": "https://github.com/fil-forge/delegator"
+      },
+      {
+        "digest": "sha256:ebb12470f6fc50906c0ed867d009a056e131db1a994b45d7c3f1c8d2eb26dee9",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/did-method-plc",
+        "revision": "df9ae0af1953b135cd210de0fe1fbf053f15e993",
+        "role": "under_test",
+        "services": [
+          "plc"
+        ],
+        "source": "https://github.com/fil-forge/did-method-plc"
+      },
+      {
+        "digest": "sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/filecoin-localdev",
+        "revision": "96e9d9e860734ab25c1b24664966630d4b849b47",
+        "role": "instrument",
+        "services": [
+          "blockchain"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:2b7fefece783a91d1da9bd765cf2f34d359e8f7a6df9c7410caa135ca46b9e6f",
+        "ref": "main-dev",
+        "repo": "ghcr.io/fil-forge/guppy",
+        "revision": "d4c803a99274f25e867b2500d9867e131bfaca27",
+        "role": "under_test",
+        "services": [
+          "guppy"
+        ],
+        "source": "https://github.com/fil-forge/guppy"
+      },
+      {
+        "digest": "sha256:a438afd370770c768b894a43cbdf6fe573d8fcfabe047d28f816def56637d381",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/hilt",
+        "revision": "ae443de21d5040ff0d0c3b8c984de1ec8217623e",
+        "role": "under_test",
+        "services": [
+          "hilt",
+          "hilt-init"
+        ],
+        "source": "https://github.com/fil-forge/hilt"
+      },
+      {
+        "digest": "sha256:edc05df8b985e38f84a8959f2d0b4d00c87fe8f77c843e01bec990bbb37133fe",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/indexing-service",
+        "revision": "b84ab4002767697f0a8ec7f5e16b37378ff2f00b",
+        "role": "under_test",
+        "services": [
+          "indexer"
+        ],
+        "source": "https://github.com/fil-forge/indexing-service"
+      },
+      {
+        "digest": "sha256:435a41f0d06b4114bc31de0f91b1412dc07d3d35b582dc81c899eccfe1834a8c",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/ingot",
+        "revision": "2447927e3559efe7a41a4ee7dd86bb24a7347fbc",
+        "role": "under_test",
+        "services": [
+          "ingot"
+        ],
+        "source": "https://github.com/fil-forge/ingot"
+      },
+      {
+        "digest": "sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5",
+        "ref": "RELEASE.2025-10-15T17-29-55Z",
+        "repo": "ghcr.io/fil-forge/minio",
+        "revision": "11d4cf7430ee783cd8e903669f482cadfbebcd82",
+        "role": "instrument",
+        "services": [
+          "minio"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:776c613c0f535180ad8080c8befedcc372a3228f435b4919b3a2394904a19c3c",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/piri",
+        "revision": "90035b627b9ab60486389c5e0bcfabd026e197bf",
+        "role": "under_test",
+        "services": [
+          "piri-0"
+        ],
+        "source": "https://github.com/fil-forge/piri"
+      },
+      {
+        "digest": "sha256:4493534d96a4f7f202e58f8811b7258da7feda4d79e710473c903f99ace76a98",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/piri-signing-service",
+        "revision": "678c9c173c48445320f28210fe3d9b7bca9b7dc6",
+        "role": "under_test",
+        "services": [
+          "signing-service"
+        ],
+        "source": "https://github.com/fil-forge/piri-signing-service"
+      },
+      {
+        "digest": "sha256:8e000ed3e7fb3a09d53c4ce35de943d454b0528678fcc6250679d5a1cc1f226c",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/sprue",
+        "revision": "f6bf4d145975a870d4ded4a057684cbca0df107f",
+        "role": "under_test",
+        "services": [
+          "upload",
+          "upload-init"
+        ],
+        "source": "https://github.com/fil-forge/sprue"
+      },
+      {
+        "digest": "sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869",
+        "ref": "latest",
+        "repo": "ghcr.io/fil-forge/storetheindex",
+        "revision": "affab9f078660b78dec2d028fd8cf221220c4a1d",
+        "role": "instrument",
+        "services": [
+          "ipni",
+          "ipni-init"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:e14607ef2ae00409c5342145dc01b01901d8dcb4e4f124a76ea5a19732fcc695",
+        "ref": "main",
+        "repo": "ghcr.io/fil-forge/swarf",
+        "revision": "1097d7d2f5aa032830235f44610099d4468fb661",
+        "role": "under_test",
+        "services": [
+          "swarf"
+        ],
+        "source": "https://github.com/fil-forge/swarf"
+      },
+      {
+        "digest": "sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70",
+        "ref": "v0.16",
+        "repo": "nicolaka/netshoot",
+        "revision": null,
+        "role": "instrument",
+        "services": [
+          "netem"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:a60afafda36337abe833c4a63894bf1095098f29abea4091e7e555a33dd52889",
+        "ref": "2.6",
+        "repo": "openbao/openbao",
+        "revision": "63a65e6b907589dbb952c371a70260a065bf8bd7",
+        "role": "instrument",
+        "services": [
+          "hilt-vault",
+          "hilt-vault-init",
+          "ingot-openbao",
+          "ingot-openbao-init"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1",
+        "ref": "0.161.0",
+        "repo": "otel/opentelemetry-collector-contrib",
+        "revision": "619d1d0d06e9488a4a38e993f09605bbc13db592",
+        "role": "instrument",
+        "services": [
+          "otel-collector"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+        "ref": "16-alpine",
+        "repo": "postgres",
+        "revision": null,
+        "role": "instrument",
+        "services": [
+          "hilt-postgres",
+          "ingot-postgres",
+          "piri-postgres",
+          "piri-postgres-init",
+          "plc-postgres",
+          "postgres",
+          "swarf-postgres"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+        "ref": "7-alpine",
+        "repo": "redis",
+        "revision": null,
+        "role": "instrument",
+        "services": [
+          "redis"
+        ],
+        "source": null
+      },
+      {
+        "digest": "sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537",
+        "ref": "v3",
+        "repo": "rnwood/smtp4dev",
+        "revision": null,
+        "role": "instrument",
+        "services": [
+          "email"
+        ],
+        "source": null
+      }
+    ],
+    "smelt": {
+      "sha": "346d2b90cd8c5d8ba73610b4e0b516e3d6f75b4c"
+    }
+  },
+  "run_id": "main-20261112t152929z",
+  "schema": "forge-perf.run/v1",
+  "series": "per-trigger",
+  "time": {
+    "drill_finished_at": "2026-11-12T15:42:53Z",
+    "drill_started_at": "2026-11-12T15:30:48Z",
+    "run_finished_at": "2026-11-12T15:43:56Z",
+    "run_started_at": "2026-11-12T15:29:29Z",
+    "stack_up_at": "2026-11-12T15:30:19Z"
+  },
+  "trace": {
+    "dropped_spans": 0,
+    "file_bytes": 1245903600,
+    "file_sha256": "4ac316e66fd3704831b5f1a774d042add85a3fb4f377fbeea8028fccdd640c42",
+    "ratio": 0.1,
+    "spans": 2069731,
+    "spans_by_service": {
+      "hilt": 354,
+      "ingot": 1875221,
+      "other": 0,
+      "piri": 122466,
+      "sprue": 71690
+    },
+    "traces": 132285
+  },
+  "trigger": {
+    "changed": [
+      "ingot"
+    ],
+    "reason": "image"
+  }
+}
