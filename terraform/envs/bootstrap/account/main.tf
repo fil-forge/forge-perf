@@ -693,7 +693,7 @@ resource "aws_iam_user_policy" "piri" {
 # activated as a cost allocation tag in Billing (docs/operations.md).
 
 variable "budget_monthly_usd" {
-  description = "Monthly spend on Project=forge-perf that triggers the alerts. Tier 1 runs about $395 a month, tier 2 about $1,500 plus campaigns."
+  description = "Monthly spend on Project=forge-perf that triggers the alerts, actual or forecast; terraform.tfvars says what it is sized for."
   type        = number
 }
 
