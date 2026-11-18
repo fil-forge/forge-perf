@@ -274,6 +274,8 @@ def metrics_body(record):
         "series": record["series"], "class": outcome["class"],
         "traced": "true" if record.get("trace") or "traced" in outcome.get("flags", []) else "false",
         "workers": settings.get("workers"), "size_bytes": settings.get("stop_ingest_at_bytes"),
+        # 0 is no budget, as ingot reads it; a record from before the field ran without one.
+        "local_blob_max_bytes": record.get("ingot_local_blob_max_bytes") or 0,
         "run_id": record["run_id"],
     }
     attributes = [string_attr(k, str(v)) for k, v in labels.items() if v is not None]

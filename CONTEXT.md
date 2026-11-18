@@ -21,9 +21,9 @@ _Avoid_: range restore, ranged read, retrieval
 **Ranged GET**:
 A GET of one byte range of a blob, the request restore makes. It names a request, never the stream.
 
-**Spool**:
-Ingot's local copy of every blob it has accepted, on the box's NVMe. It serves both read streams for as long as it holds the blob.
-_Avoid_: cache, page cache
+**Local disk**:
+Ingot's copies of the blobs it has accepted, on the box's NVMe: its cache, which takes each body as ingot streams it to the provider and keeps it once the provider holds it, for ingot's `cache_ttl` (an hour by default) unless its local blob budget evicts it sooner. Both read streams read a blob there while ingot holds it, and from piri once ingot has evicted it. Ingot's own name for these copies is its local blobs.
+_Avoid_: page cache
 
 ### Measurement
 

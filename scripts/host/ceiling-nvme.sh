@@ -16,7 +16,7 @@
 #            rewritten from its start if the time outlasts it. Each job's
 #            region is whole MiB, since O_DIRECT needs aligned offsets. When
 #            this lands more than 10% below pass 1 it sets the ceiling instead,
-#            since ingot's spool writes through the filesystem
+#            since ingot's cache writes through the filesystem
 # --quick caps pass 1 at 90 s, skips pass 2 and writes a 10 GB file for 90 s.
 #
 # Writes fio's bandwidth logs (1 s), its JSON reports and nvme.json to DIR,

@@ -495,7 +495,7 @@ A campaign runs one committed set a few times on a box of its own beside the per
 | `instance_type` | `m9gd.2xlarge`, `m9gd.8xlarge` or `m9gd.16xlarge`; in mode `campaign` the type needs `config/settings/<type>.env` |
 | `hours` | 1 to 24. The box's `ExpiresAt` tag is the dispatch time plus this. In mode `campaign` the runs must fit at their longest: 30 minutes to boot, then `duration` plus 45 minutes per run, where a sweep counts each value. Three 4-hour runs need 15 hours |
 | `mode` | `campaign` runs the set; `calibration` boots the box and waits for the ceiling measurements |
-| `set` | a committed set under `calibration/sets/`, with a digest for every image in `config/images.tracked` |
+| `set` | a committed set under `calibration/sets/`, with a digest for every image in `config/images.tracked`; on `m9gd.16xlarge`, with a smelt that includes fil-forge/smelt#69, or every run stops at the images step ([runner.md](runner.md#ingots-local-blob-budget)) |
 | `runs` | 1 to 20 |
 | `size`, `duration` | `--stop-ingest-at` and `--duration` of each run, such as `2000GB` and `4h`; `duration` is at most `4h`, so a run fits in `forge-perf-run.service`'s 6-hour limit |
 | `workers` | empty for the settings file's `WORKERS` (refused while that is empty), one number, or a comma list to sweep |

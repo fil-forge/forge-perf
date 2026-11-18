@@ -467,5 +467,6 @@
   "live_bytes": 1614209,
   "live_blocks": 8193,
   "missing_blocks": 0
- }
+ },
+ "ingot_local_blob_max_bytes": null
 }
