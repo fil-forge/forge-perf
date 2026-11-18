@@ -182,6 +182,25 @@ def scenarios(now):
                    restore=0.75 if h else 0.2) for i, h in enumerate(heavy)]
     out["modes"] = ("Runs of one instrument in both modes, the latest restore-heavy", runs,
                     [gate(1, 0.36e9, hours(200)), gate(2), gate(3)], [], idle)
+
+    # Weeks of busy history, as the live page has: a few days on tier 2, then
+    # several runs a day on tier 3 in both modes, instrument changes every few
+    # days, and an outage of no-data runs followed by a failed one.
+    runs = [record(hours(960 - 20 * i), p5=1.9e9 + 0.05e9 * i, tier=2, windows=22) for i in range(5)]
+    for i in range(80):
+        at = hours(860 - 10 * i)
+        if 44 <= i < 50:
+            runs.append(record(at, "no_data", tier=3, broken=i == 44))
+            continue
+        if i == 50:
+            runs.append(record(at, "failed", tier=3))
+            continue
+        heavy = i < 6 or i >= 51 or i % 9 == 4
+        runs.append(record(at, p5=(2.25e9 if heavy else 3.5e9) + 0.04e9 * (i % 4), tier=3, windows=22,
+                           smelt=f"{i // 7:04x}" * 10, restore=0.8 if heavy else 0.2))
+    out["busy"] = ("Weeks of busy history: a box change, both modes, instrument changes and an outage",
+                   sorted(runs, key=lambda r: r["run_id"]),
+                   [gate(1, 0.36e9, hours(1200)), gate(2, 2.05e9, hours(1200)), gate(3, 4.19e9, hours(1200))], [], idle)
     return out
 
 

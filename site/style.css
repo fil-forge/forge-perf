@@ -81,11 +81,17 @@ button:focus-visible, a:focus-visible, tr:focus-visible, .scroll:focus-visible {
 .gates li { margin-bottom: 4px; }
 .status { font-size: 0.9rem; border-top: 1px solid var(--chart-grid); padding-top: 10px; }
 
+.controls { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.controls [hidden] { display: none; }
 .legend { font-size: 0.85rem; margin: 12px 0 4px; }
 .legend .key { display: inline-block; width: 22px; border-top: 2px solid var(--series-1); vertical-align: middle; margin: 0 4px 0 8px; }
-.legend .key:first-child { margin-left: 0; }
-.legend .key.dashed { border-top-style: dashed; }
+.legend .item { white-space: nowrap; }
+.legend .item:first-child .key { margin-left: 0; }
+.legend .key.dashed { border-top: 1.5px dashed var(--series-1); opacity: 0.55; }
 .legend .sym { margin-left: 10px; }
+.legend .sym.tick { color: var(--text-muted); font-size: 0.7rem; }
+.legend .swatch { display: inline-block; width: 14px; height: 10px; background: var(--chart-grid); vertical-align: middle; margin: 0 4px 0 10px; border-radius: 2px; }
+.panel-title { font-size: 0.85rem; color: var(--text-secondary); margin: 6px 8px 0; }
 .chart { background: var(--surface-1); border: 1px solid var(--chart-grid); border-radius: 12px; padding: 8px; min-height: 80px; overflow: hidden; }
 .chart svg { display: block; max-width: 100%; cursor: pointer; }
 .empty { color: var(--text-secondary); padding: 16px; margin: 0; }
