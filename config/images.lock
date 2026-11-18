@@ -10,7 +10,7 @@ REDIS_IMAGE           redis:7-alpine                                       sha25
 DYNAMODB_LOCAL_IMAGE  amazon/dynamodb-local:latest                         sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
 SMTP4DEV_IMAGE        rnwood/smtp4dev:v3                                   sha256:25c434c1900a9c5b61e17ead0a774d9e81b80554d05cf64719d69e5ea8c66537
 IPNI_IMAGE            ghcr.io/fil-forge/storetheindex:latest               sha256:b2febb3eb0a8ba3611916066f27314d79fb910620864cc92a6cabe384289e869
-BLOCKCHAIN_IMAGE      ghcr.io/fil-forge/filecoin-localdev:main             sha256:96e72624eb71efb1c15de1d0729b780955e5ece700e840dd56291f5c522b4bee
+BLOCKCHAIN_IMAGE      ghcr.io/fil-forge/filecoin-localdev:fc39541          sha256:5538f99ab97101642139d5bb001f98cbf88f8c13e6b515cae0760bb7a7ee3822
 MINIO_IMAGE           ghcr.io/fil-forge/minio:RELEASE.2025-10-15T17-29-55Z sha256:04c3b07ebfa1bf526a7895f41bacfc533b39635c86f263eae65dcf9e71b1c8c5
 
 # The sidecar scripts/host/netem.sh runs in a container's network namespace to
