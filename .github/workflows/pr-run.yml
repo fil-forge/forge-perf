@@ -71,7 +71,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: write
     outputs:
       go: ${{ steps.check.outputs.match == 'true' && steps.check.outputs.error == '' && steps.comment.outputs.id != '' }}
@@ -273,7 +273,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      pull-requests: read
+      pull-requests: write
       issues: write
     outputs:
       outcome: ${{ steps.wait.outputs.outcome }}
@@ -318,7 +318,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
